@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { fromNumber, pnl } from '@velum/math';
 import { METRICS } from '@/lib/copy';
 import { compact, fmt, sgnUsd } from '@/lib/format';
-import { useMarket, useMarkets } from '@/lib/markets';
+import { useLivePrice, useMarkets } from '@/lib/markets';
 import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
 import { Terminal } from '../trade/Terminal';
 
@@ -61,15 +61,15 @@ const EX = { q: fromNumber(13.35), E: fromNumber(374.57) };
 
 /** "Same trade. Two very different views." rows; the private side shows live P&L. */
 export function PrivacyRows({ priv }: { priv: boolean }) {
-  const m = useMarket('TSLA');
-  const pl = pnl('long', EX.q, EX.E, m.price);
+  const px = useLivePrice('TSLA');
+  const pl = px === null ? null : pnl('long', EX.q, EX.E, px);
   const R: Array<[string, ReactNode, boolean]> = [
     ['Deposit', '5,000 USDG', true],
     ['Market', 'TSLA perp', true],
     ['Side', <span key="s" className="up">Long 2×</span>, false],
     ['Size', `${fmt(EX.q, 2)} TSLA`, false],
     ['Entry price', fmt(EX.E), false],
-    ['Profit and loss', <span key="p" className={pl >= 0n ? 'up' : 'down'}>{sgnUsd(pl)}</span>, false],
+    ['Profit and loss', pl === null ? '—' : <span key="p" className={pl >= 0n ? 'up' : 'down'}>{sgnUsd(pl)}</span>, false],
   ];
   return (
     <div>

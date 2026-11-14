@@ -2,22 +2,40 @@
 /**
  * Demo trading (DEMO_MODE, Phase 2). Each action runs the prototype's timed flow and receipt,
  * then updates the browser-only ledger. Phase 3 replaces the timers with real tx events.
+ *
+ * Every price comes from livePrice() and is read again when the flow completes: if the market has
+ * lost its price meanwhile, the action is cancelled and nothing changes (audit round 2, M4).
+ * On mainnet nothing is on-chain, so flows record no simulated chain event (audit round 2, M2).
  */
-import { DEMO, isLive } from '@velum/config';
+import { DEMO, IS_MAINNET, isLive } from '@velum/config';
 import { WAD, bps, fromNumber, isLiquidatable, liquidationReturn, perpsClose, perpsOpen, wmul, type Wad } from '@velum/math';
+import type { ReactNode } from 'react';
 import { DEMO_PARAMS, PARAMS, perpsCalc, spotCalc, swapCalc } from './calc';
-import { dp, fmt, fmtFloor, fmtLev, randomHex, receiptId, sgnUsd, shortH, sig4, uid, usd } from './format';
-import { mk } from './markets';
-import { BLOCK_BASE, addBal, bal, chainSaw, logAct, useApp, type Ledger, type Offer } from './store';
+import { SIM } from './copy';
+import { dp, fmt, fmtFloor, fmtLev, receiptId, sgnUsd, sig4, uid, usd } from './format';
+import { livePrice, mk, tokPx } from './markets';
+import { NO_COMMIT, addBal, bal, chainSaw, demoChainEvent, logAct, useApp, type FlowResult, type Ledger, type Offer } from './store';
 
 const app = () => useApp.getState();
 const rid = () => '#' + receiptId();
 const Up = ({ v, children }: { v: boolean; children: React.ReactNode }) => <span className={v ? 'up' : 'down'}>{children}</span>;
 
+type Row = [ReactNode, ReactNode];
+/** A receipt's "Visible onchain" row: testnet only, since nothing is on-chain on mainnet. */
+const visible = (v: string): Row[] => (IS_MAINNET ? [] : [['Visible onchain', v]]);
+
+/** What a receipt shows: mainnet receipts end by saying nothing touched the chain. */
+export function receiptRows(rows: Row[], mainnet = IS_MAINNET): Row[] {
+  return mainnet ? [...rows.filter(([k]) => k !== 'Visible onchain'), SIM.receiptDemoRow] : rows;
+}
+
+/** The result of a flow whose market lost its price before it completed: nothing was applied. */
+export const PRICE_GONE: FlowResult = { rows: [['Status', 'Cancelled: price unavailable']], toast: 'Price unavailable', warn: true };
+
 export function openPerps() {
   const s = app();
   const m = mk(s.sel);
-  if (!isLive(m.sym)) return;
+  if (!isLive(m.sym) || livePrice(m.sym) === null) return;
   const c = perpsCalc(s, bal(s.ledger.priv, 'USDG'));
   const { side, lev } = s;
   const Side = side === 'long' ? 'Long' : 'Short';
@@ -30,14 +48,17 @@ export function openPerps() {
       { t: 'Matching with a maker', d: 'Waiting for a standing offer', ms: 1100 },
     ],
     done: () => {
-      // Fill at the price when the maker matches, like the prototype.
-      const q = perpsOpen({ price: mk(m.sym).price, size: c.size, leverage: lev, side }, PARAMS, DEMO_PARAMS);
+      // Fill at the price when the maker matches, like the prototype; no price, no fill.
+      const price = livePrice(m.sym);
+      if (price === null) return PRICE_GONE;
+      const q = perpsOpen({ price, size: c.size, leverage: lev, side }, PARAMS, DEMO_PARAMS);
       const [lo, hi] = DEMO.closeSpreadBpsRange;
       const cs = bps(lo) + BigInt(Math.floor(Math.random() * Number(bps(hi) - bps(lo))));
-      const p = { id: uid(), sym: m.sym, side, lev, margin: q.margin, qty: q.qty, entry: q.entry, liq: q.liq, cs, commit: randomHex(32), block: BLOCK_BASE + Math.floor(200 + Math.random() * 8800), openedAt: Date.now() };
+      const ev = demoChainEvent(`A ${m.sym} position changed`);
+      const p = { id: uid(), sym: m.sym, side, lev, margin: q.margin, qty: q.qty, entry: q.entry, liq: q.liq, cs, commit: ev?.commit ?? NO_COMMIT, block: ev?.block ?? 0, openedAt: Date.now() };
       app().setLedger((l) =>
         logAct(
-          { ...l, priv: addBal(l.priv, 'USDG', -(q.margin + q.fee)), positions: [p, ...l.positions], lastChain: { what: `A ${m.sym} position changed`, commit: p.commit, block: p.block } },
+          { ...l, priv: addBal(l.priv, 'USDG', -(q.margin + q.fee)), positions: [p, ...l.positions], lastChain: ev ?? l.lastChain },
           `Opened ${side} ${m.sym} ${fmtLev(lev)}`,
           `${usd(c.size)} position, ${fmt(q.margin)} USDG margin`,
           'trade',
@@ -51,7 +72,7 @@ export function openPerps() {
           ['Entry', fmt(q.entry)],
           ['Liquidation', q.liq ? fmt(q.liq) : 'None'],
           ['Fee', `${fmt(q.fee)} USDG`],
-          ['Visible onchain', 'A position changed'],
+          ...visible('A position changed'),
           ['Receipt', rid()],
         ],
         toast: `${Side} opened on ${m.sym}`,
@@ -63,7 +84,7 @@ export function openPerps() {
 export function spotTrade() {
   const s = app();
   const m = mk(s.sel);
-  if (!isLive(m.sym)) return;
+  if (!isLive(m.sym) || livePrice(m.sym) === null) return;
   const c = spotCalc(s, s.ledger.priv);
   const buy = s.spotSide === 'buy';
   s.runFlow({
@@ -75,6 +96,7 @@ export function spotTrade() {
       { t: 'Filling against the private pool', d: `Only at or above ${fmtFloor(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
     ],
     done: () => {
+      if (livePrice(m.sym) === null) return PRICE_GONE;
       app().setLedger((l) =>
         logAct(
           chainSaw({ ...l, priv: addBal(addBal(l.priv, c.tin, -c.amt), c.tout, c.out) }, `The ${m.sym} pool changed`),
@@ -88,7 +110,7 @@ export function spotTrade() {
           ['You paid', `${fmt(c.amt, dp(c.tin))} ${c.tin}`],
           ['You got', `${fmt(c.out, dp(c.tout))} ${c.tout}`],
           ['Pool fee', `${fmt(c.feeAmt)} USDG`],
-          ['Visible onchain', 'The pool changed'],
+          ...visible('The pool changed'),
           ['Receipt', rid()],
         ],
         toast: `${buy ? 'Bought' : 'Sold'} ${m.sym}`,
@@ -100,7 +122,7 @@ export function spotTrade() {
 export function closePos(id: string) {
   const s = app();
   const p = s.ledger.positions.find((x) => x.id === id);
-  if (!p) return;
+  if (!p || livePrice(p.sym) === null) return;
   s.runFlow({
     title: `Close ${p.side} ${p.sym}`,
     steps: [
@@ -110,7 +132,10 @@ export function closePos(id: string) {
     ],
     done: () => {
       if (!app().ledger.positions.some((x) => x.id === id)) return { rows: [['Status', 'Already settled']], toast: 'Position already closed' };
-      const c = perpsClose(p, mk(p.sym).price, p.cs, PARAMS);
+      // Settle only at a live price; without one the position stays open, untouched.
+      const price = livePrice(p.sym);
+      if (price === null) return PRICE_GONE;
+      const c = perpsClose(p, price, p.cs, PARAMS);
       app().setLedger((l) =>
         logAct(
           chainSaw({ ...l, priv: addBal(l.priv, 'USDG', c.returned), positions: l.positions.filter((x) => x.id !== id) }, `A ${p.sym} position changed`),
@@ -133,16 +158,23 @@ export function closePos(id: string) {
   });
 }
 
-/** Runs every demo tick: liquidates positions below maintenance at the current price. */
+/**
+ * Runs every demo tick: liquidates positions below maintenance at the current price. Markets
+ * without a live price are skipped: nobody is liquidated at a seed or stale price.
+ */
 export function checkLiq() {
   const s = app();
   if (!s.account || !s.ledger.positions.length) return;
-  const hit = s.ledger.positions.filter((p) => isLiquidatable(p, mk(p.sym).price, PARAMS));
+  const hit = s.ledger.positions.flatMap((p) => {
+    const price = livePrice(p.sym);
+    return price !== null && isLiquidatable(p, price, PARAMS) ? [{ p, price }] : [];
+  });
   if (!hit.length) return;
   s.setLedger((l) => {
     let next: Ledger = l;
-    for (const p of hit) {
-      const back = liquidationReturn(p, mk(p.sym).price, PARAMS);
+    for (const { p, price } of hit) {
+      if (!next.positions.some((x) => x.id === p.id)) continue;
+      const back = liquidationReturn(p, price, PARAMS);
       next = logAct(
         { ...next, priv: addBal(next.priv, 'USDG', back), positions: next.positions.filter((x) => x.id !== p.id) },
         `Liquidated ${p.side} ${p.sym}`,
@@ -152,7 +184,7 @@ export function checkLiq() {
     }
     return next;
   });
-  for (const p of hit) s.toast(`${p.sym} ${p.side} liquidated`, true);
+  for (const { p } of hit) s.toast(`${p.sym} ${p.side} liquidated`, true);
 }
 
 /** Demo maker fills and LP fee growth (prototype tick). */
@@ -173,6 +205,7 @@ export function doSwap() {
   const f = s.swapFrom;
   const t = s.swapTo;
   const c = swapCalc(f, t, s.swapAmt, s.slip, s.ledger.priv);
+  if (!c.priced) return;
   const pool = f === 'USDG' ? t : f;
   s.runFlow({
     title: `Swap ${f} for ${t}`,
@@ -183,6 +216,7 @@ export function doSwap() {
       { t: c.hops === 2 ? 'Filling both pools in one action' : 'Filling against the private pool', d: `Only at or above ${sig4(c.min, 'floor')} ${t}`, ms: 800 },
     ],
     done: () => {
+      if (tokPx(f) === null || tokPx(t) === null) return PRICE_GONE;
       app().setLedger((l) =>
         logAct(
           chainSaw({ ...l, priv: addBal(addBal(l.priv, f, -c.a), t, c.out) }, c.hops === 2 ? 'Two pools changed' : `The ${pool} pool changed`),
@@ -205,6 +239,7 @@ export function doSwap() {
 }
 
 export function lpGo(sym: string, a: Wad) {
+  if (livePrice(sym) === null) return;
   app().runFlow({
     title: `Add liquidity to ${sym}`,
     steps: [
@@ -213,6 +248,7 @@ export function lpGo(sym: string, a: Wad) {
       { t: `Swapping half into ${sym} and adding both`, d: 'One action, no in-between balance', ms: 800 },
     ],
     done: () => {
+      if (livePrice(sym) === null) return PRICE_GONE;
       app().setLedger((l) =>
         logAct(chainSaw({ ...l, priv: addBal(l.priv, 'USDG', -a), lp: addBal(l.lp, sym, a) }, `The ${sym} pool changed`), `Added ${fmt(a)} USDG to the ${sym} pool`, 'Your share stays private', 'drop'),
       );
@@ -251,13 +287,9 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
   const F = {
     shield: {
       title: `Shield ${t}`,
-      steps: [
-        { t: `Approving ${t}`, d: 'Lets the Velum contract receive this token', ms: 600 },
-        { t: 'Sending public deposit', d: 'Visible onchain: wallet, token, amount, time', ms: 800 },
-        { t: 'Adding a note to your private balance', d: 'Usually within a block or two', ms: 900 },
-      ],
+      steps: SIM.shieldSteps(t),
       apply: (l: Ledger) =>
-        logAct(chainSaw({ ...l, priv: addBal(l.priv, t, a), shielded: addBal(l.shielded, t, a) }, `Public deposit of ${fmt(a, dp(t))} ${t}`), `Shielded ${fmt(a, dp(t))} ${t}`, 'Public deposit from your wallet', 'shieldIn'),
+        logAct(chainSaw({ ...l, priv: addBal(l.priv, t, a), shielded: addBal(l.shielded, t, a) }, `Public deposit of ${fmt(a, dp(t))} ${t}`), `Shielded ${fmt(a, dp(t))} ${t}`, SIM.shieldSub, 'shieldIn'),
       toast: `Shielded ${t}`,
     },
     unshield: {
@@ -265,11 +297,11 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
       steps: [
         { t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true },
         { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
-        { t: 'Sending tokens to the public address', d: shortH(to || '0x0000000000'), ms: 700 },
+        SIM.unshieldLast(to),
       ],
       apply: (l: Ledger) => {
         const shielded = own ? { ...l.shielded, [t]: bal(l.shielded, t) > a ? bal(l.shielded, t) - a : 0n } : l.shielded;
-        return logAct(chainSaw({ ...l, priv: addBal(l.priv, t, -a), shielded }, `Public withdrawal of ${fmt(a, dp(t))} ${t}`), `Unshielded ${fmt(a, dp(t))} ${t}`, `Public transfer to ${shortH(to)}`, 'shieldOut');
+        return logAct(chainSaw({ ...l, priv: addBal(l.priv, t, -a), shielded }, `Public withdrawal of ${fmt(a, dp(t))} ${t}`), `Unshielded ${fmt(a, dp(t))} ${t}`, SIM.unshieldSub(to), 'shieldOut');
       },
       toast: `Unshielded ${t}`,
     },
@@ -278,7 +310,7 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
       steps: [
         { t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true },
         { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
-        { t: 'Creating an encrypted note for the recipient', d: 'Only they can read it', ms: 600 },
+        SIM.sendLast,
       ],
       apply: (l: Ledger) => logAct(chainSaw({ ...l, priv: addBal(l.priv, t, -a) }, 'An encrypted note was created'), `Sent ${fmt(a, dp(t))} ${t} privately`, `To ${to.slice(0, 12)}…`, 'send'),
       toast: `Sent ${t} privately`,
@@ -293,7 +325,7 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
         rows: [
           ['Token', t],
           ['Amount', fmt(a, dp(t))],
-          ['Visible onchain', kind === 'send' ? 'Nothing readable' : 'Wallet, token, amount, time'],
+          ...visible(kind === 'send' ? 'Nothing readable' : 'Wallet, token, amount, time'),
           ['Receipt', rid()],
         ],
         toast: F.toast,
@@ -347,7 +379,9 @@ export function withdrawOffer(id: string) {
       { t: 'Releasing unused backing', d: 'Back to your private balance', ms: 600 },
     ],
     done: () => {
-      const cur = app().ledger.offers.find((x) => x.id === id) ?? o;
+      // Read the offer as it stands now; if it is gone (withdrawn meanwhile), credit nothing.
+      const cur = app().ledger.offers.find((x) => x.id === id);
+      if (!cur) return { rows: [['Status', 'Already withdrawn']], toast: 'Offer already withdrawn' };
       const back = cur.back + cur.earned;
       app().setLedger((l) => logAct(chainSaw({ ...l, priv: addBal(l.priv, 'USDG', back), offers: l.offers.filter((x) => x.id !== id) }, 'A private note was released'), `Withdrew the ${cur.sym} offer`, `${fmt(back)} USDG back, including ${usd(cur.earned)} earned`, 'offer'));
       return { rows: [['Returned', `${fmt(back)} USDG`], ['Earned', usd(cur.earned)], ['Receipt', rid()]], toast: 'Offer withdrawn' };

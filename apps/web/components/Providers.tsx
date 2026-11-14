@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { WagmiProvider, useAccount } from 'wagmi';
 import { checkLiq, demoTick } from '@/lib/demo';
 import { startMarketFeed, useMarkets } from '@/lib/markets';
-import { dropLegacySessions, emptyLedger, loadLedger, recallSession, saveLedger, seedLedger, useApp } from '@/lib/store';
+import { dropLegacyStorage, emptyLedger, loadLedger, recallSession, saveLedger, seedLedger, useApp } from '@/lib/store';
 import { wagmiConfig } from '@/lib/wagmi';
 import { I } from './icons';
 import { ModalHost } from './modals/ModalHost';
@@ -41,7 +41,7 @@ function AccountSync() {
     s.openModal({ kind: 'network' });
   }, [status, chainId, address]);
 
-  useEffect(dropLegacySessions, []);
+  useEffect(dropLegacyStorage, []);
 
   // Persist the demo ledger per wallet (browser only).
   useEffect(

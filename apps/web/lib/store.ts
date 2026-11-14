@@ -81,6 +81,8 @@ export interface FlowStep {
 export interface FlowResult {
   rows: Array<[ReactNode, ReactNode]>;
   toast: string;
+  /** Show the toast as a warning (a cancelled action). */
+  warn?: boolean;
 }
 
 export interface FlowSpec {
@@ -186,10 +188,25 @@ export const logAct = (l: Ledger, title: string, sub: string, icon: IconName): L
   ...l,
   history: [{ t: Date.now(), title, sub: IS_MAINNET ? `${sub} · Simulated` : sub, icon }, ...l.history].slice(0, 100),
 });
-export const chainSaw = (l: Ledger, what: string): Ledger => ({
-  ...l,
-  lastChain: { what, commit: randomHex(32), block: BLOCK_BASE + Math.floor(200 + Math.random() * 8800) },
-});
+
+/** Placeholder commitment for positions opened where nothing is on-chain (mainnet demo). */
+export const NO_COMMIT = `0x${'0'.repeat(64)}`;
+
+/**
+ * The simulated public-chain event for a demo action: a random commitment and block, like the
+ * prototype. Mainnet has no Velum contract, so there is no event and nothing is fabricated: null
+ * (audit round 2, M2). `mainnet` is a parameter so tests can check both networks.
+ */
+export function demoChainEvent(what: string, mainnet = IS_MAINNET): LastChain | null {
+  if (mainnet) return null;
+  return { what, commit: randomHex(32), block: BLOCK_BASE + Math.floor(200 + Math.random() * 8800) };
+}
+
+/** Records what the public chain would have seen (testnet demo). A no-op on mainnet. */
+export const chainSaw = (l: Ledger, what: string, mainnet = IS_MAINNET): Ledger => {
+  const ev = demoChainEvent(what, mainnet);
+  return ev ? { ...l, lastChain: ev } : l;
+};
 
 /** New wallets start with the prototype's demo private balance. */
 export function seedLedger(): Ledger {
@@ -222,8 +239,13 @@ const SESSION_KEY = `velum:session:v3:${CHAIN.id}`;
 const SIGNER_KEY = `velum:signer:v1:${CHAIN.id}`;
 const WALLET_RE = /^0x[0-9a-f]{40}$/;
 
-/** A Velum private address (velum1…). Lives here, not in lib/account.ts, so pages don't bundle the signing code. */
-export const isPrivateAddress = (s: string) => /^velum1[0-9a-z]{10,}$/i.test(s);
+const ACCT_KEY = `velum:acct:v1:${CHAIN.id}`;
+
+/**
+ * A Velum private address exactly as derivePrivateAddress makes it: velum1 + 36 lowercase hex
+ * characters. Lives here, not in lib/account.ts, so pages don't bundle the signing code.
+ */
+export const isPrivateAddress = (s: string) => /^velum1[0-9a-f]{36}$/.test(s);
 
 /** Stored ledgers are validated field by field; anything malformed is dropped, never trusted (audit web L6). */
 export function loadLedger(addr: string): Ledger | null {
@@ -232,7 +254,8 @@ export function loadLedger(addr: string): Ledger | null {
     if (!raw) return null;
     const l = decodeLedger(raw);
     if (!l) localStorage.removeItem(LEDGER_KEY(addr));
-    return l;
+    // Earlier mainnet builds stored a simulated "last thing the chain saw"; nothing is on-chain there.
+    return l && IS_MAINNET ? { ...l, lastChain: null } : l;
   } catch {
     return null;
   }
@@ -259,10 +282,22 @@ function readMap(key: string, ok: (v: unknown) => boolean): Record<string, strin
 
 const readSessions = () => readMap(SESSION_KEY, (x) => typeof x === 'string' && isPrivateAddress(x));
 
-/** v2 sessions hold private addresses from the old message; nothing reads them, so don't keep the wallet link around. */
-export function dropLegacySessions() {
+/**
+ * Storage this build no longer reads (audit round 2, N5): v1 sessions and ledgers (no chain in the
+ * key, from before audit web M1) and v2 sessions (old sign message) on any chain. They link wallets
+ * to private addresses and balances, so they are removed rather than left behind. Current keys
+ * (ledgers velum:demo:v2:*, sessions v3, signer and fingerprint records) are kept.
+ */
+export const isLegacyKey = (k: string) => k === 'velum:session:v1' || k.startsWith('velum:demo:v1:') || k.startsWith('velum:session:v2:');
+
+export function dropLegacyStorage() {
   try {
-    localStorage.removeItem(`velum:session:v2:${CHAIN.id}`);
+    const old: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && isLegacyKey(k)) old.push(k);
+    }
+    old.forEach((k) => localStorage.removeItem(k));
   } catch {
     /* ignore */
   }
@@ -304,6 +339,23 @@ export function markSignerVerified(addr: string) {
     localStorage.setItem(SIGNER_KEY, JSON.stringify({ ...readMap(SIGNER_KEY, (x) => x === '1'), [addr.toLowerCase()]: '1' }));
   } catch {
     /* ignore: the check simply runs again next time */
+  }
+}
+
+/**
+ * Fingerprint of the private account each wallet opened in this browser (lib/account.ts), kept
+ * across disconnects so a later signature that opens a different account can be flagged.
+ */
+export function recallAccountFingerprint(addr: string): string | null {
+  return readMap(ACCT_KEY, (x) => typeof x === 'string' && /^[0-9a-f]{32}$/.test(x))[addr.toLowerCase()] ?? null;
+}
+
+export function rememberAccountFingerprint(addr: string, fp: string) {
+  try {
+    const all = readMap(ACCT_KEY, (x) => typeof x === 'string' && /^[0-9a-f]{32}$/.test(x));
+    localStorage.setItem(ACCT_KEY, JSON.stringify({ ...all, [addr.toLowerCase()]: fp }));
+  } catch {
+    /* ignore: the check simply has nothing to compare against next time */
   }
 }
 

@@ -7,8 +7,9 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "lint": "next lint --dir app --dir components --dir lib",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "lint": "next lint --dir app --dir components --dir lib --dir tests",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tanstack/react-query": "5.107.1",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
-    "eslint-config-next": "14.2.35"
+    "eslint-config-next": "14.2.35",
+    "vitest": "3.2.7"
   }
 }

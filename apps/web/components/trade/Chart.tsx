@@ -251,6 +251,8 @@ export function Chart({ sym }: { sym: string }) {
     const list = candles.current;
     const L = list[list.length - 1];
     if (!L) return;
+    // No live price: the stored value is not data (it may be the config seed), so don't draw it.
+    if (mk(sym).noData) return draw();
     const p = mk(sym).priceNum;
     L.c = p;
     L.h = Math.max(L.h, p);

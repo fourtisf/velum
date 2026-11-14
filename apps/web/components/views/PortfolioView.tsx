@@ -1,13 +1,13 @@
 'use client';
-import { CHAIN, IS_MAINNET, getMarket, isMarketSymbol } from '@velum/config';
+import { CHAIN, getMarket, isMarketSymbol } from '@velum/config';
 import type { Wad } from '@velum/math';
 import Link from 'next/link';
 import { privTotal, valueOf } from '@/lib/calc';
-import { dp, fmt, usd } from '@/lib/format';
+import { dp, fmt, usdOrDash } from '@/lib/format';
 import { usePublicBalances } from '@/lib/balances';
-import { tokPx, useMarkets } from '@/lib/markets';
+import { tokPx, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
-import { COPY } from '@/lib/copy';
+import { COPY, SIM } from '@/lib/copy';
 import { I } from '../icons';
 import { ActList, PosTable } from '../trade/Positions';
 import { Av, Pv, Px } from '../ui';
@@ -17,8 +17,8 @@ const tokName = (t: string) => (t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? '
 const ORDER = ['ETH', 'USDG', 'TSLA', 'AMZN', 'PLTR', 'NVDA', 'NFLX', 'AMD', 'AAPL', 'META', 'MSFT', 'COIN'];
 
 function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
-  const unpriced = IS_MAINNET && t === 'ETH';
-  const v = unpriced ? '—' : usd(valueOf(t, amt));
+  // No live price (or ETH on mainnet): a dash, never a value from a seed or stale price (audit round 2, M4).
+  const v = usdOrDash(valueOf(t, amt));
   return (
     <tr>
       <td>
@@ -31,7 +31,7 @@ function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
         </div>
       </td>
       <td className="r num">{pub ? fmt(amt, dp(t)) : <Pv>{fmt(amt, dp(t))}</Pv>}</td>
-      {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{unpriced ? '—' : usd(tokPx(t))}</td>}
+      {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usdOrDash(tokPx(t))}</td>}
       <td className="r num">{pub ? v : <Pv>{v}</Pv>}</td>
     </tr>
   );
@@ -65,7 +65,7 @@ const head = (
 );
 
 export function PortfolioView() {
-  useMarkets((s) => s.tick);
+  usePriceTick();
   const s = useApp();
   const pub = usePublicBalances(s.account?.addr);
 
@@ -104,7 +104,7 @@ export function PortfolioView() {
       <div className="vhead">
         <div>
           <h1 className="vtitle">Portfolio</h1>
-          <p className="vsub">Everything below is decrypted on this device only.</p>
+          <p className="vsub">{SIM.portfolioSub}</p>
         </div>
       </div>
       <div className="pf">
@@ -113,7 +113,7 @@ export function PortfolioView() {
             <span className="muted" style={{ fontSize: 13.5 }}>
               Private balance
             </span>
-            <div className="pf-big num pv">{usd(privTotal(ledger))}</div>
+            <div className="pf-big num pv">{usdOrDash(privTotal(ledger))}</div>
             <div className="pf-sub">
               <span className="paddr">
                 <Pv>{account.paddr.slice(0, 12) + '…' + account.paddr.slice(-6)}</Pv>

@@ -35,6 +35,72 @@ export const COPY = {
   switchTo: `Switch to ${CHAIN.label}`,
 } as const;
 
+/**
+ * In-app copy around simulated actions (audit round 2, M2). Testnet keeps the prototype's words,
+ * which describe the testnet demo's simulated chain view. Mainnet has no Velum contract, so nothing
+ * is ever on-chain there: no commitments, blocks, "visible onchain" rows or contract steps, and
+ * balances are a practice account, not decrypted notes. A function of the network so tests can
+ * check both; use SIM.
+ */
+export function simCopy(mainnet: boolean) {
+  const shortTo = (to: string) => to.slice(0, 6) + '…' + to.slice(-4);
+  return {
+    /** Account card badge. */
+    accountBadge: mainnet ? 'Simulated' : 'Encrypted',
+    portfolioSub: mainnet
+      ? 'Your private balance here is a simulated practice account, kept in this browser only. Your public wallet is real.'
+      : 'Everything below is decrypted on this device only.',
+    /** Mainnet: what the account card says instead of a commitment and block. */
+    nothingOnchain: 'Nothing is on-chain: demo trades are simulated',
+    /** The positions table's "Chain view" (simulated commitment and block) exists on testnet only. */
+    chainView: !mainnet,
+    /** A summary row about public visibility (Swap, Add liquidity): [label, value]. */
+    visibleRow: (value: string): [string, string] => (mainnet ? ['Demo', 'Simulated, nothing is sent onchain'] : ['Visible onchain', value]),
+    /** Flow dialog title: mainnet says up front that the action is simulated. */
+    flowTitle: (title: string) => (mainnet ? `Simulated: ${title}` : title),
+    /** The row every mainnet receipt ends with. */
+    receiptDemoRow: ['Demo', 'Simulated, nothing was sent onchain'] as [string, string],
+    moveText: (kind: 'shield' | 'unshield' | 'send') =>
+      ({
+        shield: mainnet
+          ? 'Add tokens from your public wallet to your practice balance. Nothing is sent: your tokens stay in your wallet.'
+          : 'Move tokens from your public wallet into your private balance.',
+        unshield: mainnet ? 'Take tokens out of your practice balance. Nothing is sent to any address.' : 'Move tokens from your private balance back to a public address.',
+        send: mainnet ? 'Try a private transfer. Nothing is sent, and the recipient gets nothing.' : 'Send to another private address. The amount and both parties stay hidden.',
+      })[kind],
+    /** The box under the shield / unshield / send form. */
+    moveNote: (kind: 'shield' | 'unshield' | 'send') =>
+      kind === 'send'
+        ? mainnet
+          ? 'Simulated: nothing is sent. Once Velum launches, nothing about a private transfer will be published in readable form.'
+          : 'Nothing about this transfer is published in readable form.'
+        : mainnet
+          ? 'Simulated: nothing is sent and your wallet is not touched. Once Velum launches, this step will be public: anyone will see the wallet, token, amount and time.'
+          : 'This step is public: anyone can see the wallet, token, amount and time. Vary amounts and wait between moves to make them harder to link.',
+    shieldSteps: (t: string) =>
+      mainnet
+        ? [
+            { t: `Checking your public ${t} balance`, d: 'Read only: no approval is asked of your wallet', ms: 600 },
+            { t: 'Simulating the deposit', d: 'Nothing is sent onchain', ms: 800 },
+            { t: 'Adding to your practice balance', d: 'Kept in this browser only', ms: 900 },
+          ]
+        : [
+            { t: `Approving ${t}`, d: 'Lets the Velum contract receive this token', ms: 600 },
+            { t: 'Sending public deposit', d: 'Visible onchain: wallet, token, amount, time', ms: 800 },
+            { t: 'Adding a note to your private balance', d: 'Usually within a block or two', ms: 900 },
+          ],
+    unshieldLast: (to: string) =>
+      mainnet
+        ? { t: 'Simulating the transfer', d: `To ${shortTo(to || '0x0000000000')}. Nothing is sent onchain`, ms: 700 }
+        : { t: 'Sending tokens to the public address', d: shortTo(to || '0x0000000000'), ms: 700 },
+    sendLast: mainnet ? { t: 'Simulating the private transfer', d: 'Nothing is sent; the recipient gets nothing', ms: 600 } : { t: 'Creating an encrypted note for the recipient', d: 'Only they can read it', ms: 600 },
+    shieldSub: mainnet ? 'Practice deposit, your tokens stay in your wallet' : 'Public deposit from your wallet',
+    unshieldSub: (to: string) => (mainnet ? `Practice withdrawal to ${shortTo(to)}` : `Public transfer to ${shortTo(to)}`),
+  };
+}
+
+export const SIM = simCopy(IS_MAINNET);
+
 /** Landing page copy. Testnet: verbatim from prototype/index.html. Mainnet: same facts as design, not claims. */
 const LANDING_TESTNET = {
   metaDescription: 'Velum is a private exchange for tokenized stocks. Spot and perps with balances, positions and P&L encrypted end to end.',

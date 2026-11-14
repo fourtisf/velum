@@ -451,3 +451,10 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 /* The chips' visually hidden names (.sr, position:absolute) must be clipped by the scrolling strip;
    without a positioned strip they widened the trade page to ~2,000 px on phones (not in the prototype). */
 .strip{position:relative}
+/* Mainnet price with no fresh data (audit round 2, M4): last value dimmed, marked stale. */
+.px-stale{color:var(--faint)}
+.px-stale .stale-tag{display:inline;margin-left:5px;font-family:var(--sans);font-size:11px;font-weight:500;letter-spacing:0;color:var(--down);vertical-align:middle}
+.demo-bar .stale-msg{color:var(--text);font-weight:500}
+/* Landing nav while connected at phone width (audit round 2, N6): the wallet button keeps only its
+   avatar so "Launch app" fits at 360 px. Desktop and the app nav are unchanged. */
+@media (max-width:480px){.nav-land .walletbtn{padding:0 5px}.nav-land .walletbtn .b{display:none}}

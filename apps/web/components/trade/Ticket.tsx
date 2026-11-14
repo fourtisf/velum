@@ -5,7 +5,7 @@ import { amountHint, amountInputProps } from '@/lib/amount';
 import { perpsCalc, presetSize, spotCalc } from '@/lib/calc';
 import { openPerps, spotTrade } from '@/lib/demo';
 import { dp, floorTo, fmt, fmtFloor } from '@/lib/format';
-import { useMarket, useMarkets } from '@/lib/markets';
+import { useLivePrice, useMarket, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 import { COPY, METRICS } from '@/lib/copy';
 import { I } from '../icons';
@@ -24,13 +24,16 @@ function SubmitButton({ b }: { b: Btn }) {
 }
 
 function PerpsTicket({ sym }: { sym: string }) {
-  useMarkets((s) => s.tick);
+  usePriceTick();
   const m = useMarket(sym);
+  const price = useLivePrice(sym);
   const s = useApp();
   const connected = !!s.account;
   const have = bal(s.ledger.priv, 'USDG');
-  const c = perpsCalc({ sel: sym, side: s.side, lev: s.lev, size: s.size }, have);
+  const c = perpsCalc({ sel: sym, side: s.side, lev: s.lev, size: s.size }, have, price);
   const live = isLive(sym);
+  /** Price-derived figures show a dash without a live price (audit round 2, M4). */
+  const px = (v: string) => (c.priced ? v : '—');
   const bad = amountHint(s.size);
   let hint = bad;
   let b: Btn;
@@ -38,7 +41,7 @@ function PerpsTicket({ sym }: { sym: string }) {
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
-  } else if (m.noData) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
+  } else if (!c.priced) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
   else if (bad) b = { label: 'Enter a valid size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'no_size') b = { label: 'Enter a size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'insufficient') {
@@ -100,13 +103,11 @@ function PerpsTicket({ sym }: { sym: string }) {
       <div className="sumbox">
         <div>
           <span>Entry price</span>
-          <b>{fmt(c.entry)}</b>
+          <b>{px(fmt(c.entry))}</b>
         </div>
         <div>
           <span>Position</span>
-          <b>
-            {fmt(c.qty, 4)} {sym}
-          </b>
+          <b>{px(`${fmt(c.qty, 4)} ${sym}`)}</b>
         </div>
         <div>
           <span>Margin</span>
@@ -114,7 +115,7 @@ function PerpsTicket({ sym }: { sym: string }) {
         </div>
         <div>
           <span>Liquidation price</span>
-          <b>{c.liq ? fmt(c.liq) : 'None'}</b>
+          <b>{px(c.liq ? fmt(c.liq) : 'None')}</b>
         </div>
         <div>
           <span>Fee</span>
@@ -138,11 +139,12 @@ function PerpsTicket({ sym }: { sym: string }) {
 }
 
 function SpotTicket({ sym }: { sym: string }) {
-  useMarkets((s) => s.tick);
-  const m = useMarket(sym);
+  usePriceTick();
+  const price = useLivePrice(sym);
   const s = useApp();
   const connected = !!s.account;
-  const c = spotCalc({ sel: sym, spotSide: s.spotSide, spotAmt: s.spotAmt, slip: s.slip }, s.ledger.priv);
+  const c = spotCalc({ sel: sym, spotSide: s.spotSide, spotAmt: s.spotAmt, slip: s.slip }, s.ledger.priv, price);
+  const px = (v: string) => (c.priced ? v : '—');
   const live = isLive(sym);
   const bad = amountHint(s.spotAmt);
   let hint = bad;
@@ -151,7 +153,7 @@ function SpotTicket({ sym }: { sym: string }) {
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
-  } else if (m.noData) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
+  } else if (!c.priced) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
   else if (bad) b = { label: 'Enter a valid amount', cls: 'btn-dark', disabled: true };
   else if (c.amt <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.amt > c.have) {
@@ -195,7 +197,7 @@ function SpotTicket({ sym }: { sym: string }) {
         <span>You get (est.)</span>
       </div>
       <div className="inp">
-        <output aria-label="You get (est.)">{c.out > 0n ? fmt(c.out, dp(c.tout)) : '0.00'}</output>
+        <output aria-label="You get (est.)">{px(c.out > 0n ? fmt(c.out, dp(c.tout)) : '0.00')}</output>
         <span className="unit">{c.tout}</span>
       </div>
       <div className="fl">
@@ -211,17 +213,15 @@ function SpotTicket({ sym }: { sym: string }) {
       <div className="sumbox">
         <div>
           <span>Price</span>
-          <b>{fmt(m.price)}</b>
+          <b>{c.price === null ? '—' : fmt(c.price)}</b>
         </div>
         <div>
           <span>Pool fee (0.30%)</span>
-          <b>{fmt(c.feeAmt)} USDG</b>
+          <b>{c.priced || s.spotSide === 'buy' ? `${fmt(c.feeAmt)} USDG` : '—'}</b>
         </div>
         <div>
           <span>Minimum you get</span>
-          <b>
-            {fmtFloor(c.min, dp(c.tout))} {c.tout}
-          </b>
+          <b>{px(`${fmtFloor(c.min, dp(c.tout))} ${c.tout}`)}</b>
         </div>
         <div>
           <span>Liquidation</span>

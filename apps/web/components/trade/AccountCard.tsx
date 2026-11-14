@@ -1,11 +1,12 @@
 'use client';
 import { inPos, privTotal } from '@/lib/calc';
-import { fmt, shortH, usd } from '@/lib/format';
-import { useMarkets } from '@/lib/markets';
+import { SIM } from '@/lib/copy';
+import { fmt, shortH, usdOrDash } from '@/lib/format';
+import { usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 
 export function AccountCard() {
-  useMarkets((s) => s.tick);
+  usePriceTick();
   const s = useApp();
   if (!s.account)
     return (
@@ -26,26 +27,33 @@ export function AccountCard() {
         Private account{' '}
         <span className="badge acc">
           <span className="d" />
-          Encrypted
+          {SIM.accountBadge}
         </span>
       </h2>
-      <div className="bigv num pv">{usd(privTotal(s.ledger))}</div>
+      <div className="bigv num pv">{usdOrDash(privTotal(s.ledger))}</div>
       <div className="r">
         <span>Free balance</span>
         <b className="num pv">{fmt(bal(s.ledger.priv, 'USDG'))} USDG</b>
       </div>
       <div className="r">
         <span>In positions</span>
-        <b className="num pv">{usd(inPos(s.ledger))}</b>
+        <b className="num pv">{usdOrDash(inPos(s.ledger))}</b>
       </div>
-      <div className="lastc">
-        Last thing the public chain saw<b>{lc ? lc.what : 'Nothing yet'}</b>
-        {lc ? (
-          <code>
-            {shortH(lc.commit)}, block {fmt(lc.block, 0)}
-          </code>
-        ) : null}
-      </div>
+      {SIM.chainView ? (
+        <div className="lastc">
+          Last thing the public chain saw<b>{lc ? lc.what : 'Nothing yet'}</b>
+          {lc ? (
+            <code>
+              {shortH(lc.commit)}, block {fmt(lc.block, 0)}
+            </code>
+          ) : null}
+        </div>
+      ) : (
+        // Mainnet: no Velum contract exists, so there is no commitment or block to show (audit round 2, M2).
+        <div className="lastc">
+          Public chain<b>{SIM.nothingOnchain}</b>
+        </div>
+      )}
     </aside>
   );
 }

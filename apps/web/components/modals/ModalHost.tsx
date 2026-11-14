@@ -1,20 +1,34 @@
 'use client';
-import { CHAIN, IS_MAINNET, getMarket } from '@velum/config';
-import type { Wad } from '@velum/math';
+import { CHAIN, getMarket } from '@velum/config';
+import { WAD, type Wad } from '@velum/math';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { UserRejectedRequestError, type Hex } from 'viem';
+import { UserRejectedRequestError, type Address, type Hex } from 'viem';
 import { useAccount, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
 import { signMessage } from 'wagmi/actions';
-import { buildSignMessage, checkPublicAddress, derivePrivateAddress, isPrivateAddress } from '@/lib/account';
+import { accountFingerprint, buildSignMessage, checkPublicAddress, checkSignature, derivePrivateAddress, isPrivateAddress } from '@/lib/account';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { usePublicBalances } from '@/lib/balances';
-import { lpGo, moveGo, type MoveKind } from '@/lib/demo';
+import { lpGo, moveGo, receiptRows, type MoveKind } from '@/lib/demo';
 import { dp, floorTo, fmt, shortH } from '@/lib/format';
-import { COPY } from '@/lib/copy';
-import { mk } from '@/lib/markets';
+import { COPY, SIM } from '@/lib/copy';
+import { useLivePrice } from '@/lib/markets';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
-import { bal, emptyLedger, forgetSession, loadLedger, markSignerVerified, rememberSession, seedLedger, signerVerified, useApp, type FlowSpec, type ModalState } from '@/lib/store';
+import {
+  bal,
+  emptyLedger,
+  forgetSession,
+  loadLedger,
+  markSignerVerified,
+  recallAccountFingerprint,
+  rememberAccountFingerprint,
+  rememberSession,
+  seedLedger,
+  signerVerified,
+  useApp,
+  type FlowSpec,
+  type ModalState,
+} from '@/lib/store';
 import { I } from '../icons';
 import { Pv } from '../ui';
 
@@ -192,6 +206,16 @@ const SIGN_LABEL: Record<SignStage, string> = {
   second: 'Sign once more to check your wallet…',
   deriving: 'Creating your private keys…',
 };
+/** A pending wallet request can be abandoned after this long (audit round 2, N7). */
+const CANCEL_AFTER_MS = 5000;
+
+/** Why a wallet can't open a private account (audit web L8; round 2, N1). */
+type Refusal = 'unstable' | 'format' | 'signer';
+const REFUSAL: Record<Refusal, string> = {
+  unstable: "This wallet signed the same message two different ways, so it would open a different private account every time. It can't open a private account yet.",
+  format: "This wallet didn't return a regular signature from a private key, so it can't open a private account yet.",
+  signer: "This signature wasn't made by the connected wallet's own key, so it can't open a private account yet.",
+};
 
 function SignModal() {
   const { address } = useAccount();
@@ -200,13 +224,45 @@ function SignModal() {
   const s = useApp();
   const [stage, setStage] = useState<SignStage>('idle');
   const [err, setErr] = useState('');
-  const [unstable, setUnstable] = useState(false);
+  const [refused, setRefused] = useState<Refusal | null>(null);
+  const [changed, setChanged] = useState<{ wallet: Address; paddr: string; fp: string } | null>(null);
+  const [slow, setSlow] = useState(false);
+  // Each attempt has an id; a wallet answer that arrives after Cancel (or after this dialog closed) is dropped.
+  const attempt = useRef(0);
   const busy = stage !== 'idle';
+  const waiting = stage === 'first' || stage === 'second';
+
+  useEffect(() => {
+    setSlow(false);
+    if (!waiting) return;
+    const t = setTimeout(() => setSlow(true), CANCEL_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [waiting, stage]);
+  useEffect(
+    () => () => {
+      attempt.current++;
+    },
+    [],
+  );
+
+  const finish = (wallet: Address, paddr: string, fp: string) => {
+    rememberAccountFingerprint(wallet, fp);
+    rememberSession(wallet, paddr);
+    s.set({ account: { addr: wallet, paddr }, ledger: loadLedger(wallet) ?? seedLedger(), modal: null, modalLocked: false });
+    s.toast('Wallet connected');
+  };
+  const stop = () => {
+    setStage('idle');
+    s.set({ modalLocked: false });
+  };
+
   const sign = async () => {
     if (!address) {
       s.openModal({ kind: 'connect' });
       return;
     }
+    const my = ++attempt.current;
+    const live = () => attempt.current === my;
     setErr('');
     setStage('first');
     s.set({ modalLocked: true });
@@ -214,18 +270,23 @@ function SignModal() {
       // wagmi's core action, not the useSignMessage hook: the signature never enters the TanStack
       // mutation cache, and lives only in this function until it is hashed (audit web L8).
       const message = buildSignMessage(address);
-      let sig: Hex | null = await signMessage(config, { message, account: address });
+      const first = await checkSignature(await signMessage(config, { message, account: address }), message, address);
+      if (!live()) return;
+      if (!first.ok) {
+        setRefused(first.reason);
+        return stop();
+      }
+      let sig: Hex | null = first.sig;
       if (!signerVerified(address)) {
         // First time in this browser: sign again and compare. A wallet whose signatures differ
         // (passkey and many smart-contract wallets) would silently open a new account every time.
         setStage('second');
-        const again = await signMessage(config, { message, account: address });
-        if (again.toLowerCase() !== sig.toLowerCase()) {
+        const again = await checkSignature(await signMessage(config, { message, account: address }), message, address);
+        if (!live()) return;
+        if (!again.ok || again.sig !== sig) {
           sig = null;
-          setUnstable(true);
-          setStage('idle');
-          s.set({ modalLocked: false });
-          return;
+          setRefused(again.ok ? 'unstable' : again.reason);
+          return stop();
         }
         markSignerVerified(address);
       }
@@ -233,30 +294,63 @@ function SignModal() {
       const paddr = derivePrivateAddress(sig);
       sig = null;
       await sleep(700);
-      rememberSession(address, paddr);
-      s.set({ account: { addr: address, paddr }, ledger: loadLedger(address) ?? seedLedger(), modal: null, modalLocked: false });
-      s.toast('Wallet connected');
+      if (!live()) return;
+      const fp = accountFingerprint(CHAIN.id, address, paddr);
+      const before = recallAccountFingerprint(address);
+      if (before && before !== fp) {
+        // Same wallet, different account than last time in this browser: say so before opening it.
+        setChanged({ wallet: address, paddr, fp });
+        return stop();
+      }
+      finish(address, paddr, fp);
     } catch (e) {
+      if (!live()) return;
       setErr(errText(e));
-      setStage('idle');
-      s.set({ modalLocked: false });
+      stop();
     }
+  };
+  const cancel = () => {
+    attempt.current++;
+    setErr('Cancelled. If your wallet still shows the request, reject it there.');
+    stop();
   };
   const switchWallet = async () => {
     await disconnectAsync().catch(() => undefined);
     s.openModal({ kind: 'connect' });
   };
-  if (unstable)
+  if (refused)
     return (
       <>
         <Head title="Open your private account" />
-        <p className="m-text">This wallet signed the same message two different ways, so it would open a different private account every time. It can&apos;t open a private account yet.</p>
+        <p className="m-text">{REFUSAL[refused]}</p>
         <div className="boxnote warn">
           <I.info />
           <span>Passkey and smart-contract wallets often sign this way. Support for them is planned for a later release. For now, use a wallet with a regular key, such as a browser extension.</span>
         </div>
         <button className="btn btn-white btn-block" onClick={switchWallet}>
           Use another wallet
+        </button>
+      </>
+    );
+  if (changed)
+    return (
+      <>
+        <Head title="A different private account" />
+        <p className="m-text">
+          This signature opens a different private account than this wallet opened before in this browser. That happens when a wallet changes how it signs. Once Velum holds funds, the new account
+          would not see the old one&apos;s balance.
+        </p>
+        <div className="receipt">
+          <div>
+            <span>This signature opens</span>
+            <b>{changed.paddr.slice(0, 12) + '…' + changed.paddr.slice(-6)}</b>
+          </div>
+        </div>
+        <button className="btn btn-white btn-block" style={{ marginTop: 12 }} onClick={() => finish(changed.wallet, changed.paddr, changed.fp)}>
+          Open this account
+        </button>
+        <button className="btn btn-dark btn-block" style={{ marginTop: 8 }} onClick={() => s.closeModal(true)}>
+          Cancel
         </button>
       </>
     );
@@ -275,6 +369,11 @@ function SignModal() {
       <button className="btn btn-white btn-block" disabled={busy} onClick={sign}>
         {SIGN_LABEL[stage]}
       </button>
+      {waiting && slow ? (
+        <button className="btn btn-dark btn-block" style={{ marginTop: 8 }} onClick={cancel}>
+          Cancel
+        </button>
+      ) : null}
       <p className="hint" role="alert">
         {err}
       </p>
@@ -361,13 +460,10 @@ function MoveModal({ kind }: { kind: MoveKind }) {
   const bad = amountHint(amt);
   const over = a > have;
   const title = { shield: 'Shield tokens', unshield: 'Unshield tokens', send: 'Send privately' }[kind];
-  const text = {
-    shield: 'Move tokens from your public wallet into your private balance.',
-    unshield: 'Move tokens from your private balance back to a public address.',
-    send: 'Send to another private address. The amount and both parties stay hidden.',
-  }[kind];
+  const text = SIM.moveText(kind);
   const go = () => {
-    const dest = to.trim();
+    // Private addresses are lowercase hex; accept a pasted upper-case copy, then check the exact format.
+    const dest = kind === 'send' ? to.trim().toLowerCase() : to.trim();
     if (kind === 'send' && !isPrivateAddress(dest)) return setHint('Enter a private address that starts with velum1.');
     if (kind === 'unshield') {
       const check = checkPublicAddress(dest);
@@ -452,11 +548,7 @@ function MoveModal({ kind }: { kind: MoveKind }) {
       ) : null}
       <div className={`boxnote ${kind === 'send' ? '' : 'warn'}`}>
         <I.info />
-        <span>
-          {kind === 'send'
-            ? 'Nothing about this transfer is published in readable form.'
-            : 'This step is public: anyone can see the wallet, token, amount and time. Vary amounts and wait between moves to make them harder to link.'}
-        </span>
+        <span>{SIM.moveNote(kind)}</span>
       </div>
       <button className="btn btn-white btn-block" disabled={!t || !!bad || a <= 0n || over} onClick={go}>
         {{ shield: 'Shield', unshield: 'Unshield', send: 'Send' }[kind]} {t}
@@ -475,8 +567,10 @@ function LpAddModal({ sym }: { sym: string }) {
   const a = amountOrZero(amt);
   const bad = amountHint(amt);
   const have = bal(s.ledger.priv, 'USDG');
-  const price = mk(sym).price;
+  // The tradable price only; without one nothing can be added (audit round 2, M4).
+  const price = useLivePrice(sym);
   const half = a / 2n;
+  const [visK, visV] = SIM.visibleRow('The pool changed');
   return (
     <>
       <Head title={`Add liquidity to ${sym}`} />
@@ -498,24 +592,22 @@ function LpAddModal({ sym }: { sym: string }) {
         </div>
         <div>
           <span>Added as {sym}</span>
-          <b>
-            {fmt(price > 0n ? (half * 10n ** 18n) / price : 0n, 4)} {sym}
-          </b>
+          <b>{price ? `${fmt((half * WAD) / price, 4)} ${sym}` : '—'}</b>
         </div>
         <div>
           <span>You earn</span>
           <b>0.30% of swaps</b>
         </div>
         <div>
-          <span>Visible onchain</span>
-          <b>The pool changed</b>
+          <span>{visK}</span>
+          <b>{visV}</b>
         </div>
       </div>
-      <button className="btn btn-white btn-block" disabled={!!bad || a <= 0n || a > have || !getMarket(sym)} onClick={() => lpGo(sym, a)}>
+      <button className="btn btn-white btn-block" disabled={!!bad || a <= 0n || a > have || !getMarket(sym) || price === null} onClick={() => lpGo(sym, a)}>
         Add liquidity
       </button>
       <p className="hint" id="lp-hint">
-        {bad || (a > have ? `You have ${fmt(have)} USDG available.` : '')}
+        {bad || (price === null ? `No live price for ${sym} right now, so liquidity can't be added.` : a > have ? `You have ${fmt(have)} USDG available.` : '')}
       </p>
     </>
   );
@@ -562,13 +654,9 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
       }
       const r = flow.done();
       // On mainnet, say plainly on every receipt that nothing touched the chain.
-      setResult({
-        rows: IS_MAINNET
-          ? [...r.rows.filter(([k]) => k !== 'Visible onchain'), ['Demo', 'Simulated, nothing was sent onchain']]
-          : r.rows,
-      });
+      setResult({ rows: receiptRows(r.rows) });
       set({ modalLocked: false });
-      toast(r.toast);
+      toast(r.toast, r.warn);
     })();
     return () => {
       cancelled = true;
@@ -580,7 +668,7 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
   return (
     <>
       <div className="m-head">
-        <h3 id="m-title">{IS_MAINNET ? `Simulated: ${flow.title}` : flow.title}</h3>
+        <h3 id="m-title">{SIM.flowTitle(flow.title)}</h3>
       </div>
       <ol className="flow">
         {flow.steps.map((st, i) => {
@@ -638,6 +726,21 @@ function Content({ m }: { m: ModalState }) {
 }
 
 const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+/** Wallet SDK overlays that draw above this host (Reown AppKit / WalletConnect QR modal, z-index 999). */
+const OVERLAY_TAGS = /^(W3M|APPKIT|WCM)-MODAL$/;
+
+/**
+ * The wallet overlay currently open on top of our dialog, if any (audit round 2, N4). AppKit keeps
+ * its element in the page and toggles an `open` class; the legacy WalletConnect Modal marks its
+ * overlay `.wcm-active` inside its shadow root.
+ */
+function walletOverlay(): HTMLElement | null {
+  const el = document.querySelector<HTMLElement>('w3m-modal.open, appkit-modal.open');
+  if (el) return el;
+  const wcm = document.querySelector<HTMLElement>('wcm-modal');
+  return wcm?.shadowRoot?.querySelector('.wcm-active') ? wcm : null;
+}
 const focusables = (root: HTMLElement) => Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.getClientRects().length > 0);
 
 /** Where focus goes back to on close: the trigger, or the nearest part of the page that still exists. */
@@ -675,7 +778,9 @@ function restoreFocus(r: Restore) {
  * clicks or screen reader access), Tab cycles inside the dialog, the dialog itself holds focus
  * when it has nothing focusable (a running flow), and focus returns to the trigger on close.
  * Only the page's own elements are made inert, not third-party overlays such as WalletConnect's
- * QR modal, which are appended after this host and must stay usable on top of it.
+ * QR modal, which are appended after this host and must stay usable on top of it. While such an
+ * overlay is open the trap is suspended: focus moves to it, Tab and Escape are left to it (Escape
+ * closes only the topmost layer), and focus comes back to our dialog when it closes (round 2, N4).
  */
 export function ModalHost() {
   const modal = useApp((s) => s.modal);
@@ -689,7 +794,7 @@ export function ModalHost() {
   const path = usePathname();
   const inertPage = () => {
     for (let el = bg.current?.previousElementSibling; el; el = el.previousElementSibling) {
-      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.hasAttribute('inert')) continue;
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || OVERLAY_TAGS.test(el.tagName) || el.hasAttribute('inert')) continue;
       el.setAttribute('inert', '');
       inerted.current.add(el);
     }
@@ -720,10 +825,43 @@ export function ModalHost() {
     (first && !first.matches(':disabled') ? first : el).focus({ preventScroll: true });
   }, [key]);
 
+  // Hand focus to a wallet overlay when it opens above us, and take it back when it closes. While it
+  // is open our own dialog is inert too, so Tab can only reach the overlay (not our dialog behind it).
+  useEffect(() => {
+    if (!open) return;
+    const layer = bg.current;
+    let handed: HTMLElement | null = null;
+    const t = setInterval(() => {
+      const o = walletOverlay();
+      if (o && handed !== o) {
+        const card = o.shadowRoot?.querySelector<HTMLElement>('wui-card, [role="alertdialog"], [role="dialog"]');
+        if (!card) return; // not rendered yet: try again on the next tick
+        handed = o;
+        if (!o.contains(document.activeElement) && document.activeElement !== o) card.focus({ preventScroll: true });
+        layer?.setAttribute('inert', '');
+      } else if (!o && handed) {
+        handed = null;
+        layer?.removeAttribute('inert');
+        const el = box.current;
+        const a = document.activeElement;
+        if (el && (!a || a === document.body || !el.contains(a))) {
+          const first = focusables(el)[0];
+          (first ?? el).focus({ preventScroll: true });
+        }
+      }
+    }, 200);
+    return () => {
+      clearInterval(t);
+      layer?.removeAttribute('inert');
+    };
+  }, [open]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = box.current;
       if (!el) return;
+      // A wallet overlay is on top: its own handlers own Tab and Escape (Escape closes only it).
+      if (walletOverlay()) return;
       const active = document.activeElement;
       // Focus is in a third-party overlay on top of ours (e.g. WalletConnect's QR modal): leave it alone.
       if (active && active !== document.body && !el.contains(active)) return;
@@ -745,7 +883,7 @@ export function ModalHost() {
     // If the focused control disappears or is disabled mid-step, keep focus on the dialog, not the page.
     const onFocusOut = (e: FocusEvent) => {
       const el = box.current;
-      if (!el || e.relatedTarget) return;
+      if (!el || e.relatedTarget || walletOverlay()) return;
       setTimeout(() => {
         if (box.current === el && (document.activeElement === document.body || document.activeElement === null)) el.focus({ preventScroll: true });
       }, 0);

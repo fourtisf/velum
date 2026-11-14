@@ -14,7 +14,7 @@ demonstrate open findings and must be inverted when fixed).
 |---|---|---|---|---|---|
 | Contracts (`contracts/`) | 1 | 1 | 6 | 8 | F-01–F-08, F-11, F-12, I-1; F-10, F-13 mitigated; F-09 accepted. Round 2: R2-01–R2-05 fixed, R2-06/R2-07 documented, F-07 completed |
 | Backend + deploy (`apps/api`, `apps/workers`, `deploy/`) | 0 | 0 | 6 | 14 | All (M1–M6, L1–L14); existing servers need the one-time upgrade in docs/05 |
-| Frontend (`apps/web`) | 0 | 0 | 5 | 14 | M1–M4, M5 (mitigated), L1–L14, I2, I4–I6, I9 |
+| Frontend (`apps/web`) | 0 | 0 | 7 | 20 | M1–M4, M5 (mitigated), L1–L14, I2, I4–I6, I9. Round 2: R2-M2, R2-M4, R2-N1, R2-N2, R2-N4–N7, R2-N10 fixed; R2-N3 (CSP) owned by deploy |
 
 **Verdict (after the fix round):** every Critical, High and Medium finding is fixed or mitigated, each with a
 regression test (`test_Fxx_fixed_*` for contracts; vitest/e2e for backend and web). Contracts are still **not
@@ -84,14 +84,14 @@ Second contracts pass (`contracts/test/audit/Round2PoC.t.sol`; each round-2 proo
 | ID | Sev | Finding | Status |
 |---|---|---|---|
 | M1 | Medium | Demo ledger/session reused across networks | **Fixed** (`96c4864`): keys include chain ID |
-| M2 | Medium | Mainnet showed a fabricated shield history and "visible onchain" claims | **Fixed**: labelled practice balance; flows, receipts, activity marked "Simulated" |
+| M2 | Medium | Mainnet showed a fabricated shield history and "visible onchain" claims | **Fixed** (completed by R2-M2): labelled practice balance; flows, receipts, activity marked "Simulated" |
 | M3 | Medium | `NEXT_PUBLIC_DEMO_MODE=false` hid notices while still simulating | **Fixed**: notices always on in Phase 2 |
-| M4 | Medium | Mainnet fell back to simulated prices labelled "live" | **Fixed**: no fallback on mainnet, dashes and disabled trading without a price |
+| M4 | Medium | Mainnet fell back to simulated prices labelled "live" | **Fixed** (completed by R2-M4): no fallback on mainnet, dashes and disabled trading without a price |
 | M5 | Medium | Next 14.2.35 is end-of-life (critical advisories fixed only in 15.5.x) | **Mitigated**: image optimizer off and refused in Nginx, Upgrade headers no longer forwarded. **Upgrade to Next 15.5.x needs sign-off** (stack change, CLAUDE.md §7) |
 | L1, L2, L3, L5, L7, L10 | Low | Close/liquidation double pay, flows after wallet switch, `1e400` crash, double wallet prompt, leverage not clamped, WalletConnect site URL | **Fixed** |
-| L4 | Low | No focus trap in modals | **Fixed**: Tab cycles inside the dialog, the page behind is `inert`, a running flow focuses the dialog, focus returns to the trigger (or its nearest surviving container) |
+| L4 | Low | No focus trap in modals | **Fixed** (completed by R2-N4): Tab cycles inside the dialog, the page behind is `inert`, a running flow focuses the dialog, focus returns to the trigger (or its nearest surviving container) |
 | L6 | Low | Stored demo ledger not validated | **Fixed**: field-by-field decoder (`lib/ledger-codec.ts`), bigint only for money fields, bad entries dropped, unparsable data removed; `app/global-error.tsx` added |
-| L8 | Low | Sign message not SIWE-shaped | **Fixed**: EIP-4361 message (host, origin, chain ID, fixed statement, deterministic nonce and Issued At), two signatures compared on first open (unstable signers refused with an explanation), domain-separated display address, signature kept out of the TanStack cache |
+| L8 | Low | Sign message not SIWE-shaped | **Fixed** (completed by R2-N1, R2-N2): EIP-4361 message (host, origin, chain ID, fixed statement, deterministic nonce and Issued At), two signatures compared on first open (unstable signers refused with an explanation), domain-separated display address, signature kept out of the TanStack cache |
 | L9 | Low | No CSP/HSTS | **Fixed**: app sends nosniff, Referrer-Policy, Permissions-Policy, X-Frame-Options DENY (`next.config.mjs`); CSP/HSTS in Nginx (backend L10); no inline handlers |
 | L11 | Low | Loose number parsing | **Fixed**: strict web-side parser (`lib/amount.ts`) on every amount field: plain decimals, ≤ 15 integer / 18 decimal digits, inline hint, 34-character cap |
 | L12 | Low | Custom RPC not chain-checked | **Fixed**: https only (loopback http for dev), one `eth_chainId` check at startup with fallback to the official RPC and a warning; wallets only ever get the official RPC |
@@ -99,6 +99,23 @@ Second contracts pass (`contracts/test/audit/Round2PoC.t.sol`; each round-2 proo
 | L14 | Low | Third-party logos vs spec | **Fixed**: logos kept at the owner's request; attribution corrected (Simple Icons is CC0, the logos are trademarks) and the spec deviation noted in `lib/logos.ts` |
 | I2, I4, I5, I6, I9 | Info | No address checksum, no swap focus ring, "Minimum you get" rounded up, Max preset above the 100-token cap, LP removal valued at click | **Fixed**. I7 (per-connector imports) not applicable: wagmi 2.19 has no connector subpaths |
 | — | Low | Trade page 2,000 px wide on phones (chips' hidden labels escaped the scrolling strip) | **Fixed**: `.strip` positioned; no visual change |
+
+Second pass (round 2, web). Regressions: `pnpm --filter @velum/web test` (vitest, `apps/web/tests/`) and Playwright runs through
+an Nginx-equivalent CSP front end with a mock wallet, RPC and API on production builds (mainnet: 98 checks; default/testnet: 24).
+
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| R2-M2 | Medium | Mainnet still fabricated on-chain evidence: random commitment and block in the account card ("Last thing the public chain saw") and Chain view, "Encrypted" badge, "decrypted on this device", Velum-contract steps, "Visible onchain" rows | **Fixed**: on mainnet `chainSaw` is a no-op and opens record no chain event (positions carry a zero placeholder; a stored `lastChain` is dropped on load); the account card says "Nothing is on-chain: demo trades are simulated"; Chain view hidden; badge "Simulated" and a practice-account subtitle; shield/unshield/send notes, steps and the Swap / Add-liquidity summary rows are network-aware (`SIM` in `lib/copy.ts`). Testnet copy unchanged (verbatim prototype). `tests/simulated.{mainnet,testnet}.test.ts` run every flow; Playwright on a mainnet build finds none of the fabricated strings after shield, open, close, spot, swap, LP, offer, unshield and send |
+| R2-M4 | Medium | The seed price drove money logic when the live price was missing: with API `source: null` the config seed was stored as the price and used for liquidation, totals, swaps and LP; nothing went stale when the API went down | **Fixed**: one rule (`tradablePrice` / `livePrice` in `lib/markets.ts`): no price without live data; on mainnet also none when the API marks it stale, after 2 failed polls or 60 s without a successful poll (the feed records `lastOkAt`). The seed is never stored as a price. Liquidation skips unpriced markets; open, close, spot, swap and add-liquidity re-check at completion and cancel ("Price unavailable", nothing applied); the ticket, Close, Swap and Add liquidity disable; totals, values and P&L show "—"; the banner says live prices are unavailable and trading is paused; price cells keep the last price marked "stale". Proven in `tests/prices.{mainnet,testnet}.test.ts` (incl. `startMarketFeed` with a mocked API) and on a mainnet build with the API down from page load, going down mid-session, and each action losing its price mid-flow |
+| R2-N1 | Low | Any wallet output opened an account: empty or constant signatures shared one account; v 0/1 or high-s encodings of one key opened different accounts; no warning when a wallet's account changes | **Fixed**: only a 65-byte ECDSA signature that recovers (`recoverMessageAddress`) to the connected wallet is accepted; empty, constant, other-key and ERC-1271/6492 signatures are refused with an explanation (contract wallets are a later, deliberate step); the hash input is normalized (r ‖ low-s ‖ v ∈ {27, 28}); a fingerprint of each wallet's account (per chain) survives disconnects and a different account is flagged before it opens. Existing accounts unchanged (pinned) |
+| R2-N2 | Low | Sign message built from UI copy (`CHAIN.label`) | **Fixed**: statement and chain ID are frozen per-network constants (`SIGN_SCHEME` in `lib/account.ts`); `tests/account.test.ts` pins the exact bytes, keccak and derived address per network (identical to the previous build) |
+| R2-N3 | Low | CSP misses hosts the wallet SDKs use (WalletLink, Google Fonts for AppKit, secure.walletconnect.org frame; pulse analytics only allowed through a wildcard) | **Deploy-owned** (`deploy/lib/common.sh`): see the backend and deploy section. The app cannot turn pulse analytics off (the WalletConnect provider drops AppKit's analytics flag) |
+| R2-N4 | Low | Focus trap fought the WalletConnect modal (z-index 999): Tab reached our hidden dialog, Escape closed both | **Fixed**: while an AppKit / WalletConnect overlay is open the trap is suspended and our dialog is inert; focus moves to the overlay and back when it closes; Escape closes only the topmost layer |
+| R2-N5 | Low | Legacy cleanup left `velum:session:v1` and `velum:demo:v1:*` | **Fixed**: v1 sessions and ledgers and v2 sessions on every chain are removed; current ledgers kept and still read |
+| R2-N6 | Low | Connected landing nav overflowed at 360 px ("Launch app" clipped) | **Fixed**: at ≤ 480 px the landing wallet button keeps only its avatar (accessible name kept); desktop and app nav unchanged |
+| R2-N7 | Info | A hung wallet sign request needed a reload | **Fixed**: after 5 s the sign dialog offers Cancel, which unlocks and resets it; a late wallet answer is discarded |
+| R2-N10 | Info | No committed web regression tests | **Fixed**: `test` script (vitest 3.2.7): amount parser, ledger codec, sign message and signature rules, price rule, simulated-copy rules, storage cleanup (113 tests) |
+| — | Low | `withdrawOffer` fell back to a stale offer object; `isPrivateAddress` accepted any `velum1…`; `bpsOrNull` accepted `1000.000000000000001` | **Fixed**: an offer gone at completion credits nothing ("Already withdrawn"); exact `velum1` + 36 lowercase hex (Send lowercases pasted input first); spreads compared exactly before float conversion |
 
 ## Next steps
 

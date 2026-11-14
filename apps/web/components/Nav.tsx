@@ -2,8 +2,8 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { privTotal } from '@/lib/calc';
-import { shortH, usd } from '@/lib/format';
-import { useMarkets } from '@/lib/markets';
+import { shortH, usdOrDash } from '@/lib/format';
+import { usePriceTick } from '@/lib/markets';
 import { useApp } from '@/lib/store';
 import { I, Mark } from './icons';
 
@@ -36,9 +36,9 @@ export function EyeButton() {
 }
 
 function WalletTotal() {
-  useMarkets((s) => s.tick);
+  usePriceTick();
   const ledger = useApp((s) => s.ledger);
-  return <span className="b num pv">{usd(privTotal(ledger))}</span>;
+  return <span className="b num pv">{usdOrDash(privTotal(ledger))}</span>;
 }
 
 export function Nav({ variant }: { variant: 'landing' | 'app' }) {
@@ -51,7 +51,7 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
   const connected = !!account;
 
   return (
-    <header className="nav">
+    <header className={app ? 'nav' : 'nav nav-land'}>
       <div className="nav-in">
         <Brand />
         {app ? (
@@ -75,6 +75,7 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
           {app || connected ? <EyeButton /> : null}
           {connected ? (
             <button className="walletbtn" onClick={() => openModal({ kind: 'account' })}>
+              <span className="sr">Your account</span>
               <i />
               <span className="hide-sm">{shortH(account.addr)}</span>
               <WalletTotal />

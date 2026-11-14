@@ -49,12 +49,14 @@ export function amountHint(raw: string): string {
   return r.kind === 'invalid' ? r.hint : '';
 }
 
-/** Spreads in bps: a plain decimal from 0 to 1,000, else null. */
+const MAX_BPS = 1000n * POW;
+
+/** Spreads in bps: a plain decimal from 0 to 1,000 (compared exactly, before any float rounding), else null. */
 export function bpsOrNull(raw: string): number | null {
   const r = checkAmount(raw);
-  if (r.kind !== 'ok') return null;
+  if (r.kind !== 'ok' || r.value > MAX_BPS) return null;
   const n = Number(raw.trim());
-  return Number.isFinite(n) && n >= 0 && n <= 1000 ? n : null;
+  return Number.isFinite(n) ? n : null;
 }
 
 /** Shared attributes for amount inputs: decimal keyboard, length cap, invalid state for assistive tech. */

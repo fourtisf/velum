@@ -3,7 +3,7 @@ import { getMarket } from '@velum/config';
 import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
 import { fmt, pct, usd } from '@/lib/format';
 import { LOGOS } from '@/lib/logos';
-import { useMarket } from '@/lib/markets';
+import { useMarket, usePriceState } from '@/lib/markets';
 
 /** Company logo on a brand-colour disc (lib/logos.ts); USDG, ETH and unknown tokens use the neutral initial. */
 export function Av({ sym, size = '' }: { sym: string; size?: '' | 'sm' | 'lg' }) {
@@ -32,11 +32,17 @@ export const Pv = ({ children }: { children: ReactNode }) => <span className="pv
 
 const prefersReduced = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/** Live price that flashes green/red when it changes (prototype data-px). */
+/**
+ * Live price that flashes green/red when it changes (prototype data-px). No live price: a dash.
+ * Mainnet, stale price (feed down or the API marks it stale): the last price, dimmed and marked
+ * "stale" (audit round 2, M4). Testnet never shows the stale state (prototype behaviour).
+ */
 export function Px({ sym, raw, as, className }: { sym: string; raw?: boolean; as?: ElementType; className?: string }) {
   const Tag = (as ?? 'span') as ElementType;
   const m = useMarket(sym);
-  const txt = m.noData ? '—' : raw ? fmt(m.price) : usd(m.price);
+  const state = usePriceState(sym);
+  const stale = state === 'stale';
+  const txt = state === 'none' ? '—' : raw ? fmt(m.price) : usd(m.price);
   const ref = useRef<HTMLElement>(null);
   const prev = useRef(txt);
   useEffect(() => {
@@ -49,8 +55,9 @@ export function Px({ sym, raw, as, className }: { sym: string; raw?: boolean; as
     el.classList.add(m.dir >= 0 ? 'flash-up' : 'flash-down');
   }, [txt, m.dir]);
   return (
-    <Tag ref={ref} className={className}>
+    <Tag ref={ref} className={stale ? `${className ?? ''} px-stale`.trim() : className} title={stale ? 'Stale: no fresh price, trading paused' : undefined}>
       {txt}
+      {stale ? <small className="stale-tag">stale</small> : null}
     </Tag>
   );
 }

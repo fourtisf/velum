@@ -1,17 +1,24 @@
 'use client';
 import { Fragment } from 'react';
 import { posPnl } from '@/lib/calc';
+import { SIM } from '@/lib/copy';
 import { closePos } from '@/lib/demo';
 import { ago, fmt, fmtLev, pct, sgnUsd, shortH } from '@/lib/format';
-import { useMarkets } from '@/lib/markets';
+import { useLivePrice, usePriceTick } from '@/lib/markets';
 import { useApp, type Activity, type Position } from '@/lib/store';
 import { toNumber } from '@velum/math';
 import { Icon } from '../icons';
 import { Av, Pv, Px } from '../ui';
 
 function PnlCell({ p }: { p: Position }) {
-  useMarkets((s) => s.tick);
+  usePriceTick();
   const v = posPnl(p);
+  if (v === null)
+    return (
+      <td className="r num">
+        <Pv>—</Pv>
+      </td>
+    );
   const r = p.margin > 0n ? (toNumber(v) / toNumber(p.margin)) * 100 : 0;
   return (
     <td className="r num">
@@ -21,6 +28,16 @@ function PnlCell({ p }: { p: Position }) {
         </span>
       </Pv>
     </td>
+  );
+}
+
+/** Close needs a live price; without one it is disabled (closePos also re-checks when it settles). */
+function CloseButton({ p }: { p: Position }) {
+  const price = useLivePrice(p.sym);
+  return (
+    <button className="btn btn-dark btn-sm" disabled={price === null} title={price === null ? 'Price unavailable' : undefined} onClick={() => closePos(p.id)}>
+      Close
+    </button>
   );
 }
 
@@ -86,33 +103,36 @@ export function PosTable({ list, wide }: { list: Position[]; wide?: boolean }) {
                   <PnlCell p={p} />
                   <td className="r">
                     <div className="rowbtns">
-                      <button className="btn btn-ghost btn-sm hide-sm" aria-expanded={open} onClick={() => set({ openChain: { ...openChain, [p.id]: !open } })}>
-                        Chain view
-                      </button>
-                      <button className="btn btn-dark btn-sm" onClick={() => closePos(p.id)}>
-                        Close
-                      </button>
+                      {SIM.chainView ? (
+                        <button className="btn btn-ghost btn-sm hide-sm" aria-expanded={open} onClick={() => set({ openChain: { ...openChain, [p.id]: !open } })}>
+                          Chain view
+                        </button>
+                      ) : null}
+                      <CloseButton p={p} />
                     </div>
                   </td>
                 </tr>
-                <tr className="chainrow" hidden={!open}>
-                  <td colSpan={cols}>
-                    <div className="chainbox">
-                      <div>
-                        What the public chain sees<b>A position changed in {p.sym}</b>
+                {/* The simulated public-chain view exists on testnet only: mainnet has no commitment (audit round 2, M2). */}
+                {SIM.chainView ? (
+                  <tr className="chainrow" hidden={!open}>
+                    <td colSpan={cols}>
+                      <div className="chainbox">
+                        <div>
+                          What the public chain sees<b>A position changed in {p.sym}</b>
+                        </div>
+                        <div>
+                          Commitment<b>{shortH(p.commit)}</b>
+                        </div>
+                        <div>
+                          Block<b className="num">{fmt(p.block, 0)}</b>
+                        </div>
+                        <div>
+                          Size, side, price, owner<b>Hidden</b>
+                        </div>
                       </div>
-                      <div>
-                        Commitment<b>{shortH(p.commit)}</b>
-                      </div>
-                      <div>
-                        Block<b className="num">{fmt(p.block, 0)}</b>
-                      </div>
-                      <div>
-                        Size, side, price, owner<b>Hidden</b>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
+                    </td>
+                  </tr>
+                ) : null}
               </Fragment>
             );
           })}

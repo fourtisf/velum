@@ -35,6 +35,8 @@ const isNeg = (n: Num) => (typeof n === 'bigint' ? n < 0n : n < 0);
 const abs = (n: Num): Num => (typeof n === 'bigint' ? wabs(n) : Math.abs(n));
 
 export const usd = (n: Num, d = 2): string => (isNeg(n) && fmt(abs(n), d) !== fmt(0, d) ? '-$' : '$') + fmt(abs(n), d);
+/** usd(), or a dash when there is no value (no live price). */
+export const usdOrDash = (n: Wad | null, d = 2): string => (n === null ? '—' : usd(n, d));
 export const pct = (n: number, d = 2): string => (n >= 0 ? '+' : '') + fmt(n, d) + '%';
 export const sgnUsd = (n: Num): string => (isNeg(n) && fmt(abs(n)) !== '0.00' ? '-$' : '+$') + fmt(abs(n));
 

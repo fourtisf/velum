@@ -1,6 +1,7 @@
+import { CHAIN } from '@velum/config';
 import { http, createConfig, type CreateConnectorFn } from 'wagmi';
 import { coinbaseWallet, injected, walletConnect } from 'wagmi/connectors';
-import { robinhoodTestnet } from './chain';
+import { robinhoodChain } from './chain';
 import { ENV } from './env';
 
 /**
@@ -18,7 +19,7 @@ export const walletConnectConnector = (): CreateConnectorFn | null =>
         telemetryEnabled: false,
         metadata: {
           name: 'Velum',
-          description: 'Private stock trading on Robinhood Chain testnet',
+          description: `Private stock trading on ${CHAIN.label}`,
           url: ENV.siteUrl || 'https://velum.example',
           icons: [],
         },
@@ -45,9 +46,9 @@ function initialConnectors(): CreateConnectorFn[] {
 }
 
 export const wagmiConfig = createConfig({
-  chains: [robinhoodTestnet],
+  chains: [robinhoodChain],
   connectors: initialConnectors(),
-  transports: { [robinhoodTestnet.id]: http(ENV.rpcUrl, { batch: true }) },
+  transports: { [robinhoodChain.id]: http(ENV.rpcUrl, { batch: true }) },
   ssr: true,
 });
 

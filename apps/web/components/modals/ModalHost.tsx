@@ -1,5 +1,5 @@
 'use client';
-import { CHAIN, getMarket } from '@velum/config';
+import { CHAIN, IS_MAINNET, getMarket } from '@velum/config';
 import { parseOrZero, type Wad } from '@velum/math';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRejectedRequestError } from 'viem';
@@ -7,7 +7,9 @@ import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, 
 import { derivePrivateAddress, isPrivateAddress, isPublicAddress, SIGN_MESSAGE } from '@/lib/account';
 import { usePublicBalances } from '@/lib/balances';
 import { lpGo, moveGo, type MoveKind } from '@/lib/demo';
+import { ENV } from '@/lib/env';
 import { dp, floorTo, fmt, shortH } from '@/lib/format';
+import { COPY } from '@/lib/copy';
 import { mk } from '@/lib/markets';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
 import { bal, emptyLedger, forgetSession, loadLedger, rememberSession, seedLedger, useApp, type FlowSpec, type ModalState } from '@/lib/store';
@@ -43,24 +45,14 @@ function ConnectModal({ error }: { error?: string }) {
   const { connectors, connectAsync, isPending } = useConnect();
   const openModal = useApp((s) => s.openModal);
   const [err, setErr] = useState(error ?? '');
+  const [busy, setBusy] = useState<string | null>(null);
+  // Wallets announced through EIP-6963 (MetaMask, Rabby, Phantom, OKX, …), one entry each.
+  const detected = connectors.filter((x, i, all) => x.type === 'injected' && x.id !== 'injected' && all.findIndex((y) => y.name === x.name) === i);
+  const generic = connectors.find((x) => x.id === 'injected');
 
-  const pick = async (kind: 'browser' | 'walletconnect' | 'passkey') => {
+  const connect = async (c: Connector | CreateConnectorFn, key: string) => {
     setErr('');
-    let c: Connector | CreateConnectorFn | undefined;
-    if (kind === 'browser') {
-      c = connectors.find((x) => x.type === 'injected' && x.id !== 'injected') ?? connectors.find((x) => x.id === 'injected');
-      if (typeof window !== 'undefined' && !(window as { ethereum?: unknown }).ethereum && !connectors.some((x) => x.type === 'injected' && x.id !== 'injected')) {
-        setErr('No browser wallet found. Install a wallet extension, or use WalletConnect.');
-        return;
-      }
-    } else if (kind === 'walletconnect') {
-      c = connectors.find((x) => x.id === 'walletConnect') ?? walletConnectConnector() ?? undefined;
-      if (!c) {
-        setErr('WalletConnect is not set up on this site yet. Use a browser wallet for now.');
-        return;
-      }
-    } else c = connectors.find((x) => x.id === 'coinbaseWalletSDK') ?? coinbaseConnector();
-    if (!c) return;
+    setBusy(key);
     try {
       const res = await connectAsync({ connector: c, chainId: CHAIN.id });
       openModal(res.chainId === CHAIN.id ? { kind: 'sign' } : { kind: 'network' });
@@ -72,37 +64,76 @@ function ConnectModal({ error }: { error?: string }) {
       } catch {
         setErr(errText(e));
       }
+    } finally {
+      setBusy(null);
     }
   };
+
+  const pickGeneric = () => {
+    if (!generic || (typeof window !== 'undefined' && !(window as { ethereum?: unknown }).ethereum)) {
+      setErr('No browser wallet found. Install a wallet extension, or use WalletConnect.');
+      return;
+    }
+    void connect(generic, 'injected');
+  };
+  const pickWalletConnect = () => {
+    const c = connectors.find((x) => x.id === 'walletConnect') ?? walletConnectConnector();
+    if (!c) {
+      setErr('WalletConnect is not set up on this site yet. Use a browser wallet for now.');
+      return;
+    }
+    void connect(c, 'walletConnect');
+  };
+  const pickPasskey = () => void connect(connectors.find((x) => x.id === 'coinbaseWalletSDK') ?? coinbaseConnector(), 'passkey');
+
   return (
     <>
       <Head title="Connect wallet" />
       <p className="m-text">Your wallet is your public address. Next, one signature opens your private account.</p>
-      <button className="wopt" disabled={isPending} onClick={() => pick('browser')}>
-        <span className="ic">
-          <I.wallet />
-        </span>
-        <div>
-          <b>Browser wallet</b>
-          <small>An extension wallet in this browser</small>
-        </div>
-      </button>
-      <button className="wopt" disabled={isPending} onClick={() => pick('walletconnect')}>
+      {detected.length ? (
+        detected.map((c) => (
+          <button key={c.uid} className="wopt" disabled={isPending} aria-busy={busy === c.uid} onClick={() => void connect(c, c.uid)}>
+            <span className="ic">
+              {c.icon ? (
+                // eslint-disable-next-line @next/next/no-img-element -- wallet-provided data: URI icon
+                <img src={c.icon} alt="" width={22} height={22} />
+              ) : (
+                <I.wallet />
+              )}
+            </span>
+            <div>
+              <b>{c.name}</b>
+              <small>{busy === c.uid ? 'Check your wallet…' : 'Installed in this browser'}</small>
+            </div>
+          </button>
+        ))
+      ) : (
+        <button className="wopt" disabled={isPending} onClick={pickGeneric}>
+          <span className="ic">
+            <I.wallet />
+          </span>
+          <div>
+            <b>Browser wallet</b>
+            <small>{busy === 'injected' ? 'Check your wallet…' : 'An extension wallet in this browser'}</small>
+          </div>
+        </button>
+      )}
+      <button className="wopt" disabled={isPending} onClick={pickWalletConnect}>
         <span className="ic">
           <I.qr />
         </span>
         <div>
           <b>WalletConnect</b>
-          <small>Scan with a wallet on your phone</small>
+          <small>{busy === 'walletConnect' ? 'Check your wallet…' : 'Scan with a wallet on your phone'}</small>
         </div>
       </button>
-      <button className="wopt" disabled={isPending} onClick={() => pick('passkey')}>
+      <button className="wopt" disabled={isPending} onClick={pickPasskey}>
         <span className="ic">
           <I.key />
         </span>
         <div>
           <b>Passkey account</b>
-          <small>For smart-contract and multi-party wallets</small>
+          <small>{busy === 'passkey' ? 'Check your wallet…' : 'For smart-contract and multi-party wallets'}</small>
         </div>
       </button>
       <p className="hint" role="alert">
@@ -132,9 +163,11 @@ function NetworkModal() {
   return (
     <>
       <Head title="Switch network" />
-      <p className="m-text">Velum runs on Robinhood Chain testnet (chain ID {CHAIN.id}). Switch your wallet to this network to continue. Test tokens have no value.</p>
+      <p className="m-text">
+        Velum runs on {COPY.chainLabel} (chain ID {CHAIN.id}). Switch your wallet to this network to continue.{COPY.networkNotice}
+      </p>
       <button className="btn btn-white btn-block" disabled={isPending} onClick={go}>
-        {isPending ? 'Waiting for your wallet…' : 'Switch to Robinhood Chain testnet'}
+        {isPending ? 'Waiting for your wallet…' : COPY.switchTo}
       </button>
       <p className="hint" role="alert">
         {err}
@@ -223,7 +256,7 @@ function AccountModal() {
         </div>
         <div>
           <span>Network</span>
-          <b className={wrong ? 'down' : ''}>{wrong ? 'Wrong network' : 'Robinhood Chain testnet'}</b>
+          <b className={wrong ? 'down' : ''}>{wrong ? 'Wrong network' : COPY.chainLabel}</b>
         </div>
       </div>
       <p className="m-text" style={{ marginTop: 12 }}>
@@ -231,7 +264,7 @@ function AccountModal() {
       </p>
       {wrong ? (
         <button className="btn btn-white btn-block" onClick={() => s.openModal({ kind: 'network' })}>
-          Switch to Robinhood Chain testnet
+          {COPY.switchTo}
         </button>
       ) : null}
       <button className="btn btn-dark btn-block" onClick={disconnect}>
@@ -291,8 +324,8 @@ function MoveModal({ kind }: { kind: MoveKind }) {
       </select>
       {emptyShield ? (
         <p className="m-text" style={{ marginTop: 10, fontSize: 13 }}>
-          {pub.isLoading ? 'Reading your public wallet…' : 'No test tokens in this wallet yet. '}
-          {pub.isLoading ? null : (
+          {pub.isLoading ? 'Reading your public wallet…' : CHAIN.faucets.usdg ? 'No test tokens in this wallet yet. ' : 'No USDG or supported stock tokens in this wallet yet.'}
+          {pub.isLoading || !CHAIN.faucets.usdg ? null : (
             <>
               Get ETH and stock tokens from the{' '}
               <a className="lnk" href={CHAIN.faucets.ethAndStockTokens} target="_blank" rel="noreferrer">
@@ -451,7 +484,8 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
       if (cancelled) return;
       setStep(flow.steps.length);
       const r = flow.done();
-      setResult({ rows: r.rows });
+      // On mainnet, say plainly on every receipt that nothing touched the chain.
+      setResult({ rows: IS_MAINNET && ENV.demoMode ? [...r.rows, ['Demo', 'Simulated, nothing was sent onchain']] : r.rows });
       set({ modalLocked: false });
       toast(r.toast);
     })();

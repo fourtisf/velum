@@ -6,6 +6,7 @@ import { openPerps, spotTrade } from '@/lib/demo';
 import { dp, floorTo, fmt } from '@/lib/format';
 import { useMarket, useMarkets } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
+import { COPY } from '@/lib/copy';
 import { I } from '../icons';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
@@ -31,7 +32,7 @@ function PerpsTicket({ sym }: { sym: string }) {
   if (!connected) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
-    hint = `${sym} isn't on Robinhood Chain testnet yet.`;
+    hint = COPY.notOnNetwork(sym);
   } else if (c.check === 'no_size') b = { label: 'Enter a size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'insufficient') {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
@@ -142,7 +143,7 @@ function SpotTicket({ sym }: { sym: string }) {
   if (!connected) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
-    hint = `${sym} isn't on Robinhood Chain testnet yet.`;
+    hint = COPY.notOnNetwork(sym);
   } else if (c.amt <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.amt > c.have) {
     b = { label: `Not enough private ${c.tin}`, cls: 'btn-dark', disabled: true };

@@ -439,3 +439,4 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .wopt[disabled]{opacity:.6;cursor:progress}
 .show-sm{display:none}
 @media (max-width:640px){.show-sm{display:inline}.demo-bar{font-size:12px;min-height:30px;padding:4px 12px}}
+.wopt .ic img{width:22px;height:22px;border-radius:6px;display:block}

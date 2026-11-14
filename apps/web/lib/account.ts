@@ -3,12 +3,13 @@
  * browser into a display private address. The signature stays in memory for this call only and is
  * never stored or sent anywhere. Phase 4 replaces this with HKDF key derivation in @velum/sdk.
  */
+import { CHAIN } from '@velum/config';
 import { keccak256, type Hex } from 'viem';
 
 export const SIGN_MESSAGE = [
   'Velum private account',
   '',
-  'Sign to open your private account on Robinhood Chain testnet.',
+  `Sign to open your private account on ${CHAIN.label}.`,
   'This creates your private keys in this browser. It costs no gas and sends nothing to a server.',
   '',
   'Only sign this message on Velum. Anyone with this signature can open your private account.',

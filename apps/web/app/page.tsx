@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
 import { I, Mark } from '@/components/icons';
 import { Nav } from '@/components/Nav';
+import { COPY } from '@/lib/copy';
 
 const STEPS_MINI: Array<[string, string]> = [
   ['Lock margin in a private note', ''],
@@ -17,8 +18,8 @@ export default function Landing() {
         <section className="hero">
           <div className="wrap">
             <Link className="pill" href="/app/trade/TSLA">
-              <span className="badge acc">Testnet</span>
-              <span className="pt">Private perps are live on Robinhood Chain</span>
+              <span className="badge acc">{COPY.heroBadge}</span>
+              <span className="pt">{COPY.heroPill}</span>
               <span>
                 <I.chev />
               </span>
@@ -35,7 +36,7 @@ export default function Landing() {
             </div>
           </div>
           <HeroFrame />
-          <p className="frame-cap">Live demo with test prices. Connect a test wallet to place a private trade.</p>
+          <p className="frame-cap">{COPY.frameCap}</p>
         </section>
 
         <div className="wrap">
@@ -307,7 +308,7 @@ export default function Landing() {
               <div className="faq">
                 <details open>
                   <summary>Is this real money?</summary>
-                  <p>No. Velum runs on Robinhood Chain testnet. Test tokens have no value, so you can learn how private trading works without risk.</p>
+                  <p>{COPY.faqMoney}</p>
                 </details>
                 <details>
                   <summary>Can I go long and short?</summary>
@@ -336,7 +337,7 @@ export default function Landing() {
 
         <section className="cta">
           <h2>Your trades are nobody&apos;s business.</h2>
-          <p>Get free test USDG from the faucet and make your first private trade in under a minute.</p>
+          <p>{COPY.ctaSub}</p>
           <div className="ctas">
             <Link className="btn btn-white btn-lg" href="/app/trade/TSLA">
               Start trading
@@ -355,7 +356,7 @@ export default function Landing() {
               <Mark />
               <span>Velum</span>
             </Link>
-            <p>An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet with simulated trading. Test tokens have no value.</p>
+            <p>{COPY.footer}</p>
           </div>
           <div>
             <h3>Product</h3>

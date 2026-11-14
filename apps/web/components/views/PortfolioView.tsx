@@ -7,6 +7,7 @@ import { dp, fmt, usd } from '@/lib/format';
 import { usePublicBalances } from '@/lib/balances';
 import { tokPx, useMarkets } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
+import { COPY } from '@/lib/copy';
 import { I } from '../icons';
 import { ActList, PosTable } from '../trade/Positions';
 import { Av, Pv, Px } from '../ui';
@@ -81,9 +82,11 @@ export function PortfolioView() {
           <button className="btn btn-white btn-lg" onClick={() => s.openModal({ kind: 'connect' })}>
             Connect wallet
           </button>
-          <p className="faucets">
-            New to testnet? <Faucets />
-          </p>
+          {CHAIN.faucets.usdg ? (
+            <p className="faucets">
+              New to testnet? <Faucets />
+            </p>
+          ) : null}
         </div>
       </>
     );
@@ -166,13 +169,17 @@ export function PortfolioView() {
                     <tr>
                       <td colSpan={4} className="empty">
                         {pub.isLoading ? (
-                          'Reading your wallet on Robinhood Chain testnet…'
+                          `Reading your wallet on ${COPY.chainLabel}…`
                         ) : pub.isError ? (
-                          'Could not reach Robinhood Chain testnet. Retrying…'
+                          `Could not reach ${COPY.chainLabel}. Retrying…`
                         ) : (
-                          <span>
-                            No test tokens yet. <Faucets />
-                          </span>
+                          <span>{CHAIN.faucets.usdg ? (
+                            <>
+                              No test tokens yet. <Faucets />
+                            </>
+                          ) : (
+                            'No USDG or supported stock tokens in this wallet yet.'
+                          )}</span>
                         )}
                       </td>
                     </tr>

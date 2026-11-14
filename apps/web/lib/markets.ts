@@ -30,6 +30,8 @@ export interface LiveMarket {
   hist: number[];
   dir: 1 | -1;
   stale: boolean;
+  /** Price source reported by the API: 'demo' (simulated) or 'chainlink'. */
+  priceSource: string;
 }
 
 export type FeedSource = 'seed' | 'api' | 'local';
@@ -66,6 +68,7 @@ function seedMarkets(): Record<string, LiveMarket> {
       hist: Array.from({ length: 60 }, () => n),
       dir: 1,
       stale: true,
+      priceSource: 'demo',
     };
   }
   return out;
@@ -120,6 +123,7 @@ function applyApi(list: MarketDTO[]) {
         hist: spark,
         dir: price === prev.price ? prev.dir : price > prev.price ? 1 : -1,
         stale: !!d.stale,
+        priceSource: d.source ?? prev.priceSource,
       };
     }
     return { bySym, source: 'api', tick: s.tick + 1 };

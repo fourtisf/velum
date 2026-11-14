@@ -1,5 +1,5 @@
 'use client';
-/** Real public balances on Robinhood Chain testnet (ETH + USDG + live stock tokens). */
+/** Real public balances on the selected Robinhood Chain network (ETH + USDG + stock tokens). */
 import { TOKENS } from '@velum/config';
 import { fromUnits, type Wad } from '@velum/math';
 import { useQuery } from '@tanstack/react-query';

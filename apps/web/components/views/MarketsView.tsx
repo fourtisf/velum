@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { compact, fmt, usd } from '@/lib/format';
 import { useMarkets } from '@/lib/markets';
 import { useApp } from '@/lib/store';
+import { COPY } from '@/lib/copy';
 import { I } from '../icons';
 import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
 
@@ -26,7 +27,7 @@ export function MarketsView() {
       <div className="vhead">
         <div>
           <h1 className="vtitle">Markets</h1>
-          <p className="vsub">Every market settles privately. Prices are demo data on testnet.</p>
+          <p className="vsub">{COPY.marketsSub}</p>
         </div>
         <label className="search">
           <I.search />

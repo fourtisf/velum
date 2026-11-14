@@ -17,6 +17,7 @@ export interface MarketDTO {
   maintenanceMargin: string;
   spark: string[];
   stale?: boolean;
+  source?: string | null;
 }
 
 export interface PoolDTO {

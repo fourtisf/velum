@@ -57,20 +57,35 @@ contract MakerBookTest is VelumBase {
         uint64 exp = uint64(block.timestamp + 1);
         vm.startPrank(bob);
         vm.expectRevert(abi.encodeWithSelector(MakerBook.UnknownMarket.selector, address(usdg)));
-        book.postOffer(address(usdg), 1, 1, 0, 0, exp);
+        book.postOffer(address(usdg), 1, 1, 2, 0, exp);
         vm.expectRevert(MakerBook.BadOffer.selector);
-        book.postOffer(address(tsla), 0, 1, 0, 0, exp);
+        book.postOffer(address(tsla), 0, 1, 2, 0, exp);
         vm.expectRevert(MakerBook.BadOffer.selector);
-        book.postOffer(address(tsla), 10, 0, 0, 0, exp);
+        book.postOffer(address(tsla), 10, 0, 2, 0, exp);
         vm.expectRevert(MakerBook.BadOffer.selector); // largest fill above backing
-        book.postOffer(address(tsla), 10, 11, 0, 0, exp);
+        book.postOffer(address(tsla), 10, 11, 2, 0, exp);
         vm.expectRevert(MakerBook.BadOffer.selector);
         book.postOffer(address(tsla), 10, 10, 501, 0, exp);
         vm.expectRevert(MakerBook.BadOffer.selector);
-        book.postOffer(address(tsla), 10, 10, 0, 501, exp);
+        book.postOffer(address(tsla), 10, 10, 2, 501, exp);
         vm.expectRevert(MakerBook.BadOffer.selector);
-        book.postOffer(address(tsla), 10, 10, 0, 0, uint64(block.timestamp));
+        book.postOffer(address(tsla), 10, 10, 2, 0, uint64(block.timestamp));
         vm.stopPrank();
+    }
+
+    /// @notice Audit F-06: open spreads below the 2 bps floor are refused; close spreads may be zero.
+    function test_post_minOpenSpread() public {
+        uint64 exp = uint64(block.timestamp + 1 days);
+        vm.startPrank(bob);
+        vm.expectRevert(MakerBook.BadOffer.selector);
+        book.postOffer(address(tsla), 10, 10, 0, 0, exp);
+        vm.expectRevert(MakerBook.BadOffer.selector);
+        book.postOffer(address(tsla), 10, 10, 1, 5, exp);
+        uint256 id = book.postOffer(address(tsla), 10, 10, 2, 0, exp);
+        vm.stopPrank();
+        (,,,, uint16 o, uint16 c,,) = book.offers(id);
+        assertEq(o, 2);
+        assertEq(c, 0);
     }
 
     function test_withdraw() public {

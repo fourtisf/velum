@@ -20,6 +20,7 @@ contract Handler is Test {
     MockERC20 public usdg;
     MockERC20[2] public stocks;
     address public relayer;
+    address public guardian;
 
     address[] public actors;
     address public liquidator = makeAddr("inv-liquidator");
@@ -29,6 +30,21 @@ contract Handler is Test {
     mapping(address token => uint256) public deposited;
     mapping(address token => uint256) public withdrawn;
     bool public liquidationOverpaid;
+    /// @dev A liquidation paid more than the pool plus the capped keeper top-up (cover must be deferred).
+    bool public immediateCoverPaid;
+    /// @dev An epoch's cover budget exceeded 10% of the insurance fund at settlement.
+    bool public coverOverCap;
+    /// @dev A guardian action moved funds.
+    bool public guardianMovedFunds;
+    uint256 public coverClaimsPaid;
+    uint256 public gaps;
+    uint256 public closeOnlyToggles;
+
+    // cover claims seen, per epoch
+    uint256[] public claimEpochs;
+    mapping(uint256 epoch => bool) internal _epochSeen;
+    mapping(uint256 epoch => address[]) internal _claimants;
+    mapping(uint256 epoch => mapping(address account => bool)) internal _claimantSeen;
     uint256 public liquidations;
     uint256 public closes;
     uint256 public opens;
@@ -48,7 +64,8 @@ contract Handler is Test {
         MockERC20 usdg_,
         MockERC20 s0,
         MockERC20 s1,
-        address relayer_
+        address relayer_,
+        address guardian_
     ) {
         vault = vault_;
         oracle = oracle_;
@@ -59,6 +76,7 @@ contract Handler is Test {
         stocks[0] = s0;
         stocks[1] = s1;
         relayer = relayer_;
+        guardian = guardian_;
         for (uint256 i; i < 5; ++i) {
             address a = makeAddr(string(abi.encodePacked("actor", vm.toString(i))));
             actors.push(a);
@@ -82,6 +100,35 @@ contract Handler is Test {
 
     function positionCount() external view returns (uint256) {
         return positionIds.length;
+    }
+
+    function claimEpochCount() external view returns (uint256) {
+        return claimEpochs.length;
+    }
+
+    function claimantCount(uint256 epoch) external view returns (uint256) {
+        return _claimants[epoch].length;
+    }
+
+    function claimant(uint256 epoch, uint256 i) external view returns (address) {
+        return _claimants[epoch][i];
+    }
+
+    /// @dev Remember any cover claim a settlement just filed for either side of position `p`.
+    function _trackClaims(PerpsBase.Position memory p) internal {
+        uint256 e = perps.currentCoverEpoch();
+        _trackClaimant(e, p.taker);
+        _trackClaimant(e, p.maker);
+    }
+
+    function _trackClaimant(uint256 e, address a) internal {
+        if (perps.coverClaims(e, a) == 0 || _claimantSeen[e][a]) return;
+        _claimantSeen[e][a] = true;
+        _claimants[e].push(a);
+        if (!_epochSeen[e]) {
+            _epochSeen[e] = true;
+            claimEpochs.push(e);
+        }
     }
 
     function _actor(uint256 seed) internal view returns (address) {
@@ -182,9 +229,9 @@ contract Handler is Test {
             address(stocks[stockSeed % 2]),
             backing,
             largest,
-            uint16(bound(o, 0, 500)),
+            uint16(bound(o, 2, 500)),
             uint16(bound(c, 0, 500)),
-            uint64(block.timestamp + 30 days)
+            uint64(block.timestamp + 365 days)
         );
         offerIds.push(id);
     }
@@ -209,7 +256,7 @@ contract Handler is Test {
         address a;
         for (uint256 i; i < actors.length; ++i) {
             address c = _actor(actorSeed + i);
-            if (c != maker && vault.balanceOf(c, address(usdg)) >= 10e6) {
+            if (c != maker && vault.balanceOf(c, address(usdg)) >= 20e6) {
                 a = c;
                 break;
             }
@@ -217,8 +264,8 @@ contract Handler is Test {
         if (a == address(0)) return;
         lev = uint8(bound(lev, 2, 10));
         uint256 maxSize = _maxSize(id, a, lev, market);
-        if (maxSize < 1e6) return;
-        size = bound(size, 1e6, maxSize);
+        if (maxSize < 10e6) return; // minimum position size (audit F-10)
+        size = bound(size, 10e6, maxSize);
         openAttempts++;
         vm.prank(a);
         try perps.open(id, market, isLong, size, lev, 0) returns (uint256 pid) {
@@ -249,6 +296,7 @@ contract Handler is Test {
         vm.prank(p.taker);
         try perps.close(id, 0) {
             closes++;
+            _trackClaims(p);
         } catch {}
     }
 
@@ -293,6 +341,8 @@ contract Handler is Test {
         uint256 paid = (vault.balanceOf(p.taker, address(usdg)) - tb) + (vault.balanceOf(p.maker, address(usdg)) - mb)
             + (vault.balanceOf(liquidator, address(usdg)) - lb);
         if (paid > pool + insBefore) liquidationOverpaid = true;
+        if (paid > pool + perps.keeperRewardCap()) immediateCoverPaid = true;
+        _trackClaims(p);
     }
 
     function requestForcedExit(uint256 idx, bool byMaker) external {
@@ -311,8 +361,10 @@ contract Handler is Test {
         for (uint256 i; i < positionIds.length; ++i) {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open || p.exitRequestedAt == 0) continue;
+            vm.prank(liquidator); // a liquidatable position settles as a liquidation: reward to the keeper
             try perps.settleForcedExit(positionIds[i]) {
                 forcedExits++;
+                _trackClaims(p);
             } catch {}
         }
     }
@@ -321,16 +373,77 @@ contract Handler is Test {
         try perps.advanceFunding(address(stocks[stockSeed % 2])) {} catch {}
     }
 
+    // ------------------------------------------------------------ cover claims and guardian
+
+    /// @dev Pay one recorded claim of an ended epoch, checking the 10% cap when it settles the epoch.
+    function claimCover(uint256 epochSeed, uint256 claimantSeed) external {
+        if (claimEpochs.length == 0) return;
+        uint256 e = claimEpochs[epochSeed % claimEpochs.length];
+        if (e >= perps.currentCoverEpoch()) return;
+        address a = _claimants[e][claimantSeed % _claimants[e].length];
+        if (perps.coverClaims(e, a) == 0) return;
+        _claim(e, a);
+    }
+
+    function _claim(uint256 e, address a) internal {
+        (,,,, bool settled) = perps.coverEpochs(e);
+        uint256 insBefore = perps.insurance();
+        perps.claimCover(e, a);
+        coverClaimsPaid++;
+        if (!settled) {
+            (,, uint256 budget,,) = perps.coverEpochs(e);
+            if (budget > (insBefore * perps.COVER_CAP_BPS()) / 10_000) coverOverCap = true;
+        }
+    }
+
+    /// @dev Let time pass into a later cover epoch.
+    function passEpoch(uint256 secs) external {
+        vm.warp(block.timestamp + bound(secs, 1 hours, 3 hours));
+        refreshPrices();
+    }
+
+    /// @dev Guardian switches close-only (on an eighth of the time, so opens still happen).
+    function toggleCloseOnly(uint256 stockSeed, uint256 onSeed) external {
+        uint256 perpsBal = vault.balanceOf(address(perps), address(usdg));
+        uint256 ins = perps.insurance();
+        uint256 margin = perps.totalMargin();
+        vm.prank(guardian);
+        perps.setCloseOnly(address(stocks[stockSeed % 2]), onSeed % 8 == 0);
+        closeOnlyToggles++;
+        if (
+            vault.balanceOf(address(perps), address(usdg)) != perpsBal || perps.insurance() != ins
+                || perps.totalMargin() != margin
+        ) guardianMovedFunds = true;
+    }
+
     // ------------------------------------------------------------ market
 
-    /// @dev Move one price by up to ±10% (the relay limit) and refresh both.
-    function movePrice(uint256 stockSeed, uint256 bps, bool up) external {
+    /// @dev Move one relayed price by up to ±10% and refresh both; `roll` first waits for the band
+    ///      reference to roll (otherwise repeated moves leave the reported price lagging).
+    function movePrice(uint256 stockSeed, uint256 bps, bool up, bool roll) external {
         uint256 k = stockSeed % 2;
         uint256 move = (price[k] * bound(bps, 0, 1000)) / 10_000;
         uint256 next = up ? price[k] + move : price[k] - move;
         if (next < 2e18 || next > 50_000e18) return;
         price[k] = next;
+        if (roll) vm.warp(block.timestamp + oracle.MOVE_WINDOW());
         refreshPrices();
+    }
+
+    /// @dev A 15-40% gap with keepers absent: the band walks there over several windows and nobody
+    ///      liquidates on the way, so positions can end insolvent (shortfall claims, audit F-02).
+    function gap(uint256 stockSeed, uint256 pct, bool up) external {
+        uint256 k = stockSeed % 2;
+        uint256 move = (price[k] * bound(pct, 15, 40)) / 100;
+        uint256 next = up ? price[k] + move : price[k] - move;
+        if (next < 2e18 || next > 50_000e18) return;
+        price[k] = next;
+        refreshPrices();
+        for (uint256 i; i < 6 && oracle.lagging(address(stocks[k])); ++i) {
+            vm.warp(block.timestamp + oracle.MOVE_WINDOW());
+            refreshPrices();
+        }
+        gaps++;
     }
 
     /// @dev Let time pass (funding accrues), then refresh prices.
@@ -342,12 +455,19 @@ contract Handler is Test {
     // ------------------------------------------------------------ wind down (afterInvariant)
 
     function windDown() external {
+        // Plain closes refuse a lagging (banded) price: let the band catch up with the relayed prices.
+        for (uint256 i; i < 400; ++i) {
+            if (!oracle.lagging(address(stocks[0])) && !oracle.lagging(address(stocks[1]))) break;
+            vm.warp(block.timestamp + oracle.MOVE_WINDOW());
+            refreshPrices();
+        }
         refreshPrices();
         for (uint256 i; i < positionIds.length; ++i) {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open) continue;
             vm.prank(p.taker);
             perps.close(positionIds[i], 0);
+            _trackClaims(p);
         }
         for (uint256 i; i < offerIds.length; ++i) {
             (address maker,,,,,,, bool active) = book.offers(offerIds[i]);
@@ -361,6 +481,14 @@ contract Handler is Test {
                 if (sh == 0) continue;
                 vm.prank(actors[a]);
                 try pools.removeLiquidity(address(stocks[s]), sh, 0, 0, block.timestamp) {} catch {}
+            }
+        }
+        // Pay every outstanding cover claim once its epoch has ended.
+        vm.warp(block.timestamp + perps.COVER_EPOCH());
+        for (uint256 i; i < claimEpochs.length; ++i) {
+            uint256 e = claimEpochs[i];
+            for (uint256 j; j < _claimants[e].length; ++j) {
+                if (perps.coverClaims(e, _claimants[e][j]) != 0) _claim(e, _claimants[e][j]);
             }
         }
     }

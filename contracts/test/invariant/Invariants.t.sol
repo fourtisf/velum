@@ -10,16 +10,20 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 /// @notice Protocol-wide invariants (docs/04 §1):
 ///   1. No token leaves the vault except through withdraw.
 ///   2. Sum of internal balances (users + pools + offers + margins + insurance) == vault holdings.
-///   3. A liquidation never pays out more than the posted margins plus the insurance fund.
+///   3. A liquidation never pays out more than the posted margins plus the insurance fund; shortfall
+///      cover is never paid at liquidation (only the capped keeper top-up), and one epoch's cover never
+///      exceeds 10% of the fund (audit F-02).
 ///   4. Closing the whole book returns every unit: nothing is stuck and nothing is created.
+///   5. Cover bookkeeping: reserved cover equals the unpaid budgets of settled epochs, outstanding claims
+///      equal the claims recorded, and the guardian never moves funds (audit F-07).
 contract InvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
 
     function setUp() public override {
         super.setUp();
-        handler = new Handler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer);
+        handler = new Handler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian);
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](22);
+        bytes4[] memory selectors = new bytes4[](30);
         selectors[0] = Handler.deposit.selector;
         selectors[1] = Handler.deposit.selector; // weighted: more deposits
         selectors[2] = Handler.withdraw.selector;
@@ -42,6 +46,14 @@ contract InvariantsTest is StdInvariant, VelumBase {
         selectors[19] = Handler.movePrice.selector;
         selectors[20] = Handler.movePrice.selector;
         selectors[21] = Handler.liquidate.selector;
+        selectors[22] = Handler.claimCover.selector;
+        selectors[23] = Handler.passEpoch.selector;
+        selectors[24] = Handler.toggleCloseOnly.selector;
+        selectors[25] = Handler.claimCover.selector;
+        selectors[26] = Handler.gap.selector;
+        selectors[27] = Handler.openPosition.selector;
+        selectors[28] = Handler.openPosition.selector;
+        selectors[29] = Handler.liquidate.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -87,14 +99,37 @@ contract InvariantsTest is StdInvariant, VelumBase {
         assertEq(vault.balanceOf(address(book), address(usdg)), book.totalBacking(), "offer backing");
         assertEq(
             vault.balanceOf(address(perps), address(usdg)),
-            perps.totalMargin() + perps.insurance(),
-            "margins + insurance"
+            perps.totalMargin() + perps.insurance() + perps.coverReserved(),
+            "margins + insurance + reserved cover"
         );
     }
 
-    /// 3. Liquidations never overpay.
+    /// 3. Liquidations never overpay, cover is deferred and capped.
     function invariant_liquidationsNeverOverpay() public view {
-        assertFalse(handler.liquidationOverpaid());
+        assertFalse(handler.liquidationOverpaid(), "overpaid");
+        assertFalse(handler.immediateCoverPaid(), "cover paid at liquidation");
+        assertFalse(handler.coverOverCap(), "epoch cover above 10% of the fund");
+    }
+
+    /// 5. Reserved cover == unpaid budgets of settled epochs; outstanding == recorded claims.
+    function invariant_coverAccounting() public view {
+        uint256 reserved;
+        for (uint256 i; i < handler.claimEpochCount(); ++i) {
+            uint256 e = handler.claimEpochs(i);
+            (uint256 claimed, uint256 outstanding, uint256 budget, uint256 paid, bool settled) = perps.coverEpochs(e);
+            uint256 sum;
+            for (uint256 j; j < handler.claimantCount(e); ++j) {
+                sum += perps.coverClaims(e, handler.claimant(e, j));
+            }
+            assertEq(outstanding, sum, "outstanding claims");
+            assertLe(outstanding, claimed);
+            assertLe(budget, claimed, "budget above claims");
+            assertLe(paid, budget, "paid above budget");
+            if (settled && outstanding != 0) reserved += budget - paid;
+            if (!settled) assertEq(budget, 0);
+        }
+        assertEq(perps.coverReserved(), reserved, "reserved cover");
+        assertFalse(handler.guardianMovedFunds(), "guardian moved funds");
     }
 
     /// Open interest equals the sum of open positions per side.
@@ -130,7 +165,15 @@ contract InvariantsTest is StdInvariant, VelumBase {
             " liquidations=",
             vm.toString(handler.liquidations()),
             " forcedExits=",
-            vm.toString(handler.forcedExits())
+            vm.toString(handler.forcedExits()),
+            " claimEpochs=",
+            vm.toString(handler.claimEpochCount()),
+            " coverPaid=",
+            vm.toString(handler.coverClaimsPaid()),
+            " closeOnlyToggles=",
+            vm.toString(handler.closeOnlyToggles()),
+            " gaps=",
+            vm.toString(handler.gaps())
         );
         if (vm.envOr("VELUM_INV_STATS", false)) vm.writeLine("deployments/inv-stats.txt", line);
         emit log_named_string(
@@ -154,6 +197,11 @@ contract InvariantsTest is StdInvariant, VelumBase {
         );
         handler.windDown();
         assertEq(perps.totalMargin(), 0, "margins left");
+        assertEq(perps.coverReserved(), 0, "cover left reserved");
+        for (uint256 i; i < handler.claimEpochCount(); ++i) {
+            (, uint256 outstanding,,,) = perps.coverEpochs(handler.claimEpochs(i));
+            assertEq(outstanding, 0, "claims left unpaid");
+        }
         assertEq(vault.balanceOf(address(perps), address(usdg)), perps.insurance(), "perps holds only insurance");
         assertEq(book.totalBacking(), 0, "backing left");
         assertEq(vault.balanceOf(address(book), address(usdg)), 0, "book balance");

@@ -21,11 +21,14 @@ interface IDecimals {
 ///         local anvil (31337). Refuses mainnet: that needs the Phase 5 external audit.
 ///
 /// Testnet (tokens default to packages/config/robinhood-testnet.json):
+///   PRICE_RELAYER=<dedicated relay key address> \
 ///   forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --private-key $DEPLOYER_KEY
-/// Optional env: PRICE_RELAYER (default: deployer), OI_CAP_TOKENS (per side, default 10000),
+/// Required on testnet: PRICE_RELAYER, a dedicated key that is not the deployer (internal audit F-04).
+/// Optional env: GUARDIAN (close-only switch, default none), OI_CAP_TOKENS (per side, default 10000),
 ///   PRICE_MIN_USD / PRICE_MAX_USD (relay bounds, default 1 / 100000),
 ///   USDG_ADDRESS + STOCK_ADDRESSES + STOCK_SYMBOLS (comma lists) to override the config file.
-/// Anvil with no env: deploys mock USDG (6 dp), TSLA and AMZN (18 dp) and pushes starting prices.
+/// Anvil with no env: deploys mock USDG (6 dp), TSLA and AMZN (18 dp), uses the deployer as relayer and
+///   pushes starting prices.
 contract Deploy is Script {
     uint256 internal constant MAINNET = 4663;
     uint256 internal constant TESTNET = 46_630;
@@ -59,15 +62,27 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
+        bool relayerSet = vm.envExists("PRICE_RELAYER");
+        address relayer = relayerSet ? vm.envAddress("PRICE_RELAYER") : deployer;
+        checkRelayer(block.chainid, relayerSet, relayer, deployer);
+        address guardian = vm.envOr("GUARDIAN", address(0));
         Tokens memory t = _tokens();
-        address relayer = vm.envOr("PRICE_RELAYER", deployer);
         uint256 startBlock = block.number;
         Deployed memory d = _deploy(t);
-        _wire(d, t, relayer);
+        _wire(d, t, relayer, guardian);
         if (block.chainid == ANVIL && relayer == deployer) _seedPrices(d.oracle, t.stocks);
         vm.stopBroadcast();
 
-        _write(t, d, relayer, startBlock);
+        _write(t, d, relayer, guardian, startBlock);
+    }
+
+    /// @notice Testnet needs a dedicated price-relay key: one key controlling both deployment and every
+    ///         price is refused (internal audit F-04). Anvil may use the deployer.
+    function checkRelayer(uint256 chainId, bool relayerSet, address relayer, address deployer) public pure {
+        if (chainId == MAINNET) revert("Velum: refusing Robinhood Chain mainnet (4663)");
+        if (chainId != TESTNET) return;
+        require(relayerSet && relayer != address(0), "Velum: set PRICE_RELAYER to the dedicated price-relay key");
+        require(relayer != deployer, "Velum: PRICE_RELAYER must not be the deployer key");
     }
 
     function _deploy(Tokens memory t) internal returns (Deployed memory d) {
@@ -85,7 +100,7 @@ contract Deploy is Script {
     }
 
     /// @dev One-time setup of every contract; each locks itself permanently afterwards.
-    function _wire(Deployed memory d, Tokens memory t, address relayer) internal {
+    function _wire(Deployed memory d, Tokens memory t, address relayer, address guardian) internal {
         uint256 n = t.stocks.length;
         address[] memory vaultTokens = new address[](n + 1);
         vaultTokens[0] = t.usdg;
@@ -112,10 +127,11 @@ contract Deploy is Script {
             maxs[i] = uint128(maxP);
             caps[i] = vm.envOr("OI_CAP_TOKENS", uint256(10_000)) * 1e18;
         }
-        d.oracle.setup(t.stocks, new address[](n), mins, maxs, relayer);
+        // No Chainlink feeds, so no sequencer-uptime feed either (zero = relay sources only).
+        d.oracle.setup(t.stocks, new address[](n), mins, maxs, relayer, address(0));
         d.pools.setup(t.stocks);
         d.book.setup(address(d.perps), t.stocks);
-        d.perps.setup(t.stocks, caps);
+        d.perps.setup(t.stocks, caps, guardian);
     }
 
     function _seedPrices(OracleAdapter oracle, address[] memory stocks) internal {
@@ -156,7 +172,9 @@ contract Deploy is Script {
         }
     }
 
-    function _write(Tokens memory t, Deployed memory d, address relayer, uint256 startBlock) internal {
+    function _write(Tokens memory t, Deployed memory d, address relayer, address guardian, uint256 startBlock)
+        internal
+    {
         string memory tok = "tokens";
         vm.serializeAddress(tok, "USDG", t.usdg);
         string memory tokensJson;
@@ -174,6 +192,7 @@ contract Deploy is Script {
         vm.serializeUint(root, "chainId", block.chainid);
         vm.serializeUint(root, "startBlock", startBlock);
         vm.serializeAddress(root, "priceRelayer", relayer);
+        vm.serializeAddress(root, "guardian", guardian);
         vm.serializeString(root, "tokens", tokensJson);
         string memory out = vm.serializeString(root, "contracts", contractsJson);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");

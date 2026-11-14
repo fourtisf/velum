@@ -6,7 +6,6 @@ import {IOracleAdapter} from "./interfaces/IOracleAdapter.sol";
 import {IMakerBook} from "./interfaces/IMakerBook.sol";
 import {FixedMath} from "./libraries/FixedMath.sol";
 import {PerpsBase} from "./perps/PerpsBase.sol";
-import {PerpsLiquidation} from "./perps/PerpsLiquidation.sol";
 import {PerpsForcedExit} from "./perps/PerpsForcedExit.sol";
 
 /// @title PerpsMarkets
@@ -17,25 +16,32 @@ import {PerpsForcedExit} from "./perps/PerpsForcedExit.sol";
 ///   entry       = oracle price ± the offer's open spread (worse for the taker)
 ///   takerMargin = S / L (>= initial margin 1/maxL)      fee = 0.06% of S, to insurance
 ///   makerMargin = S / maxL, taken from the offer's backing
-///   qty         = S / entry, at most 100 tokens; per-market open-interest cap per side
+///   qty         = S / entry, at most 100 tokens; per-market open-interest cap per side; S >= 10 USDG
+///   needs: price at most 10 s old and not lagging, sequencer up past grace, market not close-only.
 /// Closing (taker, any time, no maker signature):
 ///   exit = oracle ∓ the maker's committed close spread; fee = 0.06% of exit notional;
 ///   taker gets max(0, margin + pnl - funding - fee) capped by the pool; the maker gets the rest.
-contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
+///   A liquidatable position is settled as a liquidation instead (internal audit F-12): an insolvent
+///   counterparty's shortfall becomes a cover claim rather than being forfeited.
+contract PerpsMarkets is PerpsForcedExit {
     using FixedMath for uint256;
 
-    event Setup(address[] markets, uint256[] oiCaps);
+    event Setup(address[] markets, uint256[] oiCaps, address guardian);
 
     constructor(IVelumVault vault_, IOracleAdapter oracle_, IMakerBook book_, address usdg_, uint8 usdgDecimals)
         PerpsBase(vault_, oracle_, book_, usdg_, usdgDecimals)
     {}
 
     /// @notice One-time market list with per-side open-interest caps (qty, 1e18 = one token).
-    function setup(address[] calldata markets_, uint256[] calldata oiCaps) external {
+    /// @param guardian_ Optional emergency guardian (zero = none). It can only switch a market into or
+    ///        out of close-only; it can never move, freeze or redirect funds, or change prices or
+    ///        parameters (internal audit F-07).
+    function setup(address[] calldata markets_, uint256[] calldata oiCaps, address guardian_) external {
         if (msg.sender != deployer) revert NotDeployer();
         if (locked) revert AlreadySetUp();
         if (markets_.length != oiCaps.length) revert LengthMismatch();
         locked = true;
+        guardian = guardian_;
         for (uint256 i; i < markets_.length; ++i) {
             if (markets_[i] == address(0)) revert ZeroAddress();
             Market storage m = markets[markets_[i]];
@@ -45,7 +51,17 @@ contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
             m.lastFundingUpdate = uint64(block.timestamp);
             marketList.push(markets_[i]);
         }
-        emit Setup(markets_, oiCaps);
+        emit Setup(markets_, oiCaps, guardian_);
+    }
+
+    /// @notice Guardian only: stop (true) or resume (false) new opens in `market`, e.g. around a stock
+    ///         split, dividend or earnings. Closing, margin changes, liquidation and forced exit keep
+    ///         working; no balance moves.
+    function setCloseOnly(address market, bool on) external {
+        if (msg.sender != guardian || guardian == address(0)) revert NotGuardian();
+        if (!markets[market].enabled) revert UnknownMarket(market);
+        closeOnly[market] = on;
+        emit CloseOnlySet(market, on);
     }
 
     /// @notice Open a position against maker offer `offerId`.
@@ -58,9 +74,12 @@ contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
         returns (uint256 id)
     {
         if (!markets[market].enabled) revert UnknownMarket(market);
-        if (size == 0) revert ZeroAmount();
+        if (closeOnly[market]) revert CloseOnly(market);
+        if (size < minPositionSize) revert PositionTooSmall(size, minPositionSize);
         if (leverageHalf < 2 || leverageHalf > 2 * MAX_LEVERAGE) revert BadLeverage(leverageHalf);
-        uint256 price = _accrue(market);
+        _requireSequencer();
+        (uint256 price, bool lagging) = _accrue(market, OPEN_MAX_AGE);
+        if (lagging) revert PriceLagging(market);
 
         id = nextPositionId++;
         Position storage p = _positions[id];
@@ -114,16 +133,29 @@ contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
         p.takerMargin = takerMargin;
     }
 
-    /// @notice Close at the oracle price minus the maker's committed close spread.
+    /// @notice Close at the oracle price minus the maker's committed close spread. If the position is
+    ///         liquidatable it is liquidated instead, with the taker as liquidator (reward paid on top).
     /// @param priceLimit Worst acceptable exit (min for longs, max for shorts); 0 = no limit.
+    /// @return takerOut The taker's share of the pool (excluding any liquidator reward or cover claim).
     function close(uint256 id, uint256 priceLimit) external nonReentrant returns (uint256 takerOut) {
         Position storage p = _position(id);
         if (msg.sender != p.taker) revert NotTaker();
-        uint256 price = _accrue(p.market);
+        (uint256 price, bool lagging) = _accrue(p.market, MAX_PRICE_AGE);
         uint256 exit =
             p.isLong ? price.mulDivDown(BPS - p.closeSpreadBps, BPS) : price.mulDivUp(BPS + p.closeSpreadBps, BPS);
         if (priceLimit != 0 && (p.isLong ? exit < priceLimit : exit > priceLimit)) revert PriceLimit(exit, priceLimit);
+        // F-12: never forfeit cover by closing against an insolvent side. Liquidations wait for the
+        // sequencer (F-05); until then a plain close stays available.
+        if (_liquidatable(p, price) && oracle.sequencerReady()) {
+            (takerOut,) = _liquidateAt(id, p, price, msg.sender);
+            return takerOut;
+        }
+        if (lagging) revert PriceLagging(p.market);
+        return _closeAt(id, p, price, exit);
+    }
 
+    /// @dev Plain close at `exit` (after `_accrue`): fee to insurance, taker capped by the pool.
+    function _closeAt(uint256 id, Position storage p, uint256 price, uint256 exit) internal returns (uint256 takerOut) {
         int256 pnl = _takerPnl(p, exit);
         int256 funding = _takerFunding(p, markets[p.market]);
         uint256 pool = p.takerMargin + p.makerMargin;
@@ -150,11 +182,15 @@ contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
     }
 
     /// @notice Take USDG margin back as the taker, keeping the claim at or above initial margin.
+    ///         Needs a non-lagging price and the sequencer up past its grace period.
     function removeMargin(uint256 id, uint256 amount) external nonReentrant {
         Position storage p = _position(id);
         if (msg.sender != p.taker) revert NotTaker();
-        if (amount == 0 || amount > p.takerMargin) revert ZeroAmount();
-        uint256 price = _accrue(p.market);
+        if (amount == 0) revert ZeroAmount();
+        if (amount > p.takerMargin) revert ExceedsMargin(amount, p.takerMargin);
+        _requireSequencer();
+        (uint256 price, bool lagging) = _accrue(p.market, MAX_PRICE_AGE);
+        if (lagging) revert PriceLagging(p.market);
         int256 claimAfter = _takerClaim(p, markets[p.market], price) - FixedMath.toInt(amount);
         uint256 required = _notionalUp(p.qty, price).mulDivUp(IM_BPS, BPS);
         if (claimAfter < FixedMath.toInt(required)) revert BelowInitialMargin(claimAfter, required);

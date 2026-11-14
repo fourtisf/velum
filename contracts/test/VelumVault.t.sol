@@ -59,6 +59,21 @@ contract VelumVaultTest is VelumBase {
         vault.deposit(address(usdg), 0, alice);
     }
 
+    /// @notice Audit I-1: a deposit credited to a module would be stranded, so it is refused.
+    function test_deposit_toModuleRejected() public {
+        usdg.mint(alice, 300 * USD);
+        vm.startPrank(alice);
+        usdg.approve(address(vault), type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(VelumVault.ModuleRecipient.selector, address(perps)));
+        vault.deposit(address(usdg), 100 * USD, address(perps));
+        vm.expectRevert(abi.encodeWithSelector(VelumVault.ModuleRecipient.selector, address(book)));
+        vault.deposit(address(usdg), 100 * USD, address(book));
+        vm.expectRevert(abi.encodeWithSelector(VelumVault.ModuleRecipient.selector, address(pools)));
+        vault.deposit(address(usdg), 100 * USD, address(pools));
+        vm.stopPrank();
+        assertEq(usdg.balanceOf(alice), 300 * USD);
+    }
+
     function test_deposit_feeOnTransferCreditsReceived() public {
         FeeOnTransferToken fee = new FeeOnTransferToken();
         VelumVault v = new VelumVault();

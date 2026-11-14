@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import {PerpsFunding} from "./PerpsFunding.sol";
+import {PerpsLiquidation} from "./PerpsLiquidation.sol";
 import {FixedMath} from "../libraries/FixedMath.sol";
 
 /// @title PerpsForcedExit
@@ -9,9 +9,11 @@ import {FixedMath} from "../libraries/FixedMath.sol";
 ///         Seven days later anyone may settle it at the oracle price with no spread, no fee and no
 ///         penalty. If the oracle is dead (no valid price for 14 days) it settles at the entry
 ///         price. The bond is refunded to the requester when the position closes for any reason.
+///         A position that is liquidatable at settlement is liquidated instead (internal audit F-08):
+///         the penalty applies and the settler receives the liquidator reward.
 /// @dev In Phase 3 a taker can always close directly; forced exit is the "services went quiet"
 ///      escape hatch (for makers too, who otherwise depend on the taker closing).
-abstract contract PerpsForcedExit is PerpsFunding {
+abstract contract PerpsForcedExit is PerpsLiquidation {
     function requestForcedExit(uint256 id) external payable nonReentrant {
         Position storage p = _position(id);
         if (msg.sender != p.taker && msg.sender != p.maker) revert NotParty();
@@ -29,7 +31,18 @@ abstract contract PerpsForcedExit is PerpsFunding {
         uint256 settleAfter = uint256(p.exitRequestedAt) + FORCED_EXIT_DELAY;
         if (block.timestamp < settleAfter) revert TooEarly(settleAfter);
         bool atEntry = oracle.isDead(p.market);
-        uint256 price = atEntry ? p.entry : _accrue(p.market);
+        uint256 price = p.entry;
+        if (!atEntry) {
+            bool lagging;
+            (price, lagging) = _accrue(p.market, MAX_PRICE_AGE);
+            if (_liquidatable(p, price)) {
+                _requireSequencer();
+                emit ForcedExitSettled(id, price, false);
+                _liquidateAt(id, p, price, msg.sender);
+                return;
+            }
+            if (lagging) revert PriceLagging(p.market);
+        }
         int256 claim = _takerClaim(p, markets[p.market], price);
         uint256 pool = p.takerMargin + p.makerMargin;
         uint256 takerOut = claim <= 0 ? 0 : FixedMath.min(FixedMath.toUint(claim), pool);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {VelumBase} from "../Base.t.sol";
 import {VelumVault} from "../../src/VelumVault.sol";
 import {OracleAdapter} from "../../src/OracleAdapter.sol";
@@ -13,12 +13,13 @@ import {IOracleAdapter} from "../../src/interfaces/IOracleAdapter.sol";
 import {IMakerBook} from "../../src/interfaces/IMakerBook.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockAggregator} from "../mocks/MockAggregator.sol";
+import {Deploy} from "../../script/Deploy.s.sol";
 import {BombAccount} from "./AuditHelpers.sol";
 
-/// @notice Internal audit (2026-11) proof-of-concept tests, named after the finding they prove.
-///         Tests named test_Fxx_fixed_* are regressions for fixed findings. The others still
-///         demonstrate OPEN findings (see docs/audit/2026-11-internal.md) and must be inverted
-///         into regressions when each one is fixed.
+/// @notice Internal audit (2026-11) proof-of-concept tests, named after the finding they prove
+///         (IDs as in docs/audit/2026-11-internal.md). Tests named test_Fxx_fixed_* are regressions:
+///         they run the original exploit and assert it now fails. test_F09_* and test_F10_residual_*
+///         document what remains of the accepted Low findings.
 contract AuditPoC is VelumBase {
     address internal mallory = makeAddr("mallory"); // attacker, maker address
     address internal mallory2 = makeAddr("mallory2"); // attacker, second (taker) address
@@ -52,6 +53,10 @@ contract AuditPoC is VelumBase {
         _fund(carol, usdg, amount);
         vm.prank(carol);
         perps.fundInsurance(amount);
+    }
+
+    function _total(address a, address b) internal view returns (uint256) {
+        return _bal(a, usdg) + _bal(b, usdg);
     }
 
     // ------------------------------------------------------------ F-01: return-bomb bond refund
@@ -97,97 +102,313 @@ contract AuditPoC is VelumBase {
 
     // ------------------------------------------------------------ F-02: self-paired gap straddle
 
-    /// @dev Attacker opens a 5x long from mallory2 against mallory's own offer (SelfTrade only compares
-    ///      one address). The relay accepts any jump after an hour without updates (e.g. overnight).
-    function _gapStraddle(bool down) internal returns (uint256 profit, uint256 drained) {
+    /// @dev The original exploit: a 5x long from mallory2 against mallory's own offer (SelfTrade only
+    ///      compares one address), held over a 16 h relay silence, then a 30% gap and an immediate
+    ///      liquidation for insurance cover. Returns the attacker's P&L. `selfLiquidate` = the attacker
+    ///      liquidates (and keeps the reward) instead of a third-party keeper.
+    function _straddle(bool down, bool selfLiquidate) internal returns (int256 pnl, uint256 fee) {
         _seedInsurance(20_000 * USD);
-        uint256 offer = _offerAs(mallory, 20_000 * USD, 0, 0);
+        uint256 offer = _offerAs(mallory, 20_000 * USD, 2, 0); // the open-spread floor (F-06)
         _fund(mallory2, usdg, 5000 * USD);
-        uint256 start = 25_000 * USD;
+        uint256 start = _total(mallory, mallory2) + book.totalBacking();
         vm.prank(mallory2);
         uint256 id = perps.open(offer, address(tsla), true, 20_000 * USD, 10, 0);
+        fee = 20_000 * USD * 6 / 10_000;
 
         vm.warp(block.timestamp + 16 hours); // market closed overnight, relay silent
-        _pushPrice(address(tsla), down ? (TSLA_PRICE * 70) / 100 : (TSLA_PRICE * 130) / 100); // 30% gap
+        uint256 gap = down ? (TSLA_PRICE * 70) / 100 : (TSLA_PRICE * 130) / 100; // 30% gap
+        _pushPrice(address(tsla), gap);
+        // The first price after the silence is capped at 10% from the last valid one (F-04 band).
+        uint256 capped = down ? (TSLA_PRICE * 9000 + 9999) / 10_000 : (TSLA_PRICE * 11_000) / 10_000;
+        assertEq(_effectivePrice(address(tsla)), capped);
+        assertTrue(oracle.lagging(address(tsla)));
+        // No shortfall can be cashed in at once; closing at a known-wrong price is refused too.
+        if (down) {
+            vm.prank(mallory2);
+            vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotLiquidatable.selector, id));
+            perps.liquidate(id);
+            vm.prank(mallory2);
+            vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
+            perps.close(id, 0);
+        }
+        // The price walks; the first liquidatable step is solvent (the band keeps a 5x pair solvent
+        // within a window) and pays the 1% penalty.
+        while (!perps.isLiquidatable(id)) {
+            _nextWindowPush(address(tsla), gap);
+        }
         uint256 insBefore = perps.insurance();
-        vm.prank(mallory2);
+        int256 claim = perps.takerClaimAt(id, _effectivePrice(address(tsla)));
+        assertGt(claim, 0);
+        assertLt(claim, int256(20_000 * USD * 2 / 5));
+        vm.prank(selfLiquidate ? mallory2 : liquidator);
         perps.liquidate(id);
+        assertGt(perps.insurance(), insBefore, "insurance gains half the penalty");
+        assertEq(perps.coverClaims(perps.currentCoverEpoch(), mallory), 0, "no shortfall claim");
+        assertEq(perps.coverClaims(perps.currentCoverEpoch(), mallory2), 0, "no shortfall claim");
         vm.prank(mallory);
         book.withdrawOffer(offer);
-        profit = _bal(mallory, usdg) + _bal(mallory2, usdg) - start;
-        drained = insBefore - perps.insurance();
+        pnl = int256(_total(mallory, mallory2)) - int256(start);
+        _assertPerpsSolvent();
     }
 
-    function test_F02_selfPairedGapDown_drainsInsurance() public {
-        (uint256 profit, uint256 drained) = _gapStraddle(true);
-        emit log_named_decimal_uint("attacker profit, -30% gap", profit, 6);
-        assertGt(profit, 1900 * USD);
-        assertGt(drained, 1900 * USD);
+    /// @notice F-02 regression: the straddle now loses money even when the attacker liquidates itself
+    ///         and keeps the keeper reward: it pays the fee plus the insurance half of the penalty.
+    function test_F02_fixed_gapDownStraddleLosesMoney() public {
+        (int256 pnl, uint256 fee) = _straddle(true, true);
+        emit log_named_decimal_int("attacker P&L, -30% gap, self-liquidated", pnl, 6);
+        assertLt(pnl, -int256(fee), "loses more than the fee");
     }
 
-    function test_F02_selfPairedGapUp_drainsInsurance() public {
-        (uint256 profit, uint256 drained) = _gapStraddle(false);
-        emit log_named_decimal_uint("attacker profit, +30% gap", profit, 6);
-        assertGt(profit, 1900 * USD);
-        assertGt(drained, 1900 * USD);
+    function test_F02_fixed_gapUpStraddleLosesMoney() public {
+        (int256 pnl, uint256 fee) = _straddle(false, true);
+        emit log_named_decimal_int("attacker P&L, +30% gap, self-liquidated", pnl, 6);
+        assertLt(pnl, -int256(fee), "loses more than the fee");
+    }
+
+    function test_F02_fixed_gapStraddleLosesMoreWithKeeper() public {
+        (int256 pnl, uint256 fee) = _straddle(true, false);
+        emit log_named_decimal_int("attacker P&L, -30% gap, keeper liquidated", pnl, 6);
+        assertLt(pnl, -int256(fee));
+    }
+
+    /// @notice F-02 worst case: keepers stay away for whole band windows, so both an honest pair and the
+    ///         attacker's self-pair go insolvent. Cover is not paid at liquidation; claims wait for the
+    ///         epoch to end, then share a budget capped at 10% of the fund pro rata; the rest is a haircut.
+    function test_F02_fixed_worstCaseCoverDeferredCappedProRata() public {
+        _seedInsurance(20_000 * USD);
+        uint256 honestOffer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 2100 * USD);
+        uint256 honest = _open(alice, honestOffer, true, 10_000 * USD, 10);
+        uint256 evilOffer = _offerAs(mallory, 20_000 * USD, 2, 0);
+        _fund(mallory2, usdg, 5000 * USD);
+        vm.prank(mallory2);
+        uint256 evil = perps.open(evilOffer, address(tsla), true, 20_000 * USD, 10, 0);
+
+        vm.warp(block.timestamp + 16 hours);
+        _movePriceTo(address(tsla), (TSLA_PRICE * 70) / 100); // walks 4 windows, nobody liquidates
+        uint256 insBefore = perps.insurance();
+        uint256 bobBefore = _bal(bob, usdg);
+        uint256 malloryBefore = _bal(mallory, usdg);
+        uint256 epoch = perps.currentCoverEpoch();
+        vm.startPrank(liquidator);
+        perps.liquidate(honest);
+        perps.liquidate(evil);
+        vm.stopPrank();
+        assertEq(_bal(bob, usdg) - bobBefore, 4000 * USD, "winner gets the pool, no cover yet");
+        assertEq(_bal(mallory, usdg) - malloryBefore, 8000 * USD, "winner gets the pool, no cover yet");
+        assertEq(insBefore - perps.insurance(), 2 * USD, "only the two capped keeper rewards");
+        uint256 bobClaim = perps.coverClaims(epoch, bob);
+        uint256 evilClaim = perps.coverClaims(epoch, mallory);
+        assertGt(bobClaim, 0);
+        assertGt(evilClaim, 0);
+
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.EpochNotOver.selector, epoch));
+        perps.claimCover(epoch, mallory);
+        vm.warp((epoch + 1) * 1 hours);
+        uint256 ins = perps.insurance();
+        uint256 budget = perps.settleCoverEpoch(epoch);
+        assertEq(budget, ins / 10, "capped at 10% of the fund");
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.EpochSettled.selector, epoch));
+        perps.settleCoverEpoch(epoch);
+        uint256 evilCover = perps.claimCover(epoch, mallory);
+        uint256 bobCover = perps.claimCover(epoch, bob);
+        uint256 claimed = bobClaim + evilClaim;
+        assertEq(evilCover, evilClaim * budget / claimed, "pro rata");
+        assertEq(bobCover, bobClaim * budget / claimed, "pro rata");
+        assertLt(evilCover, evilClaim, "haircut");
+        assertLt(bobCover, bobClaim, "haircut");
+        assertEq(perps.coverReserved(), 0, "dust back to the fund");
+        assertEq(perps.insurance(), ins - evilCover - bobCover);
+        vm.expectRevert(PerpsBase.NothingToClaim.selector);
+        perps.claimCover(epoch, mallory);
+        // Bounded: the attacker took at most its share of a tenth of the fund, only by keepers missing
+        // a 10-minute window in which its position offered an ~80 USDG liquidation reward.
+        assertLe(evilCover, ins / 10);
+        _assertPerpsSolvent();
+    }
+
+    /// @notice F-02 property: right after an open, no relayed price within the band window can push
+    ///         either side of a pair below zero, whatever the leverage, side or open spread.
+    function testFuzz_F02_fixed_bandKeepsPairsSolventWithinWindow(
+        uint256 size,
+        uint8 levHalf,
+        bool isLong,
+        uint16 openBps,
+        uint256 pushed
+    ) public {
+        uint256 offer = _offerAs(bob, 100_000 * USD, uint16(bound(openBps, 2, 500)), 5);
+        size = bound(size, 10 * USD, 30_000 * USD);
+        levHalf = uint8(bound(levHalf, 2, 10));
+        _fund(alice, usdg, size + size / 100);
+        uint256 id = _open(alice, offer, isLong, size, levHalf);
+        _pushPrice(address(tsla), bound(pushed, 1e18, 100_000e18));
+        uint256 p = _effectivePrice(address(tsla));
+        int256 takerClaim = perps.takerClaimAt(id, p);
+        PerpsBase.Position memory pos = _pos(id);
+        assertGe(takerClaim, 0, "taker solvent");
+        assertGe(int256(pos.takerMargin + pos.makerMargin) - takerClaim, 0, "maker solvent");
     }
 
     // ------------------------------------------------------------ F-04: relayer power
 
-    /// @notice The "10% per update" relay limit is per second: the relayer key doubles a price in 8 s
-    ///         and an accomplice taker takes the maker's whole margin (plus insurance) by liquidation.
-    function test_F04_relayerDoublesPriceInEightSeconds() public {
+    /// @notice F-04 regression: the relayer key pushed +10% eight times in 8 s to double the price and
+    ///         let an accomplice take the maker's margin plus insurance. Now the reported price moves at
+    ///         most 10% per 10-minute window, and the accomplice gets the +10% P&L, not the pool.
+    function test_F04_fixed_relayerCannotDoublePriceQuickly() public {
         _seedInsurance(1000 * USD);
         uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
         _fund(mallory2, usdg, 1000 * USD);
         vm.prank(mallory2);
         uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, 0);
-        uint256 t0 = block.timestamp;
         uint256 p = TSLA_PRICE;
         for (uint256 i; i < 8; ++i) {
             p = (p * 110) / 100;
             _pushPrice(address(tsla), p);
         }
-        assertEq(block.timestamp - t0, 8);
         assertGt(p, 2 * TSLA_PRICE);
+        assertEq(_effectivePrice(address(tsla)), (TSLA_PRICE * 11_000) / 10_000, "still +10% after 8 s");
         uint256 before = _bal(mallory2, usdg);
+        uint256 ins = perps.insurance();
         vm.prank(mallory2);
-        perps.liquidate(id);
+        perps.liquidate(id); // the maker is just below maintenance at +10%
         uint256 got = _bal(mallory2, usdg) - before;
         emit log_named_decimal_uint("accomplice payout on 200 margin", got, 6);
-        assertGt(got, 400 * USD); // whole 400 pool + insurance cover
+        assertLt(got, 310 * USD, "was > 400 (whole pool + insurance)");
+        assertGe(perps.insurance(), ins, "no insurance paid out");
+        assertEq(perps.coverClaims(perps.currentCoverEpoch(), mallory2), 0);
+
+        // doubling now takes at least 7 band windows (70 minutes): time for makers and keepers to react
+        uint256 t0 = block.timestamp;
+        while (_effectivePrice(address(tsla)) < 2 * TSLA_PRICE) {
+            _nextWindowPush(address(tsla), 2 * TSLA_PRICE);
+        }
+        assertGe(block.timestamp - t0, 70 minutes);
     }
 
-    // ------------------------------------------------------------ F-06: forced exit vs penalty / spread
+    // ------------------------------------------------------------ F-06: free option on stale prices
 
-    /// @notice A loser below maintenance with a matured forced-exit request settles it itself, paying no
-    ///         liquidation penalty, no close spread (5% here) and no fee.
-    function test_F06_forcedExitAvoidsPenaltySpreadAndFee() public {
-        uint256 offer = _offerAs(bob, 10_000 * USD, 0, 500); // 5% binding close spread
+    /// @notice F-06 regression: opens need a price at most 10 s old (closes keep 60 s).
+    function test_F06_fixed_opensNeedTenSecondPrice() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 2, 5);
+        _fund(alice, usdg, 2000 * USD);
+        uint256 id = _open(alice, offer, true, 500 * USD, 4);
+        (, uint256 at) = oracle.latest(address(tsla));
+        vm.warp(at + 11);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.StalePrice.selector, address(tsla), at));
+        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        vm.warp(at + 60);
+        vm.prank(alice);
+        perps.close(id, 0); // a 60 s old price is still fine for closing
+        assertFalse(_pos(id).open);
+    }
+
+    /// @notice F-06 regression: 0-spread offers (the other half of the free option) are refused.
+    function test_F06_fixed_zeroSpreadOffersRefused() public {
+        _fund(mallory, usdg, 1000 * USD);
+        vm.prank(mallory);
+        vm.expectRevert(MakerBook.BadOffer.selector);
+        book.postOffer(address(tsla), 1000 * USD, 1000 * USD, 0, 0, uint64(block.timestamp + 1 days));
+    }
+
+    // ------------------------------------------------------------ F-07: corporate actions
+
+    /// @notice F-07: the optional guardian can only switch a market into or out of close-only. Opens stop;
+    ///         closing, margin, liquidation and forced exit keep working; no balance moves.
+    function test_F07_fixed_guardianCloseOnly() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 3000 * USD);
+        vm.deal(alice, 1 ether);
+        uint256 a = _open(alice, offer, true, 1000 * USD, 10);
+        uint256 b = _open(alice, offer, true, 1000 * USD, 4);
+        uint256 c = _open(alice, offer, false, 500 * USD, 4);
+
+        vm.prank(alice);
+        vm.expectRevert(PerpsBase.NotGuardian.selector);
+        perps.setCloseOnly(address(tsla), true);
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.UnknownMarket.selector, address(usdg)));
+        perps.setCloseOnly(address(usdg), true);
+
+        uint256 perpsBal = _bal(address(perps), usdg);
+        uint256 bookBal = _bal(address(book), usdg);
+        uint256 ins = perps.insurance();
+        vm.prank(guardian);
+        perps.setCloseOnly(address(tsla), true);
+        assertTrue(perps.closeOnly(address(tsla)));
+        assertEq(_bal(address(perps), usdg), perpsBal, "no funds move");
+        assertEq(_bal(address(book), usdg), bookBal, "no funds move");
+        assertEq(perps.insurance(), ins);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.CloseOnly.selector, address(tsla)));
+        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        vm.prank(alice);
+        perps.close(b, 0);
+        vm.prank(alice);
+        perps.addMargin(c, 10 * USD);
+        vm.prank(alice);
+        perps.requestForcedExit{value: 0.001 ether}(c);
+        _movePriceTo(address(tsla), 345e18);
+        vm.prank(liquidator);
+        perps.liquidate(a);
+        vm.warp(block.timestamp + 7 days);
+        _pushPrice(address(tsla), 345e18);
+        perps.settleForcedExit(c);
+
+        vm.prank(guardian);
+        perps.setCloseOnly(address(tsla), false);
+        _open(alice, offer, true, 500 * USD, 4);
+        _assertPerpsSolvent();
+    }
+
+    function test_F07_fixed_noGuardianNoSwitch() public {
+        PerpsMarkets p = new PerpsMarkets(
+            IVelumVault(address(vault)), IOracleAdapter(address(oracle)), IMakerBook(address(book)), address(usdg), 6
+        );
+        p.setup(_stocks(), new uint256[](2), address(0));
+        vm.prank(address(0));
+        vm.expectRevert(PerpsBase.NotGuardian.selector);
+        p.setCloseOnly(address(tsla), true);
+        vm.expectRevert(PerpsBase.NotGuardian.selector); // not even the deployer
+        p.setCloseOnly(address(tsla), true);
+    }
+
+    // ------------------------------------------------------------ F-08: forced exit vs penalty
+
+    /// @notice F-08 regression: a loser below maintenance with a matured forced-exit request used to settle
+    ///         it itself and skip the liquidation penalty. Now that settlement is a liquidation: the
+    ///         penalty applies (half to insurance) and the settler gets the keeper half.
+    function test_F08_fixed_forcedExitOnLiquidatablePaysPenalty() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 2, 500); // 5% binding close spread
         _fund(alice, usdg, 1000 * USD);
         vm.deal(alice, 1 ether);
         uint256 id = _open(alice, offer, true, 1000 * USD, 10);
         vm.prank(alice);
         perps.requestForcedExit{value: 0.001 ether}(id);
         vm.warp(block.timestamp + 7 days);
-        _pushPrice(address(tsla), 352e18);
+        _pushPrice(address(tsla), 353e18);
         perps.advanceFunding(address(tsla));
         assertTrue(perps.isLiquidatable(id));
-        int256 claim = perps.takerClaimAt(id, 352e18);
+        int256 claim = perps.takerClaimAt(id, 353e18);
         assertGt(claim, 0);
+        uint256 penalty = (_pos(id).qty * 353e18 + 1e30 - 1) / 1e30;
+        penalty = (penalty * 100 + 9999) / 10_000;
         uint256 insBefore = perps.insurance();
         uint256 before = _bal(alice, usdg);
         vm.prank(alice);
-        perps.settleForcedExit(id); // front-runs any liquidator
-        assertEq(_bal(alice, usdg) - before, uint256(claim), "full claim: no penalty, spread or fee");
-        assertEq(perps.insurance(), insBefore);
+        perps.settleForcedExit(id);
+        assertEq(_bal(alice, usdg) - before, uint256(claim) - penalty + penalty / 2, "penalty applied");
+        assertEq(perps.insurance() - insBefore, penalty - penalty / 2);
+        assertEq(perps.bondRefunds(alice), 0.001 ether);
+        _assertPerpsSolvent();
     }
 
-    // ------------------------------------------------------------ F-07: wash trading moves funding
+    // ------------------------------------------------------------ F-09: wash trading moves funding (accepted)
 
-    /// @notice Funding is set by global taker skew. A wash position (attacker as both maker and taker,
-    ///         second address bypasses SelfTrade) flips the sign so honest longs pay instead of receive.
-    function test_F07_washTradeFlipsFundingSign() public {
+    /// @notice F-09 (accepted Low, documented): funding follows global taker skew, so a self-paired
+    ///         position still moves it. It is bounded by the 0.01%/h cap and costs fees and locked margin.
+    function test_F09_washTradeStillMovesFundingWithinCap() public {
         uint256 offer = _offerAs(bob, 50_000 * USD, 5, 5);
         _fund(alice, usdg, 10_000 * USD);
         _fund(carol, usdg, 10_000 * USD);
@@ -195,49 +416,189 @@ contract AuditPoC is VelumBase {
         _open(carol, offer, false, 3000 * USD, 4); // honest short: shorts dominate
         assertLt(_fundingRate(), 0, "longs receive before the wash");
 
-        uint256 m = _offerAs(mallory, 30_000 * USD, 0, 0);
+        uint256 m = _offerAs(mallory, 30_000 * USD, 2, 0);
         _fund(mallory2, usdg, 10_000 * USD);
+        uint256 lockedBefore = perps.totalMargin();
         vm.prank(mallory2);
-        perps.open(m, address(tsla), true, 30_000 * USD, 10, 0); // self-paired, funding nets to zero for it
+        perps.open(m, address(tsla), true, 30_000 * USD, 10, 0);
         assertGt(_fundingRate(), 0, "longs pay after the wash");
-        int256 idx0 = _fundingIndex();
-        vm.warp(block.timestamp + 1 hours);
-        _pushPrice(address(tsla), TSLA_PRICE);
-        perps.advanceFunding(address(tsla));
-        assertGt(_fundingIndex() - idx0, 0, "honest long now pays funding");
+        assertLe(_fundingRate(), perps.MAX_FUNDING_RATE_PER_HOUR(), "within the cap");
+        assertEq(perps.totalMargin() - lockedBefore, 12_000 * USD, "attacker locks 40% of the wash size");
     }
 
-    // ------------------------------------------------------------ Info: donations to modules are stuck
+    // ------------------------------------------------------------ F-10, F-11, F-12
 
-    function test_I_depositToModuleAccountIsStuck() public {
+    /// @notice F-10: positions below 10 USDG are refused, so dust cannot grief keepers or the book.
+    function test_F10_fixed_dustPositionsRejected() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 2, 5);
+        _fund(mallory2, usdg, 100 * USD);
+        vm.prank(mallory2);
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.PositionTooSmall.selector, 9_999_999, 10 * USD));
+        perps.open(offer, address(tsla), true, 9_999_999, 10, 0);
+        vm.prank(mallory2);
+        perps.open(offer, address(tsla), true, 10 * USD, 10, 0);
+    }
+
+    /// @notice F-11: an insolvent position (nothing left for a penalty) still pays its liquidator a
+    ///         flat 1 USDG from insurance, so bad debt gets cleared.
+    function test_F11_fixed_insolventLiquidationPaysKeeper() public {
+        _seedInsurance(100 * USD);
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 1000 * USD);
+        uint256 id = _open(alice, offer, true, 1000 * USD, 10);
+        _movePriceTo(address(tsla), 290e18); // nobody liquidates on the way
+        perps.advanceFunding(address(tsla));
+        assertLt(perps.takerClaimAt(id, 290e18), 0);
+        uint256 ins = perps.insurance();
+        vm.prank(liquidator);
+        uint256 reward = perps.liquidate(id);
+        assertEq(reward, 1 * USD);
+        assertEq(_bal(liquidator, usdg), 1 * USD);
+        assertEq(ins - perps.insurance(), 1 * USD);
+        _assertPerpsSolvent();
+    }
+
+    /// @notice F-11: the top-up is half the full 1% penalty, capped at 1 USDG, so dust cannot farm it.
+    function test_F11_fixed_keeperTopUpScalesWithSize() public {
+        _seedInsurance(100 * USD);
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 100 * USD);
+        uint256 id = _open(alice, offer, true, 50 * USD, 10);
+        _movePriceTo(address(tsla), 290e18);
+        vm.prank(liquidator);
+        uint256 reward = perps.liquidate(id);
+        uint256 fullPenalty = ((_pos(id).qty * 290e18 + 1e30 - 1) / 1e30 * 100 + 9999) / 10_000;
+        assertEq(reward, fullPenalty / 2);
+        assertLt(reward, 1 * USD);
+    }
+
+    /// @notice F-12 regression: closing against an insolvent maker used to cap the taker at the pool and
+    ///         forfeit cover. Now the close settles as a liquidation and the shortfall is claimed.
+    function test_F12_fixed_closeAgainstInsolventMakerKeepsCoverClaim() public {
+        _seedInsurance(2000 * USD);
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 1001 * USD);
+        uint256 id = _open(alice, offer, true, 1000 * USD, 2); // 1x: maker posts 200
+        _movePriceTo(address(tsla), 520e18);
+        perps.advanceFunding(address(tsla));
+        int256 claim = perps.takerClaimAt(id, 520e18);
+        uint256 pool = 1200 * USD;
+        assertGt(claim, int256(pool));
+        uint256 epoch = perps.currentCoverEpoch();
+        vm.prank(alice);
+        assertEq(perps.close(id, 0), pool);
+        assertEq(perps.coverClaims(epoch, alice), uint256(claim) - pool);
+        vm.warp((epoch + 1) * 1 hours);
+        uint256 before = _bal(alice, usdg);
+        perps.claimCover(epoch, alice);
+        assertEq(_bal(alice, usdg) - before, uint256(claim) - pool, "covered (under the 10% cap)");
+        _assertPerpsSolvent();
+    }
+
+    /// @notice F-12: an insolvent taker closing no longer strips the maker of its cover claim.
+    function test_F12_fixed_insolventTakerCloseKeepsMakerClaim() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 1000 * USD);
+        uint256 id = _open(alice, offer, true, 1000 * USD, 10);
+        _movePriceTo(address(tsla), 300e18);
+        perps.advanceFunding(address(tsla));
+        int256 claim = perps.takerClaimAt(id, 300e18);
+        assertLt(claim, 0);
+        uint256 bobBefore = _bal(bob, usdg);
+        vm.prank(alice);
+        assertEq(perps.close(id, 0), 0);
+        assertEq(_bal(bob, usdg) - bobBefore, 400 * USD);
+        assertEq(perps.coverClaims(perps.currentCoverEpoch(), bob), uint256(-claim));
+    }
+
+    // ------------------------------------------------------------ I-1 and event / error nits
+
+    /// @notice I-1 regression: a deposit credited to a module (stranded before) is refused.
+    function test_I1_fixed_depositToModuleRejected() public {
         usdg.mint(carol, 100 * USD);
         vm.startPrank(carol);
         usdg.approve(address(vault), 100 * USD);
+        vm.expectRevert(abi.encodeWithSelector(VelumVault.ModuleRecipient.selector, address(perps)));
         vault.deposit(address(usdg), 100 * USD, address(perps));
         vm.stopPrank();
-        // perps has no way to account for or release it
-        assertEq(_bal(address(perps), usdg), perps.totalMargin() + perps.insurance() + 100 * USD);
+        assertEq(_bal(address(perps), usdg), perps.totalMargin() + perps.insurance() + perps.coverReserved());
+    }
+
+    /// @notice PositionSettled.fee reports the liquidation penalty (was 0).
+    function test_nit_fixed_liquidationSettledFeeIsPenalty() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 1000 * USD);
+        uint256 id = _open(alice, offer, true, 1000 * USD, 10);
+        _movePriceTo(address(tsla), 345e18);
+        vm.recordLogs();
+        vm.prank(liquidator);
+        perps.liquidate(id);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 penalty;
+        uint256 fee = type(uint256).max;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == PerpsBase.Liquidated.selector) {
+                (,, penalty,,) = abi.decode(logs[i].data, (bool, uint256, uint256, uint256, uint256));
+            } else if (logs[i].topics[0] == PerpsBase.PositionSettled.selector) {
+                (,,, fee,,) = abi.decode(logs[i].data, (uint256, int256, int256, uint256, uint256, uint256));
+            }
+        }
+        assertGt(penalty, 0);
+        assertEq(fee, penalty);
+    }
+
+    /// @notice A dead-oracle forced exit resets the rate without accruing, and no longer emits a
+    ///         FundingAdvanced that claims the index was brought up to now.
+    function test_nit_fixed_deadOracleSettlementEmitsNoFundingAdvanced() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 1000 * USD);
+        vm.deal(alice, 1 ether);
+        uint256 id = _open(alice, offer, true, 1000 * USD, 4);
+        vm.prank(alice);
+        perps.requestForcedExit{value: 0.001 ether}(id);
+        vm.warp(block.timestamp + 15 days);
+        assertTrue(oracle.isDead(address(tsla)));
+        vm.recordLogs();
+        perps.settleForcedExit(id);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != PerpsBase.FundingAdvanced.selector, "no FundingAdvanced");
+        }
+        assertEq(_fundingRate(), 0, "rate still reset");
+    }
+
+    function test_nit_fixed_removeMarginOversizeError() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(alice, usdg, 1000 * USD);
+        uint256 id = _open(alice, offer, true, 500 * USD, 4);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.ExceedsMargin.selector, 251 * USD, 250 * USD));
+        perps.removeMargin(id, 251 * USD);
     }
 }
 
-/// @notice F-08: self-paired positions fill a side's open-interest cap and lock honest takers out.
+/// @notice F-10 residual: self-paired positions can still fill a side's open-interest cap, but only by
+///         locking 40% of the capped notional as margin and paying the fee; caps must be sized with that
+///         in mind (README, known limitations).
 contract AuditOiCapPoC is VelumBase {
     function _oiCap() internal pure override returns (uint256) {
         return 150e18;
     }
 
-    function test_F08_selfPairedOiCapGriefing() public {
+    function test_F10_residual_oiCapGriefingLocksCapital() public {
         address m1 = makeAddr("m1");
         address m2 = makeAddr("m2");
         _fund(m1, usdg, 60_000 * USD);
         vm.prank(m1);
         uint256 offer =
-            book.postOffer(address(tsla), 60_000 * USD, 60_000 * USD, 0, 0, uint64(block.timestamp + 1 days));
+            book.postOffer(address(tsla), 60_000 * USD, 60_000 * USD, 2, 0, uint64(block.timestamp + 1 days));
         _fund(m2, usdg, 20_000 * USD);
         vm.startPrank(m2);
         perps.open(offer, address(tsla), true, 39_000 * USD, 10, 0); // ~99.6 TSLA
         perps.open(offer, address(tsla), true, 19_500 * USD, 10, 0); // ~49.8 TSLA
         vm.stopPrank();
+        assertEq(perps.totalMargin(), (39_000 + 19_500) * USD * 2 / 5, "40% of the notional locked");
+        assertEq(perps.insurance(), (39_000 + 19_500) * USD * 6 / 10_000, "fees paid");
 
         _fund(alice, usdg, 1000 * USD);
         uint256 honest = _postOffer(10_000 * USD, 10_000 * USD, 5, 5);
@@ -247,8 +608,38 @@ contract AuditOiCapPoC is VelumBase {
     }
 }
 
-/// @notice F-03: with a Chainlink source, `isDead` is true the moment one read fails or one answer is
-///         out of bounds, so a matured forced exit settles at the entry price instead of after 14 days.
+/// @notice F-04 (deploy): the testnet deploy refuses a missing or deployer-owned price-relay key, and
+///         mainnet entirely.
+contract AuditDeployPoC is Test {
+    function test_F04_fixed_deployRefusesSharedRelayerKey() public {
+        Deploy d = new Deploy();
+        address deployer = makeAddr("deployer");
+        address relay = makeAddr("relay");
+        vm.expectRevert(bytes("Velum: set PRICE_RELAYER to the dedicated price-relay key"));
+        d.checkRelayer(46_630, false, deployer, deployer);
+        vm.expectRevert(bytes("Velum: set PRICE_RELAYER to the dedicated price-relay key"));
+        d.checkRelayer(46_630, true, address(0), deployer);
+        vm.expectRevert(bytes("Velum: PRICE_RELAYER must not be the deployer key"));
+        d.checkRelayer(46_630, true, deployer, deployer);
+        d.checkRelayer(46_630, true, relay, deployer);
+        d.checkRelayer(31_337, false, deployer, deployer); // anvil may use the deployer
+        vm.expectRevert(bytes("Velum: refusing Robinhood Chain mainnet (4663)"));
+        d.checkRelayer(4663, true, relay, deployer);
+    }
+
+    function test_F04_fixed_deployRefusesMainnet() public {
+        Deploy d = new Deploy();
+        vm.chainId(4663);
+        vm.expectRevert(
+            bytes(
+                "Velum: refusing Robinhood Chain mainnet (4663). Mainnet needs the Phase 5 external audit of contracts and circuits."
+            )
+        );
+        d.run();
+    }
+}
+
+/// @notice Chainlink-sourced market with an L2 sequencer-uptime feed (production path): F-03, F-05.
 contract AuditChainlinkPoC is Test {
     uint256 internal constant USD = 1e6;
     MockERC20 internal usdg;
@@ -258,8 +649,11 @@ contract AuditChainlinkPoC is Test {
     MakerBook internal book;
     PerpsMarkets internal perps;
     MockAggregator internal feed;
+    MockAggregator internal sequencer;
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
+    address internal carol = makeAddr("carol");
+    address internal keeper = makeAddr("keeper");
 
     function setUp() public {
         vm.warp(1_800_000_000);
@@ -273,6 +667,8 @@ contract AuditChainlinkPoC is Test {
         );
         feed = new MockAggregator(8);
         feed.set(391.65e8, block.timestamp);
+        sequencer = new MockAggregator(0);
+        sequencer.set(0, block.timestamp - 1 days); // up for a day
 
         address[] memory tokens = new address[](2);
         tokens[0] = address(usdg);
@@ -290,11 +686,11 @@ contract AuditChainlinkPoC is Test {
         uint128[] memory maxs = new uint128[](1);
         mins[0] = 1e18;
         maxs[0] = 100_000e18;
-        oracle.setup(stocks, feeds, mins, maxs, address(0));
+        oracle.setup(stocks, feeds, mins, maxs, address(0), address(sequencer));
         book.setup(address(perps), stocks);
         uint256[] memory caps = new uint256[](1);
         caps[0] = 10_000e18;
-        perps.setup(stocks, caps);
+        perps.setup(stocks, caps, address(0));
     }
 
     function _fund(address who, uint256 amount) internal {
@@ -307,42 +703,122 @@ contract AuditChainlinkPoC is Test {
         vm.stopPrank();
     }
 
-    function test_F03_transientFeedFailureSettlesForcedExitAtEntry() public {
+    function _offer() internal returns (uint256 offer) {
         _fund(bob, 10_000 * USD);
         vm.prank(bob);
-        uint256 offer =
-            book.postOffer(address(tsla), 10_000 * USD, 10_000 * USD, 5, 5, uint64(block.timestamp + 30 days));
-        _fund(alice, 1000 * USD);
+        offer = book.postOffer(address(tsla), 10_000 * USD, 10_000 * USD, 5, 5, uint64(block.timestamp + 60 days));
+    }
+
+    function _openLong(address who, uint256 offer, uint8 levHalf) internal returns (uint256 id) {
+        _fund(who, 1000 * USD);
+        vm.prank(who);
+        id = perps.open(offer, address(tsla), true, 1000 * USD, levHalf, 0);
+    }
+
+    // ------------------------------------------------------------ F-03
+
+    /// @notice F-03 regression: one failed feed read made `isDead` true at once, so a matured forced exit
+    ///         settled at the entry price (here ~80 USDG better for the losing taker). Now the failure is
+    ///         only stale: settlement waits for a valid price and then uses it.
+    function test_F03_fixed_transientFeedFailureIsStaleNotDead() public {
+        uint256 offer = _offer();
         vm.deal(alice, 1 ether);
-        vm.prank(alice);
-        uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, 0);
+        uint256 id = _openLong(alice, offer, 10);
         vm.prank(alice);
         perps.requestForcedExit{value: 0.001 ether}(id);
 
         vm.warp(block.timestamp + 7 days);
         feed.set(360.3e8, block.timestamp); // -8%: alice is losing ~80 USDG
         perps.advanceFunding(address(tsla));
-        int256 claimAtOracle = perps.takerClaimAt(id, 360.3e18);
+        assertEq(oracle.lastValidAt(address(tsla)), block.timestamp, "perps accrual records the reading");
+        uint256 atEntry = uint256(perps.takerClaimAt(id, perps.getPosition(id).entry));
 
-        // One second later the feed read reverts once (e.g. proxy/aggregator change).
         vm.warp(block.timestamp + 1);
         feed.setBroken(true);
-        assertTrue(oracle.isDead(address(tsla)), "dead immediately, not after 14 days");
+        assertFalse(oracle.isDead(address(tsla)), "stale, not dead");
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.NoPrice.selector, address(tsla)));
+        perps.settleForcedExit(id);
 
+        feed.setBroken(false);
+        feed.set(360.3e8, block.timestamp);
+        perps.advanceFunding(address(tsla));
+        int256 claimAtOracle = perps.takerClaimAt(id, 360.3e18);
         uint256 before = vault.balanceOf(alice, address(usdg));
         vm.prank(alice);
-        perps.settleForcedExit(id); // settles at the entry price: pnl = 0
+        perps.settleForcedExit(id);
         uint256 got = vault.balanceOf(alice, address(usdg)) - before;
-        emit log_named_decimal_int("claim at oracle price", claimAtOracle, 6);
-        emit log_named_decimal_uint("paid at entry price", got, 6);
-        assertGt(got, uint256(claimAtOracle) + 75 * USD);
+        assertEq(got, uint256(claimAtOracle), "settled at the oracle");
+        assertLt(got + 75 * USD, atEntry, "not at the entry price");
     }
 
-    function test_F03_outOfBoundsAnswerIsDead() public {
-        assertFalse(oracle.isDead(address(tsla)));
+    /// @notice F-03 regression: out-of-bounds or zero answers are stale; dead only 14 days after the last
+    ///         valid price.
+    function test_F03_fixed_outOfBoundsAnswerIsStaleNotDead() public {
+        assertTrue(oracle.poke(address(tsla)));
+        uint256 t0 = block.timestamp;
         feed.set(0.5e8, block.timestamp); // below the 1 USDG bound (e.g. after a split or a bad round)
-        assertTrue(oracle.isDead(address(tsla)));
+        assertFalse(oracle.isDead(address(tsla)));
         feed.set(0, block.timestamp);
+        assertFalse(oracle.isDead(address(tsla)));
+        assertFalse(oracle.poke(address(tsla)));
+        vm.warp(t0 + 14 days);
+        assertFalse(oracle.isDead(address(tsla)));
+        vm.warp(t0 + 14 days + 1);
         assertTrue(oracle.isDead(address(tsla)));
+    }
+
+    // ------------------------------------------------------------ F-05
+
+    /// @notice F-05 regression: while the L2 sequencer is down and for an hour after it returns, opens,
+    ///         liquidations and margin removal are blocked; closing and adding margin still work.
+    function test_F05_fixed_sequencerDownBlocksOpensAndLiquidations() public {
+        uint256 offer = _offer();
+        uint256 a = _openLong(alice, offer, 10);
+        uint256 b = _openLong(carol, offer, 10);
+        // walk the feed down 15% in two band windows: both 5x longs below maintenance, still solvent
+        vm.warp(block.timestamp + 1);
+        feed.set(352.5e8, block.timestamp);
+        assertTrue(oracle.poke(address(tsla)));
+        vm.warp(block.timestamp + 10 minutes);
+        feed.set(332.9e8, block.timestamp);
+        assertTrue(perps.isLiquidatable(a));
+
+        sequencer.set(1, block.timestamp); // sequencer down
+        assertFalse(perps.isLiquidatable(a));
+        vm.prank(keeper);
+        vm.expectRevert(PerpsBase.SequencerDown.selector);
+        perps.liquidate(a);
+        _fund(alice, 1000 * USD);
+        vm.prank(alice);
+        vm.expectRevert(PerpsBase.SequencerDown.selector);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        vm.prank(alice);
+        perps.addMargin(a, 1 * USD); // adding margin works
+        vm.prank(alice);
+        vm.expectRevert(PerpsBase.SequencerDown.selector); // removing it does not
+        perps.removeMargin(a, 1 * USD);
+        vm.prank(carol);
+        perps.close(b, 0); // closing works (a plain close: no liquidation while the sequencer is down)
+        assertFalse(perps.getPosition(b).open);
+
+        vm.warp(block.timestamp + 30 minutes);
+        sequencer.set(0, block.timestamp); // back up: grace period starts
+        vm.warp(block.timestamp + 1 hours);
+        feed.set(332.9e8, block.timestamp);
+        vm.prank(keeper);
+        vm.expectRevert(PerpsBase.SequencerDown.selector);
+        perps.liquidate(a);
+        vm.prank(alice);
+        vm.expectRevert(PerpsBase.SequencerDown.selector);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+
+        vm.warp(block.timestamp + 1);
+        feed.set(332.9e8, block.timestamp);
+        assertTrue(oracle.sequencerReady());
+        vm.prank(keeper);
+        perps.liquidate(a);
+        vm.prank(alice);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
     }
 }

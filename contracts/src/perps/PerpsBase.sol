@@ -36,6 +36,15 @@ abstract contract PerpsBase is ReentrancyGuard {
     uint256 public constant FORCED_EXIT_DELAY = 7 days;
     uint256 public constant FORCED_EXIT_BOND = 0.001 ether;
 
+    // ---------------------------------------------------------------- audit hardening (2026-11)
+    /// @notice Opens need a price at most 10 s old (F-06); closes, liquidations and funding 60 s.
+    uint256 public constant OPEN_MAX_AGE = 10;
+    uint256 public constant MAX_PRICE_AGE = 60;
+    /// @notice Shortfall cover is settled per hourly funding epoch (F-02)...
+    uint256 public constant COVER_EPOCH = 1 hours;
+    /// @notice ...pro rata across that epoch's claims, capped at 10% of the insurance fund.
+    uint256 public constant COVER_CAP_BPS = 1000;
+
     struct Market {
         bool enabled;
         uint256 oiCap; // per side, in qty (1e18 = one token)
@@ -80,9 +89,17 @@ abstract contract PerpsBase is ReentrancyGuard {
     /// @notice qty(1e18) * price(1e18) / valueScale = USDG base units.
     uint256 public immutable valueScale;
     address public immutable deployer;
+    /// @notice Smallest position size: 10 USDG (F-10, dust positions).
+    uint256 public immutable minPositionSize;
+    /// @notice Largest keeper reward top-up from insurance per liquidation: 1 USDG (F-11).
+    uint256 public immutable keeperRewardCap;
     bool public locked;
+    /// @notice May only switch markets into or out of close-only (F-07). Fixed at setup; zero = none.
+    address public guardian;
 
     mapping(address market => Market) public markets;
+    /// @notice Close-only markets refuse new opens; everything else works as usual.
+    mapping(address market => bool) public closeOnly;
     address[] public marketList;
     mapping(uint256 id => Position) internal _positions;
     uint256 public nextPositionId = 1;
@@ -93,6 +110,9 @@ abstract contract PerpsBase is ReentrancyGuard {
     uint256 public totalMargin;
     /// @notice Forced-exit bonds whose ETH refund failed; claim with `claimBond`.
     mapping(address account => uint256) public bondRefunds;
+    /// @notice Cover budgets of settled epochs not yet paid to claimants (moved out of `insurance`).
+    ///         This contract's vault balance == totalMargin + insurance + coverReserved.
+    uint256 public coverReserved;
 
     /// @notice Emitted on every position state change. `price` is the oracle price used (0 if none).
     event PositionChanged(
@@ -118,6 +138,8 @@ abstract contract PerpsBase is ReentrancyGuard {
         uint256 takerOut,
         uint256 makerOut
     );
+    /// @param reward Paid to the liquidator: half the penalty, topped up from insurance when the loser
+    ///        could not pay it in full. @param shortfall Filed as a cover claim for the winner.
     event Liquidated(
         uint256 indexed id,
         address indexed liquidator,
@@ -125,7 +147,7 @@ abstract contract PerpsBase is ReentrancyGuard {
         uint256 price,
         uint256 penalty,
         uint256 reward,
-        uint256 shortfallCovered
+        uint256 shortfall
     );
     event FundingAdvanced(address indexed market, int256 rate, int256 index, uint256 timestamp);
     event InsuranceFunded(address indexed from, uint256 amount);
@@ -133,6 +155,10 @@ abstract contract PerpsBase is ReentrancyGuard {
     event ForcedExitSettled(uint256 indexed id, uint256 price, bool atEntryPrice);
     event BondRefundDeferred(address indexed account, uint256 amount);
     event BondClaimed(address indexed account, uint256 amount);
+    event CloseOnlySet(address indexed market, bool closeOnly);
+    event CoverClaimFiled(uint256 indexed epoch, address indexed account, uint256 amount);
+    event CoverEpochSettled(uint256 indexed epoch, uint256 claimed, uint256 budget);
+    event CoverPaid(uint256 indexed epoch, address indexed account, uint256 claim, uint256 paid);
 
     error NotDeployer();
     error AlreadySetUp();
@@ -156,6 +182,14 @@ abstract contract PerpsBase is ReentrancyGuard {
     error TooEarly(uint256 settleAfter);
     error NothingToClaim();
     error RefundFailed();
+    error PositionTooSmall(uint256 size, uint256 minSize);
+    error ExceedsMargin(uint256 amount, uint256 margin);
+    error CloseOnly(address market);
+    error NotGuardian();
+    error PriceLagging(address market);
+    error SequencerDown();
+    error EpochNotOver(uint256 epoch);
+    error EpochSettled(uint256 epoch);
 
     constructor(IVelumVault vault_, IOracleAdapter oracle_, IMakerBook book_, address usdg_, uint8 usdgDecimals) {
         if (address(vault_) == address(0) || address(oracle_) == address(0) || address(book_) == address(0)) {
@@ -168,6 +202,9 @@ abstract contract PerpsBase is ReentrancyGuard {
         usdg = usdg_;
         valueScale = 10 ** (36 - uint256(usdgDecimals));
         deployer = msg.sender;
+        uint256 oneUsdg = 10 ** uint256(usdgDecimals);
+        minPositionSize = 10 * oneUsdg;
+        keeperRewardCap = oneUsdg;
     }
 
     // ---------------------------------------------------------------- views
@@ -204,13 +241,36 @@ abstract contract PerpsBase is ReentrancyGuard {
 
     /// @dev Funding the taker owes since open (negative = receives), rounded up (against the taker).
     function _takerFunding(Position storage p, Market storage m) internal view returns (int256) {
-        int256 d = m.fundingIndex - p.fundingIndexAtOpen;
+        return _takerFundingAt(p, m.fundingIndex);
+    }
+
+    function _takerFundingAt(Position storage p, int256 index) internal view returns (int256) {
+        int256 d = index - p.fundingIndexAtOpen;
         if (!p.isLong) d = -d;
         return FixedMath.mulDivCeilSigned(d, p.qty, valueScale);
     }
 
     function _takerClaim(Position storage p, Market storage m, uint256 price) internal view returns (int256) {
         return FixedMath.toInt(p.takerMargin) + _takerPnl(p, price) - _takerFunding(p, m);
+    }
+
+    /// @dev Whether either side is below maintenance (10% of notional) at `price` with funding index
+    ///      `index`, and which: the side with the smaller claim is the one liquidated.
+    function _liquidationSide(Position storage p, uint256 price, int256 index)
+        internal
+        view
+        returns (bool liquidatable, bool takerSide, int256 takerClaim, uint256 notional)
+    {
+        takerClaim = FixedMath.toInt(p.takerMargin) + _takerPnl(p, price) - _takerFundingAt(p, index);
+        int256 makerClaim = FixedMath.toInt(p.takerMargin + p.makerMargin) - takerClaim;
+        notional = _notionalUp(p.qty, price);
+        int256 req = FixedMath.toInt(notional.mulDivUp(MM_BPS, BPS));
+        if (takerClaim < req && takerClaim <= makerClaim) return (true, true, takerClaim, notional);
+        if (makerClaim < req) return (true, false, takerClaim, notional);
+    }
+
+    function _requireSequencer() internal view {
+        if (!oracle.sequencerReady()) revert SequencerDown();
     }
 
     /// @dev Notional value in USDG at `price`, rounded up (used for requirements and fees).
@@ -256,7 +316,9 @@ abstract contract PerpsBase is ReentrancyGuard {
 
     // ---------------------------------------------------------------- funding hooks
 
-    function _accrue(address market) internal virtual returns (uint256 price);
+    /// @dev Bring funding up to date with a price no older than `maxAge`; returns the banded price and
+    ///      whether it is lagging its source.
+    function _accrue(address market, uint256 maxAge) internal virtual returns (uint256 price, bool lagging);
 
     function _setRate(address market) internal virtual;
 }

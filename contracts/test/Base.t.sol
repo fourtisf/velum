@@ -35,6 +35,7 @@ abstract contract VelumBase is Test {
     address internal bob = makeAddr("bob"); // maker
     address internal carol = makeAddr("carol"); // LP / second taker
     address internal liquidator = makeAddr("liquidator");
+    address internal guardian = makeAddr("guardian");
 
     function setUp() public virtual {
         vm.warp(1_800_000_000);
@@ -68,13 +69,13 @@ abstract contract VelumBase is Test {
             mins[i] = 1e18;
             maxs[i] = 100_000e18;
         }
-        oracle.setup(stocks, feeds, mins, maxs, relayer);
+        oracle.setup(stocks, feeds, mins, maxs, relayer, address(0));
         pools.setup(stocks);
         book.setup(address(perps), stocks);
         uint256[] memory caps = new uint256[](2);
         caps[0] = _oiCap();
         caps[1] = _oiCap();
-        perps.setup(stocks, caps);
+        perps.setup(stocks, caps, guardian);
 
         _pushPrice(address(tsla), TSLA_PRICE);
         _pushPrice(address(amzn), AMZN_PRICE);
@@ -101,17 +102,27 @@ abstract contract VelumBase is Test {
         oracle.pushPrices(t, v);
     }
 
-    /// @dev Moves a price in <=10% steps (relay move limit) until it reaches `target`.
+    /// @dev The relayer pushes `target`; if the price band clamps it, waits one band window and pushes
+    ///      again until the reported price reaches `target` (at most 10% per 10 minutes).
     function _movePriceTo(address token, uint256 target) internal {
-        (uint256 cur,) = oracle.latest(token);
-        while (cur != target) {
-            uint256 maxStep = cur / 10;
-            uint256 next = target > cur
-                ? (target - cur > maxStep ? cur + maxStep : target)
-                : (cur - target > maxStep ? cur - maxStep : target);
-            _pushPrice(token, next);
-            cur = next;
+        _pushPrice(token, target);
+        for (uint256 i; i < 200; ++i) {
+            (uint256 cur,) = oracle.latest(token);
+            if (cur == target) return;
+            vm.warp(block.timestamp + oracle.MOVE_WINDOW() - 1);
+            _pushPrice(token, target);
         }
+        revert("price did not converge");
+    }
+
+    /// @dev One band window later (the reference rolls), push `p` again.
+    function _nextWindowPush(address token, uint256 p) internal {
+        vm.warp(block.timestamp + oracle.MOVE_WINDOW() - 1);
+        _pushPrice(token, p);
+    }
+
+    function _effectivePrice(address token) internal view returns (uint256 p) {
+        (p,) = oracle.latest(token);
     }
 
     /// @dev Mint, deposit into the vault and approve every module.
@@ -148,8 +159,12 @@ abstract contract VelumBase is Test {
         id = perps.open(offerId, address(tsla), isLong, size, levHalf, 0);
     }
 
-    /// @dev Total USDG held by the perps engine must equal open margins plus insurance.
+    /// @dev Total USDG held by the perps engine must equal open margins, insurance and reserved cover.
     function _assertPerpsSolvent() internal view {
-        assertEq(_bal(address(perps), usdg), perps.totalMargin() + perps.insurance(), "perps accounting");
+        assertEq(
+            _bal(address(perps), usdg),
+            perps.totalMargin() + perps.insurance() + perps.coverReserved(),
+            "perps accounting"
+        );
     }
 }

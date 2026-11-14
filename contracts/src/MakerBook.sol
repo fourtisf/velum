@@ -15,6 +15,9 @@ import {IMakerBook} from "./interfaces/IMakerBook.sol";
 contract MakerBook is IMakerBook, ReentrancyGuard {
     /// @notice Spreads above 5% are refused to protect takers from fat-finger or griefing offers.
     uint16 public constant MAX_SPREAD_BPS = 500;
+    /// @notice Open spreads below 2 bps are refused (internal audit F-06). Perps opens need a price at
+    ///         most 10 s old; the floor (plus the 6 bps taker fee) prices the option that is left.
+    uint16 public constant MIN_OPEN_SPREAD_BPS = 2;
 
     struct Offer {
         address maker;
@@ -97,6 +100,7 @@ contract MakerBook is IMakerBook, ReentrancyGuard {
     ) external nonReentrant returns (uint256 id) {
         if (!isMarket[market]) revert UnknownMarket(market);
         if (backing == 0 || largestFill == 0 || largestFill > backing) revert BadOffer();
+        if (openSpreadBps < MIN_OPEN_SPREAD_BPS) revert BadOffer();
         if (openSpreadBps > MAX_SPREAD_BPS || closeSpreadBps > MAX_SPREAD_BPS) revert BadOffer();
         if (expiry <= block.timestamp) revert BadOffer();
         id = nextOfferId++;

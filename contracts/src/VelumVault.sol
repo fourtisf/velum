@@ -43,6 +43,7 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     error ZeroAddress();
     error ZeroAmount();
     error UnknownToken(address token);
+    error ModuleRecipient(address module);
     error NotModule(address caller);
     error NotApproved(address account, address module);
     error InsufficientBalance(address account, address token, uint256 balance, uint256 needed);
@@ -68,11 +69,13 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     }
 
     /// @notice Deposit `amount` of `token` and credit `to`. Fee-on-transfer safe: credits the
-    ///         amount that actually arrived.
+    ///         amount that actually arrived. `to` may not be a module: modules only hold balances they
+    ///         account for, so a deposit credited to one would be stranded (internal audit I-1).
     function deposit(address token, uint256 amount, address to) external nonReentrant returns (uint256 received) {
         if (!locked) revert NotSetUp();
         if (!isToken[token]) revert UnknownToken(token);
         if (to == address(0)) revert ZeroAddress();
+        if (isModule[to]) revert ModuleRecipient(to);
         if (amount == 0) revert ZeroAmount();
         uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);

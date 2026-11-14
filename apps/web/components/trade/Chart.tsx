@@ -314,6 +314,7 @@ export function Chart({ sym }: { sym: string }) {
       </div>
       <div className="chart">
         <canvas ref={cvRef} aria-label={`${sym} price chart`} role="img" />
+        {!useLocal && q.isSuccess && q.data.length === 0 ? <p className="chart-empty">Collecting live prices for this chart…</p> : null}
       </div>
     </>
   );

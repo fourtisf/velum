@@ -22,7 +22,7 @@ const prefersReduced = () => typeof window !== 'undefined' && window.matchMedia(
 export function Px({ sym, raw, as, className }: { sym: string; raw?: boolean; as?: ElementType; className?: string }) {
   const Tag = (as ?? 'span') as ElementType;
   const m = useMarket(sym);
-  const txt = raw ? fmt(m.price) : usd(m.price);
+  const txt = m.noData ? '—' : raw ? fmt(m.price) : usd(m.price);
   const ref = useRef<HTMLElement>(null);
   const prev = useRef(txt);
   useEffect(() => {
@@ -45,6 +45,7 @@ export function Px({ sym, raw, as, className }: { sym: string; raw?: boolean; as
 export function Chg({ sym, as, className = '' }: { sym: string; as?: ElementType; className?: string }) {
   const Tag = (as ?? 'span') as ElementType;
   const m = useMarket(sym);
+  if (m.noData) return <Tag className={className}>—</Tag>;
   return <Tag className={`${className} ${m.chg >= 0 ? 'up' : 'down'}`.trim()}>{pct(m.chg)}</Tag>;
 }
 

@@ -5,7 +5,7 @@ import { useMarkets } from '@/lib/markets';
 
 /** Required by the roadmap: visible whenever trades are simulated. Says so about prices too, when they are. */
 export function DemoBanner() {
-  const simulatedPrices = useMarkets((s) => s.source !== 'api' || Object.values(s.bySym).some((m) => m.priceSource !== 'chainlink'));
+  const simulatedPrices = useMarkets((s) => s.source !== 'api' || Object.values(s.bySym).some((m) => m.priceSource !== 'chainlink' && m.priceSource !== 'robinhood'));
   if (!ENV.demoMode)
     return (
       <div className="demo-bar" role="note">

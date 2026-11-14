@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { compact, fmt } from '@/lib/format';
 import { useMarket, useMarkets } from '@/lib/markets';
+import { METRICS } from '@/lib/copy';
 import { useApp } from '@/lib/store';
 import { Av, Chg, Px } from '../ui';
 import { AccountCard } from './AccountCard';
@@ -88,15 +89,15 @@ function ChartCard({ sym }: { sym: string }) {
         </div>
         <div>
           <small>Mark</small>
-          <b className="num">{fmt(m.mark)}</b>
+          <b className="num">{METRICS.real ? fmt(m.mark) : METRICS.dash}</b>
         </div>
         <div className="hide-sm">
           <small>Funding / h</small>
-          <b className="num">{fmt(m.funding, 4)}%</b>
+          <b className="num">{METRICS.real ? `${fmt(m.funding, 4)}%` : METRICS.dash}</b>
         </div>
         <div className="hide-sm">
           <small>Open interest</small>
-          <b className="num">{compact(m.oi)}</b>
+          <b className="num">{METRICS.real ? compact(m.oi) : METRICS.dash}</b>
         </div>
       </div>
       <Chart sym={sym} />

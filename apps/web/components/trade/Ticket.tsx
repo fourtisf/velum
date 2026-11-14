@@ -6,7 +6,7 @@ import { openPerps, spotTrade } from '@/lib/demo';
 import { dp, floorTo, fmt } from '@/lib/format';
 import { useMarket, useMarkets } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
-import { COPY } from '@/lib/copy';
+import { COPY, METRICS } from '@/lib/copy';
 import { I } from '../icons';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
@@ -118,7 +118,7 @@ function PerpsTicket({ sym }: { sym: string }) {
         </div>
         <div>
           <span>Funding</span>
-          <b>{fmt(c.funding, 4)}% / h</b>
+          <b>{METRICS.real ? `${fmt(c.funding, 4)}% / h` : METRICS.dash}</b>
         </div>
       </div>
       <SubmitButton b={b} />

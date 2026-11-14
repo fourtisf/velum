@@ -7,7 +7,7 @@ import { api } from '@/lib/api';
 import { compact, fmt, usd } from '@/lib/format';
 import { useMarkets } from '@/lib/markets';
 import { useApp } from '@/lib/store';
-import { COPY } from '@/lib/copy';
+import { COPY, METRICS } from '@/lib/copy';
 import { I } from '../icons';
 import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
 
@@ -56,15 +56,15 @@ export function MarketsView() {
         </div>
         <div className="card stat">
           <small>Open interest</small>
-          <b className="num">{compact(stats.data ? Number(stats.data.openInterest) : oi)}</b>
+          <b className="num">{METRICS.real ? compact(stats.data ? Number(stats.data.openInterest) : oi) : METRICS.dash}</b>
         </div>
         <div className="card stat">
           <small>Shielded value</small>
-          <b className="num">{compact(Number(stats.data?.shieldedValue ?? DEMO.shieldedValue))}</b>
+          <b className="num">{METRICS.real ? compact(Number(stats.data?.shieldedValue ?? DEMO.shieldedValue)) : METRICS.dash}</b>
         </div>
         <div className="card stat">
           <small>Proofs verified today</small>
-          <b className="num">{fmt(stats.data?.proofsToday ?? DEMO.proofsTodayBase, 0)}</b>
+          <b className="num">{METRICS.real ? fmt(stats.data?.proofsToday ?? DEMO.proofsTodayBase, 0) : METRICS.dash}</b>
         </div>
       </div>
       <div className="card tbl-wrap">
@@ -102,8 +102,8 @@ export function MarketsView() {
                   <td className="hide-md">
                     <Spark sym={s} />
                   </td>
-                  <td className="r num hide-md">{fmt(m.funding, 4)}%</td>
-                  <td className="r num hide-md">{usd(m.oi, 0)}</td>
+                  <td className="r num hide-md">{METRICS.real ? `${fmt(m.funding, 4)}%` : METRICS.dash}</td>
+                  <td className="r num hide-md">{METRICS.real ? usd(m.oi, 0) : METRICS.dash}</td>
                   <td className="r num hide-sm">{m.maxLev}×</td>
                   <td className="r">
                     {m.status === 'live' ? (

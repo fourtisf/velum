@@ -30,8 +30,10 @@ export interface LiveMarket {
   hist: number[];
   dir: 1 | -1;
   stale: boolean;
-  /** Price source reported by the API: 'demo' (simulated) or 'chainlink'. */
+  /** Price source reported by the API: 'demo' (simulated), 'robinhood' or 'chainlink'. */
   priceSource: string;
+  /** The API has no price for this market yet (it is showing the config seed). Displayed as a dash. */
+  noData: boolean;
 }
 
 export type FeedSource = 'seed' | 'api' | 'local';
@@ -69,6 +71,7 @@ function seedMarkets(): Record<string, LiveMarket> {
       dir: 1,
       stale: true,
       priceSource: 'demo',
+      noData: false,
     };
   }
   return out;
@@ -124,6 +127,7 @@ function applyApi(list: MarketDTO[]) {
         dir: price === prev.price ? prev.dir : price > prev.price ? 1 : -1,
         stale: !!d.stale,
         priceSource: d.source ?? prev.priceSource,
+        noData: d.source === null,
       };
     }
     return { bySym, source: 'api', tick: s.tick + 1 };

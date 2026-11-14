@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { lpRemove } from '@/lib/demo';
 import { compact, fmt, usd } from '@/lib/format';
 import { bal, useApp } from '@/lib/store';
+import { METRICS } from '@/lib/copy';
 import { I } from '../icons';
 import { Av, Px } from '../ui';
 
@@ -26,11 +27,11 @@ function PoolCard({ s, size, apr }: { s: string; size: number; apr: number }) {
       <div className="kv">
         <div>
           <small>Pool size</small>
-          <b>~{compact(size)}</b>
+          <b>{METRICS.real ? `~${compact(size)}` : METRICS.dash}</b>
         </div>
         <div>
           <small>Est. APR</small>
-          <b className="up">{fmt(apr, 1)}%</b>
+          <b className={METRICS.real ? 'up' : ''}>{METRICS.real ? `${fmt(apr, 1)}%` : METRICS.dash}</b>
         </div>
         <div>
           <small>Your liquidity</small>

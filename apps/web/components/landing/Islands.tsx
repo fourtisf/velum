@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { fromNumber, pnl } from '@velum/math';
+import { METRICS } from '@/lib/copy';
 import { compact, fmt, sgnUsd } from '@/lib/format';
 import { useMarket, useMarkets } from '@/lib/markets';
 import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
@@ -105,7 +106,7 @@ export function LandingMarkets() {
             <td className="hide-sm">
               <Spark sym={s} />
             </td>
-            <td className="r num hide-sm">{compact(m.oi)}</td>
+            <td className="r num hide-sm">{METRICS.real ? compact(m.oi) : METRICS.dash}</td>
             <td className="r">
               {m.status === 'live' ? (
                 <Link className="btn btn-dark btn-sm" href={`/app/trade/${s}?mode=perps`}>

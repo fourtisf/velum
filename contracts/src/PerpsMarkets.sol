@@ -84,7 +84,9 @@ contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
         (address maker, uint16 openBps, uint16 closeBps) = book.allocate(offerId, p.market, size, makerMargin);
         if (maker == msg.sender) revert SelfTrade();
         uint256 entry = p.isLong ? price.mulDivUp(BPS + openBps, BPS) : price.mulDivDown(BPS - openBps, BPS);
-        if (priceLimit != 0 && (p.isLong ? entry > priceLimit : entry < priceLimit)) revert PriceLimit(entry, priceLimit);
+        if (priceLimit != 0 && (p.isLong ? entry > priceLimit : entry < priceLimit)) {
+            revert PriceLimit(entry, priceLimit);
+        }
         uint256 qty = size.mulDivDown(valueScale, entry);
         if (qty == 0 || qty > MAX_POSITION_QTY) revert BadQuantity(qty);
         Market storage m = markets[p.market];
@@ -118,9 +120,8 @@ contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
         Position storage p = _position(id);
         if (msg.sender != p.taker) revert NotTaker();
         uint256 price = _accrue(p.market);
-        uint256 exit = p.isLong
-            ? price.mulDivDown(BPS - p.closeSpreadBps, BPS)
-            : price.mulDivUp(BPS + p.closeSpreadBps, BPS);
+        uint256 exit =
+            p.isLong ? price.mulDivDown(BPS - p.closeSpreadBps, BPS) : price.mulDivUp(BPS + p.closeSpreadBps, BPS);
         if (priceLimit != 0 && (p.isLong ? exit < priceLimit : exit > priceLimit)) revert PriceLimit(exit, priceLimit);
 
         int256 pnl = _takerPnl(p, exit);

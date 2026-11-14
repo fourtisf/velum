@@ -16,7 +16,7 @@ contract OracleAdapter is IOracleAdapter {
     uint256 public constant DEAD_AFTER = 14 days;
     /// @notice A relayed price may move at most 10% from the previous one when that one is
     ///         younger than RELAY_MOVE_WINDOW. Older (e.g. after a market close) only bounds apply.
-    uint256 public constant MAX_MOVE_BPS = 1_000;
+    uint256 public constant MAX_MOVE_BPS = 1000;
     uint256 public constant RELAY_MOVE_WINDOW = 1 hours;
 
     struct Source {

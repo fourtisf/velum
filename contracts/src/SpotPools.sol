@@ -16,7 +16,7 @@ contract SpotPools is ReentrancyGuard {
     using FixedMath for uint256;
 
     uint256 public constant FEE_BPS = 30;
-    uint256 public constant MIN_LIQUIDITY = 1_000;
+    uint256 public constant MIN_LIQUIDITY = 1000;
 
     struct Pool {
         uint256 stockReserve;

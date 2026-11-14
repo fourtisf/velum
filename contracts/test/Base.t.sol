@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.28;
+
+import {Test} from "forge-std/Test.sol";
+import {VelumVault} from "../src/VelumVault.sol";
+import {OracleAdapter} from "../src/OracleAdapter.sol";
+import {SpotPools} from "../src/SpotPools.sol";
+import {MakerBook} from "../src/MakerBook.sol";
+import {PerpsMarkets} from "../src/PerpsMarkets.sol";
+import {IVelumVault} from "../src/interfaces/IVelumVault.sol";
+import {IOracleAdapter} from "../src/interfaces/IOracleAdapter.sol";
+import {IMakerBook} from "../src/interfaces/IMakerBook.sol";
+import {MockERC20} from "./mocks/MockERC20.sol";
+
+/// @notice Deploys and wires the full system the way script/Deploy.s.sol does, with mock tokens
+///         (USDG 6 decimals, stocks 18) and a relay-sourced oracle.
+abstract contract VelumBase is Test {
+    uint256 internal constant USD = 1e6; // one USDG in base units
+    uint256 internal constant TOKEN = 1e18;
+    uint256 internal constant TSLA_PRICE = 391.65e18;
+    uint256 internal constant AMZN_PRICE = 233.4e18;
+    uint256 internal constant OI_CAP = 10_000e18;
+
+    MockERC20 internal usdg;
+    MockERC20 internal tsla;
+    MockERC20 internal amzn;
+    VelumVault internal vault;
+    OracleAdapter internal oracle;
+    SpotPools internal pools;
+    MakerBook internal book;
+    PerpsMarkets internal perps;
+
+    address internal relayer = makeAddr("relayer");
+    address internal alice = makeAddr("alice"); // taker
+    address internal bob = makeAddr("bob"); // maker
+    address internal carol = makeAddr("carol"); // LP / second taker
+    address internal liquidator = makeAddr("liquidator");
+
+    function setUp() public virtual {
+        vm.warp(1_800_000_000);
+        usdg = new MockERC20("Global Dollar", "USDG", 6);
+        tsla = new MockERC20("Tesla", "TSLA", 18);
+        amzn = new MockERC20("Amazon", "AMZN", 18);
+
+        vault = new VelumVault();
+        oracle = new OracleAdapter();
+        pools = new SpotPools(IVelumVault(address(vault)), address(usdg));
+        book = new MakerBook(IVelumVault(address(vault)), address(usdg));
+        perps = new PerpsMarkets(
+            IVelumVault(address(vault)), IOracleAdapter(address(oracle)), IMakerBook(address(book)), address(usdg), 6
+        );
+
+        address[] memory tokens = new address[](3);
+        tokens[0] = address(usdg);
+        tokens[1] = address(tsla);
+        tokens[2] = address(amzn);
+        address[] memory modules = new address[](3);
+        modules[0] = address(pools);
+        modules[1] = address(book);
+        modules[2] = address(perps);
+        vault.setup(tokens, modules);
+
+        address[] memory stocks = _stocks();
+        address[] memory feeds = new address[](2);
+        uint128[] memory mins = new uint128[](2);
+        uint128[] memory maxs = new uint128[](2);
+        for (uint256 i; i < 2; ++i) {
+            mins[i] = 1e18;
+            maxs[i] = 100_000e18;
+        }
+        oracle.setup(stocks, feeds, mins, maxs, relayer);
+        pools.setup(stocks);
+        book.setup(address(perps), stocks);
+        uint256[] memory caps = new uint256[](2);
+        caps[0] = _oiCap();
+        caps[1] = _oiCap();
+        perps.setup(stocks, caps);
+
+        _pushPrice(address(tsla), TSLA_PRICE);
+        _pushPrice(address(amzn), AMZN_PRICE);
+    }
+
+    function _oiCap() internal view virtual returns (uint256) {
+        return OI_CAP;
+    }
+
+    function _stocks() internal view returns (address[] memory s) {
+        s = new address[](2);
+        s[0] = address(tsla);
+        s[1] = address(amzn);
+    }
+
+    /// @dev Advances one second (the relay refuses two updates in the same second) and pushes.
+    function _pushPrice(address token, uint256 p) internal {
+        vm.warp(block.timestamp + 1);
+        address[] memory t = new address[](1);
+        uint256[] memory v = new uint256[](1);
+        t[0] = token;
+        v[0] = p;
+        vm.prank(relayer);
+        oracle.pushPrices(t, v);
+    }
+
+    /// @dev Moves a price in <=10% steps (relay move limit) until it reaches `target`.
+    function _movePriceTo(address token, uint256 target) internal {
+        (uint256 cur,) = oracle.latest(token);
+        while (cur != target) {
+            uint256 maxStep = cur / 10;
+            uint256 next = target > cur
+                ? (target - cur > maxStep ? cur + maxStep : target)
+                : (cur - target > maxStep ? cur - maxStep : target);
+            _pushPrice(token, next);
+            cur = next;
+        }
+    }
+
+    /// @dev Mint, deposit into the vault and approve every module.
+    function _fund(address who, MockERC20 token, uint256 amount) internal {
+        token.mint(who, amount);
+        vm.startPrank(who);
+        token.approve(address(vault), amount);
+        vault.deposit(address(token), amount, who);
+        vault.setApproval(address(pools), true);
+        vault.setApproval(address(book), true);
+        vault.setApproval(address(perps), true);
+        vm.stopPrank();
+    }
+
+    function _bal(address who, MockERC20 token) internal view returns (uint256) {
+        return vault.balanceOf(who, address(token));
+    }
+
+    /// @dev Bob posts a TSLA offer: backing, largest fill, open/close spread, 1 day expiry.
+    function _postOffer(uint256 backing, uint256 largestFill, uint16 openBps, uint16 closeBps)
+        internal
+        returns (uint256 id)
+    {
+        if (_bal(bob, usdg) < backing) _fund(bob, usdg, backing);
+        vm.prank(bob);
+        id = book.postOffer(address(tsla), backing, largestFill, openBps, closeBps, uint64(block.timestamp + 1 days));
+    }
+
+    function _open(address who, uint256 offerId, bool isLong, uint256 size, uint8 levHalf)
+        internal
+        returns (uint256 id)
+    {
+        vm.prank(who);
+        id = perps.open(offerId, address(tsla), isLong, size, levHalf, 0);
+    }
+
+    /// @dev Total USDG held by the perps engine must equal open margins plus insurance.
+    function _assertPerpsSolvent() internal view {
+        assertEq(_bal(address(perps), usdg), perps.totalMargin() + perps.insurance(), "perps accounting");
+    }
+}

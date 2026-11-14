@@ -110,7 +110,13 @@ abstract contract PerpsBase is ReentrancyGuard {
     );
     /// @notice Final split of a position's pool when it closes for any reason.
     event PositionSettled(
-        uint256 indexed id, uint256 exitPrice, int256 takerPnl, int256 takerFunding, uint256 fee, uint256 takerOut, uint256 makerOut
+        uint256 indexed id,
+        uint256 exitPrice,
+        int256 takerPnl,
+        int256 takerFunding,
+        uint256 fee,
+        uint256 takerOut,
+        uint256 makerOut
     );
     event Liquidated(
         uint256 indexed id,
@@ -174,8 +180,10 @@ abstract contract PerpsBase is ReentrancyGuard {
     }
 
     /// @notice Taker's claim on the pool at `price` (can be negative), using funding accrued so far.
+    ///         Zero for closed positions.
     function takerClaimAt(uint256 id, uint256 price) external view returns (int256) {
         Position storage p = _positions[id];
+        if (!p.open) return 0;
         return _takerClaim(p, markets[p.market], price);
     }
 

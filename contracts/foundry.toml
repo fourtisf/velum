@@ -9,7 +9,7 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 bytecode_hash = "none"
-fs_permissions = [{ access = "read-write", path = "./deployments" }]
+fs_permissions = [{ access = "read-write", path = "./deployments" }, { access = "read", path = "../packages/config" }]
 
 [profile.default.fuzz]
 runs = 512
@@ -37,3 +37,5 @@ number_underscore = "thousands"
 [lint]
 # Public immutables keep camelCase on purpose: they are ABI getters (vault(), usdg()) the web app reads.
 exclude_lints = ["screaming-snake-case-immutable", "mixed-case-variable", "named-struct-fields", "unwrapped-modifier-logic"]
+# Tests mirror the contract formulas with bounded casts on purpose; lint production code and scripts.
+ignore = ["test/**/*.sol"]

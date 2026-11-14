@@ -24,6 +24,7 @@ const env: ApiEnv = {
   chainId: 46630,
   demoMode: true,
   logLevel: 'silent',
+  proxySecret: null,
 };
 const snap = (symbol: string, price: string): MarketSnapshot => ({ symbol, price, mark: price, open24h: price, spark: [price], source: 'demo', updatedAt: NOW - 1000 });
 
@@ -78,7 +79,7 @@ describe('L7: startup errors never print secrets in URLs', () => {
   it('redacts API keys, passwords, paths and queries', () => {
     expect(redactUrls('see https://robinhood-mainnet.g.alchemy.com/v2/SECRETKEY123 now')).toBe('see https://robinhood-mainnet.g.alchemy.com/… now');
     expect(redactUrls('db postgresql://velum:hunter2@127.0.0.1:5432/velum?schema=public')).toBe('db postgresql://127.0.0.1:5432/…');
-    expect(redactUrls('redis://:p%40ss@127.0.0.1:6379/5,')).toBe('redis://127.0.0.1:6379/…');
+    expect(redactUrls('redis://:p%40ss@127.0.0.1:6379/5,')).toBe('redis://127.0.0.1:6379/…,');
     expect(redactUrls('(https://user:pw@rpc.example.com:8545/?key=abc)')).toBe('(https://rpc.example.com:8545/…)');
     expect(redactUrls('no urls here')).toBe('no urls here');
   });

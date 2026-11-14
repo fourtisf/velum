@@ -73,6 +73,25 @@ export async function loadSeries(prisma: PrismaClient, ids: Map<string, string>)
   return series;
 }
 
+/**
+ * Time of the newest stored PriceTick per market (symbol -> Unix ms), used to seed
+ * WorkerContext.lastTickAt on start. Without it, a BullMQ retry of an older candle job delivered after
+ * a restart (deploy, crash, max_memory_restart) counted as fresh and moved the close back (audit
+ * R2-L1). price-relay stores a tick before it enqueues the tick's candle job, so every pending job is
+ * at or before this time: the newest one still applies normally, older retries only extend high/low.
+ * One indexed query per market (PriceTick has an index on marketId, at).
+ */
+export async function loadLastTickAt(prisma: PrismaClient, ids: Map<string, string>): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  await Promise.all(
+    [...ids].map(async ([symbol, marketId]) => {
+      const row = await prisma.priceTick.findFirst({ where: { marketId }, orderBy: { at: 'desc' }, select: { at: true } });
+      if (row) out.set(symbol, row.at.getTime());
+    }),
+  );
+  return out;
+}
+
 export interface BackfillResult {
   candlesInserted: number;
   snapshotsSeeded: number;

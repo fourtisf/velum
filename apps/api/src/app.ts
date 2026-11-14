@@ -2,6 +2,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import type { Redis } from 'ioredis';
+import { clientKeyGenerator } from './lib/client-address';
 import type { AppDeps } from './lib/deps';
 import { ApiError, ERROR_CODES, errorBody, type ErrorCode } from './lib/errors';
 import { candlesRoutes } from './routes/candles';
@@ -17,10 +18,12 @@ export interface BuildOptions {
 
 /** Builds the Fastify app. All I/O goes through `deps`, so tests can pass fakes. */
 export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<FastifyInstance> {
+  // With PROXY_SECRET set, only requests carrying Nginx's secret header may name a client address
+  // (lib/client-address.ts, audit R2-I4). Without it, trust X-Forwarded-For from loopback as before.
+  const keyGenerator = clientKeyGenerator(deps.env.proxySecret);
   const app = Fastify({
     logger: opts.logger ?? false,
-    // Nginx on the same host is the only proxy; trust its X-Forwarded-For for rate limiting.
-    trustProxy: 'loopback',
+    trustProxy: keyGenerator ? false : 'loopback',
     bodyLimit: 16 * 1024,
     ajv: { customOptions: { coerceTypes: 'array', useDefaults: true, removeAdditional: false, allErrors: false } },
   });
@@ -50,6 +53,7 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
     max: deps.env.rateReadPerMin,
     timeWindow: '1 minute',
     ...(deps.rateLimitRedis ? { redis: deps.rateLimitRedis as Redis, nameSpace: 'velum:rl:' } : {}),
+    ...(keyGenerator ? { keyGenerator } : {}),
     // Never take the API down because the rate-limit store is unreachable.
     skipOnError: true,
     errorResponseBuilder: (_req, ctx) => {

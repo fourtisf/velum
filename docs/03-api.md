@@ -9,7 +9,14 @@ Rate limit: 120 req/min per IP on read routes, 30/min on `/v1/quote`, 10/min on 
 ## Read
 
 ### `GET /v1/health`
-`{ "ok": true, "chainId": 46630, "block": 153118480, "lag": 1 }`
+`{ "ok": true, "chainId": 46630, "block": 153118480, "lag": 1, "workers": 2, "db": true, "redis": true, "demoMode": true }`
+
+`lag`: seconds since the price relay last wrote prices (null before the first tick). `workers`:
+seconds since the workers process last reported alive, whether or not the price source has quotes
+(null if never); `deploy/deploy.sh` requires a fresh one after each release. `block` is null when the
+RPC is unreachable. 503 only when Postgres or Redis is down. Rate limited per client
+(`RATE_LIMIT_HEALTH_PER_MIN`, default 60). Behind Nginx the client is `X-Real-IP`, trusted only on
+requests that carry Nginx's `X-Velum-Proxy-Secret` when `PROXY_SECRET` is set (docs/05).
 
 ### `GET /v1/deployment`
 Contract addresses and public keys the client needs (Phase 3+).
@@ -34,7 +41,11 @@ Contract addresses and public keys the client needs (Phase 3+).
   "spark": ["390.1", "390.4", "…"]                       // last 60 points
 }]
 ```
-`status`: `live` | `coming_soon` | `close_only`.
+`status`: `live` | `coming_soon` | `close_only`. Each market also carries `stale` (true when no
+price newer than the oracle max age exists), `source` (`demo`, `robinhood`, `chainlink`, or `null`
+before the first tick) and `updatedAt`. On mainnet, a market the workers have not priced yet (no
+snapshot) is returned with its seed price, `"stale": true` and `"source": null`; clients must not
+show that price as live (the web shows dashes and disables trading).
 
 ### `GET /v1/markets/:symbol/candles?tf=15m|1h|4h|1D&limit=120`
 `[{ "t": 1794646800000, "o": "390.02", "h": "391.10", "l": "389.25", "c": "390.88" }]`

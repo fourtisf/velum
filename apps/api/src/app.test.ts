@@ -22,6 +22,7 @@ const env: ApiEnv = {
   chainId: 46630,
   demoMode: true,
   logLevel: 'silent',
+  proxySecret: null,
 };
 
 const snap = (symbol: string, price: string, over: Partial<MarketSnapshot> = {}): MarketSnapshot => ({
@@ -74,7 +75,7 @@ describe('health', () => {
   it('reports chain, block and lag', async () => {
     const res = await (await make()).inject('/v1/health');
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, chainId: 46630, block: 153118480, lag: 3, db: true, redis: true, demoMode: true });
+    expect(res.json()).toEqual({ ok: true, chainId: 46630, block: 153118480, lag: 3, workers: 3, db: true, redis: true, demoMode: true });
   });
   it('stays healthy when the RPC is down, fails when Redis is down', async () => {
     const a = await make({ chain: { blockNumber: async () => null } });
@@ -83,7 +84,7 @@ describe('health', () => {
     const b = await make({ cache: fakeCache([], {}, false) });
     const res = await b.inject('/v1/health');
     expect(res.statusCode).toBe(503);
-    expect(res.json()).toMatchObject({ ok: false, redis: false, lag: null });
+    expect(res.json()).toMatchObject({ ok: false, redis: false, lag: null, workers: null });
   });
 });
 

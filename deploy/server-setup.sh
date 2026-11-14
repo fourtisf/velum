@@ -4,15 +4,23 @@
 # Postgres and Redis are not restarted), never edits an existing Redis config, never upgrades Node or
 # global tools, never enables the firewall, never touches other Nginx sites, and picks free ports.
 #
-# Run as root from a root-owned checkout (root runs its scripts, so the app user must not own them):
-#   git clone <repo-url> /opt/velum && cd /opt/velum
-#   DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
-# Optional: APP_USER (default velum, created if missing), BRANCH (default: current branch),
-#           WWW=yes|no|auto, REDIS_DB (default 5, keeps Velum's keys apart from other apps),
-#           REDIS_PORT (default 6379), REDIS_CONF (default /etc/redis/redis.conf), NGINX_DIR (default /etc/nginx),
-#           ALLOW_REDIS_WITHOUT_PASSWORD=yes (accept a shared Redis without a password; not recommended).
+# Run as root (inside tmux) from a fresh root-owned clone; root runs its scripts, so no other user may
+# own them:
+#   git -c core.hooksPath=/dev/null clone <repo-url> /srv/velum
+#   DOMAIN=velum.example EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
+# Moving from an older in-place layout (/opt/velum owned by velum): follow docs/05 "Upgrading"
+# (fresh clone, deploy/import-env.sh, then this script).
+# Optional: APP_USER (default velum, created if missing), WEB_USER (default velum-web, created if
+#           missing), BRANCH (default: current branch), WWW=yes|no|auto, REDIS_DB (default 5, keeps
+#           Velum's keys apart from other apps), REDIS_PORT (default 6379), REDIS_CONF (default
+#           /etc/redis/redis.conf), PG_PORT (default 5432, the local PostgreSQL to use), NGINX_DIR
+#           (default /etc/nginx), ALLOW_REDIS_WITHOUT_PASSWORD=yes (accept a shared Redis without a
+#           password; not recommended).
+# shellcheck disable=SC2015 # "A && B || die" is the intended idiom here: die exits.
 set -euo pipefail
 umask 022
+# A dropped SSH session must not stop setup halfway (R2-L6); run it in tmux anyway.
+trap '' HUP
 : "${DOMAIN:?Set DOMAIN, e.g. DOMAIN=velum.example}"
 : "${EMAIL:?Set EMAIL for SSL certificate notices}"
 [ "$(id -u)" -eq 0 ] || { echo "Run as root (or with sudo)." >&2; exit 1; }
@@ -22,17 +30,23 @@ ROOT="$(cd "$(dirname "${SELF}")/.." && pwd)"
 . "${ROOT}/deploy/lib/common.sh"
 cd "${ROOT}"
 APP_USER="${APP_USER:-velum}"
+WEB_USER="${WEB_USER:-velum-web}"
 WWW="${WWW:-auto}"
 REDIS_DB="${REDIS_DB:-5}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_CONF="${REDIS_CONF:-/etc/redis/redis.conf}"
+PG_PORT="${PG_PORT:-5432}"
 NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
 ENV_FILE="${ROOT}/.env"
+BACKUPS="${ROOT}/backups"
 [[ "${DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] || die "DOMAIN must be a host name such as velum.example."
 [[ "${EMAIL}" =~ ^[^[:space:]@\"\']+@[^[:space:]@\"\']+$ ]] || die "EMAIL does not look like an email address."
-[[ "${APP_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "APP_USER must be a plain user name."
+[[ "${APP_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [[ "${WEB_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "APP_USER and WEB_USER must be plain user names."
+[ "${APP_USER}" != root ] && [ "${WEB_USER}" != root ] && [ "${APP_USER}" != "${WEB_USER}" ] || die "APP_USER and WEB_USER must be two different users, neither of them root."
 [[ "${REDIS_DB}" =~ ^[0-9]{1,3}$ ]] || die "REDIS_DB must be a number."
 valid_port "${REDIS_PORT}" || die "REDIS_PORT must be a port number."
+valid_port "${PG_PORT}" || die "PG_PORT must be a port number."
+case "${WWW}" in yes | no | auto) ;; *) die "WWW must be yes, no or auto." ;; esac
 
 pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
 port_free() { ! ss -ltn "( sport = :$1 )" | grep -q LISTEN; }
@@ -42,17 +56,16 @@ gen() { openssl rand -hex 24; }
 url_encode() { VELUM_V="$1" node -e 'process.stdout.write(encodeURIComponent(process.env.VELUM_V))'; }
 url_password() { VELUM_V="$1" node -e 'try { process.stdout.write(decodeURIComponent(new URL(process.env.VELUM_V).password)); } catch { process.exit(1); }'; }
 url_with_password() { VELUM_V="$1" VELUM_P="$2" node -e 'const u = new URL(process.env.VELUM_V); u.password = encodeURIComponent(process.env.VELUM_P); process.stdout.write(u.href);'; }
-app_pm2() { runuser -u "${APP_USER}" -- env -i HOME="${APP_HOME}" PATH="${PATH}" PM2_HOME="${APP_HOME}/.pm2" LANG="${LANG:-C.UTF-8}" pm2 "$@"; }
 
-echo "› Checkout ownership"
-# Root runs this checkout's scripts: nothing in it may be changeable by the app user (audit M4).
-bad="$(find "${ROOT}" -xdev \( -path "${ROOT}/releases" -o -path "${ENV_FILE}" -o -path "${ROOT}/.deploy.lock" -o -name '.env.bak.*' \) -prune -o \
-  ! -type l \( ! -user root -o -perm -0002 -o \( -perm -0020 ! -group root \) \) -print -quit)"
-if [ -n "${bad}" ]; then
-  die "${bad} is not root-owned (or is writable by others). Make the checkout root-owned first:
-  chown -R root:root ${ROOT}, then review git as described in docs/05-deploy-vps.md (Upgrading), then re-run."
-fi
-BRANCH="${BRANCH:-$(git -C "${ROOT}" rev-parse --abbrev-ref HEAD)}"
+echo "› Checkout (root-owned, no links, strict .git/config)"
+# Root runs this checkout's scripts and git: nothing in it may be changeable by another user (M4, R2-H2).
+VELUM_BASE_DIR="${ROOT}"
+assert_root_owned_tree "${ROOT}"
+# The same lock as deploy.sh, held while .env and the Nginx files are rewritten and through the first
+# release (deploy.sh inherits it), so a concurrent deploy, set-network.sh or new-key.sh waits (R2-L7).
+lock_deploy "${ROOT}"
+BRANCH="${BRANCH:-$(root_git rev-parse --abbrev-ref HEAD)}"
+valid_branch "${BRANCH}" || die "Invalid branch name: ${BRANCH}"
 
 echo "› Port 80"
 # Before installing anything: if another web server owns port 80, installing Nginx would fail (audit L11).
@@ -83,25 +96,37 @@ elif [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
 fi
 command -v pm2 >/dev/null || npm i -g pm2
 
-echo "› App user (${APP_USER})"
-if [ "${APP_USER}" != "root" ] && ! id -u "${APP_USER}" >/dev/null 2>&1; then
+echo "› Users (${APP_USER} builds and runs api + workers; ${WEB_USER} runs only the web)"
+if ! id -u "${APP_USER}" >/dev/null 2>&1; then
   useradd --system --create-home --shell /bin/bash "${APP_USER}"
 fi
-APP_HOME="${APP_HOME:-$(getent passwd "${APP_USER}" | cut -d: -f6)}"
-APP_GROUP="$(id -gn "${APP_USER}")"
-# PM2's home holds dump.pm2 (process env, incl. the workers' secrets) and logs: owner only (audit M5).
-install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 700 "${APP_HOME}/.pm2"
-chmod 700 "${APP_HOME}/.pm2"
+if ! id -u "${WEB_USER}" >/dev/null 2>&1; then
+  # Own group, no login shell, not in the app group (which can read .env) (R2-M3).
+  useradd --system --create-home --user-group --shell /usr/sbin/nologin "${WEB_USER}"
+fi
+# Validates both users and homes (real directories owned by their user), refuses a web user that is in
+# the app group, sets APP_HOME, WEB_HOME, PM2_DIR, WEB_PM2_DIR, SEPARATE=1.
+velum_mode "${ROOT}"
+# PM2 homes hold dump.pm2 (each app's environment) and logs: owner only (M5). Created and chmod'ed as
+# each user, never by root through a path that user controls (R2-H1).
+# shellcheck disable=SC2016
+as_app sh -c 'mkdir -p "$PM2_HOME" && chmod 700 "$PM2_HOME"'
+# shellcheck disable=SC2016
+as_web sh -c 'mkdir -p "$PM2_HOME" && chmod 700 "$PM2_HOME"'
 
-echo "› Layout (root-owned checkout, app-owned releases)"
+echo "› Layout (root-owned base, app-owned releases)"
+# Others may traverse the base (the web user reaches web.env and current/ that way) but not list it;
+# .env stays root:${APP_GROUP} 640 and web.env root:${WEB_GROUP} 640.
 chown root:"${APP_GROUP}" "${ROOT}"
-chmod 750 "${ROOT}"
-install -d -o root -g "${APP_GROUP}" -m 750 "${ROOT}/releases"
+chmod 751 "${ROOT}"
+install -d -o root -g root -m 751 "${ROOT}/releases"
+install -d -o root -g root -m 700 "${BACKUPS}"
 
 echo "› Settings (.env)"
 OLD_UMASK="$(umask)"
 umask 077
 if [ -f "${ENV_FILE}" ]; then
+  [ ! -L "${ENV_FILE}" ] || die "${ENV_FILE} is a symbolic link."
   echo "  keeping existing .env"
   PORT_WEB="$(env_get "${ENV_FILE}" PORT_WEB)"
   PORT_API="$(env_get "${ENV_FILE}" PORT_API)"
@@ -134,10 +159,8 @@ else
   [ -z "${REDIS_PASS}" ] || REDIS_URL="redis://:$(url_encode "${REDIS_PASS}")@127.0.0.1:${REDIS_PORT}/${REDIS_DB}"
   # Built in a temp file (mode 600) with awk + ENVIRON (no sed, so any character in a value is
   # safe), validated, then moved into place in one step (audit M3).
-  TMP="${ENV_FILE}.tmp"
-  rm -f "${TMP}"
-  cp .env.example "${TMP}"
-  chmod 600 "${TMP}"
+  TMP="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
+  cat .env.example >"${TMP}"
   env_set "${TMP}" \
     DOMAIN "${DOMAIN}" \
     PUBLIC_SITE_URL "https://${DOMAIN}" \
@@ -146,7 +169,7 @@ else
     CORS_ORIGIN "https://${DOMAIN},https://www.${DOMAIN}" \
     PORT_WEB "${PORT_WEB}" \
     PORT_API "${PORT_API}" \
-    DATABASE_URL "postgresql://velum:${DB_PASS}@127.0.0.1:5432/velum?schema=public" \
+    DATABASE_URL "postgresql://velum:${DB_PASS}@127.0.0.1:${PG_PORT}/velum?schema=public" \
     REDIS_URL "${REDIS_URL}"
   # Validate before it goes live: every value reads back exactly as intended.
   [ "$(env_get "${TMP}" DOMAIN)" = "${DOMAIN}" ] || die "Validation failed: DOMAIN."
@@ -160,13 +183,25 @@ fi
 umask "${OLD_UMASK}"
 valid_port "${PORT_WEB:-}" || PORT_WEB=3000
 valid_port "${PORT_API:-}" || PORT_API=4000
-# Root writes .env; the app user can only read it (set-network.sh and new-key.sh run as root).
+# Root writes .env; the app user can only read it (set-network.sh, new-key.sh, import-env.sh run as root).
 chown root:"${APP_GROUP}" "${ENV_FILE}"
 chmod 640 "${ENV_FILE}"
+env_backups_tidy "${ENV_FILE}"
+rm -f "${ENV_FILE}.tmp" "${ENV_FILE}".tmp.* 2>/dev/null || true
+# Nginx's shared secret for the API (R2-I4). A new one goes into .env only after Nginx sends it (below),
+# so the API never distrusts a proxy that does not know the secret yet.
+PROXY_SECRET="$(env_get "${ENV_FILE}" PROXY_SECRET)"
+NEW_PROXY_SECRET=0
+if ! [[ "${PROXY_SECRET}" =~ ^[0-9a-fA-F]{32,128}$ ]]; then
+  PROXY_SECRET="$(openssl rand -hex 32)"
+  NEW_PROXY_SECRET=1
+fi
+# The web's own settings (no secrets), readable by the web user only (R2-M3).
+render_web_env "${ENV_FILE}" | install_file "${ROOT}/web.env" 640 "root:${WEB_GROUP}"
 
 echo "› PostgreSQL (own role and database)"
 systemctl is-active --quiet postgresql || systemctl enable --now postgresql
-psql_() { runuser -u postgres -- psql -X -q -v ON_ERROR_STOP=1 "$@"; }
+psql_() { runuser -u postgres -- psql -p "${PG_PORT}" -X -q -v ON_ERROR_STOP=1 "$@"; }
 ROLE_EXISTS="$(psql_ -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'velum'")"
 if [[ "${DB_PASS}" =~ ^[0-9a-f]{32,128}$ ]]; then
   VERB=ALTER
@@ -213,35 +248,207 @@ case "${POLICY}" in
   *) warn "Redis maxmemory-policy is '${POLICY}'. BullMQ (Velum's job queues) needs 'noeviction': under memory pressure this Redis can silently drop Velum's queue keys. Ask the Redis owner to change it, or give Velum its own Redis." ;;
 esac
 
-echo "› Nginx (adds the velum site and its headers snippet only; other sites untouched)"
+# ── Nginx and HTTPS (R2-M1) ──────────────────────────────────────────────────
+# Only Velum's own files are written: sites-available/velum.conf, its sites-enabled link and two
+# snippets. Every file is backed up first and restored if nginx -t or certbot fails. A site file that
+# Certbot manages is never replaced by the plain-HTTP template and reloaded: a file of the current
+# template version only gets its upstream ports refreshed, and a file of an older version is
+# re-rendered and its existing certificate re-installed with `certbot install` before Nginx reloads.
+echo "› Nginx (the velum site and its snippets only; other sites untouched)"
+SITE="${NGINX_DIR}/sites-available/velum.conf"
+SITE_LINK="${NGINX_DIR}/sites-enabled/velum.conf"
+HEADERS_SNIPPET="${NGINX_DIR}/snippets/velum-security-headers.conf"
+PROXY_SNIPPET="${NGINX_DIR}/snippets/velum-proxy-secret.conf"
+NGINX_BACKUPS="${BACKUPS}/nginx"
+STAMP="$(date -u +%Y%m%d%H%M%S)"
 install -d -m 755 "${NGINX_DIR}/snippets" "${NGINX_DIR}/sites-available" "${NGINX_DIR}/sites-enabled"
-render_security_headers "${ENV_FILE}" >"${NGINX_DIR}/snippets/velum-security-headers.conf.tmp" || die "Fix NEXT_PUBLIC_RPC_URL in .env, then re-run."
-mv -f "${NGINX_DIR}/snippets/velum-security-headers.conf.tmp" "${NGINX_DIR}/snippets/velum-security-headers.conf"
-sed -e "s/velum.example/${DOMAIN}/g" -e "s/127.0.0.1:3000/127.0.0.1:${PORT_WEB}/" -e "s/127.0.0.1:4000/127.0.0.1:${PORT_API}/" \
-  deploy/nginx/velum.conf >"${NGINX_DIR}/sites-available/velum.conf"
-ln -sf "${NGINX_DIR}/sites-available/velum.conf" "${NGINX_DIR}/sites-enabled/velum.conf"
-nginx -t
-systemctl is-active --quiet nginx || systemctl enable --now nginx
-systemctl reload nginx
-if ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 'Nginx Full' || true; fi
+install -d -o root -g root -m 700 "${NGINX_BACKUPS}"
+for f in "${SITE}" "${SITE_LINK}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+  if [ -L "${f}" ] && [ "${f}" != "${SITE_LINK}" ]; then die "${f} is a symbolic link; Velum manages it as a regular file. Replace it by hand, then re-run."; fi
+done
+if [ -e "${SITE_LINK}" ] && ! { [ -L "${SITE_LINK}" ] && [ "$(readlink -f "${SITE_LINK}")" = "$(readlink -f "${SITE}")" ]; }; then
+  die "${SITE_LINK} exists and is not a link to ${SITE}. Move it away by hand, then re-run."
+fi
 
-echo "› HTTPS"
+TEMPLATE_VERSION="$(sed -n 's/^# velum-site-template: \([0-9][0-9]*\).*/\1/p' deploy/nginx/velum.conf | head -n1)"
+render_site() {
+  sed -e "s/velum.example/${DOMAIN}/g" -e "s/127.0.0.1:3000/127.0.0.1:${PORT_WEB}/" -e "s/127.0.0.1:4000/127.0.0.1:${PORT_API}/" deploy/nginx/velum.conf |
+    if [ -e /proc/net/if_inet6 ]; then cat; else sed '/^[[:space:]]*listen[[:space:]]*\[::\]/d'; fi
+}
+# Upstream ports are the only thing refreshed in a Certbot-managed file of the current template version.
+merge_ports() {
+  awk -v web="${PORT_WEB}" -v api="${PORT_API}" '
+    /upstream[[:space:]]+velum_web[[:space:]]*\{/ { blk = "web" }
+    /upstream[[:space:]]+velum_api[[:space:]]*\{/ { blk = "api" }
+    blk == "web" { gsub(/server[[:space:]]+127\.0\.0\.1:[0-9]+/, "server 127.0.0.1:" web) }
+    blk == "api" { gsub(/server[[:space:]]+127\.0\.0\.1:[0-9]+/, "server 127.0.0.1:" api) }
+    { print }
+    blk != "" && /\}/ { blk = "" }' "$1"
+}
+backup_nginx() {
+  local f
+  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+    if [ -f "${f}" ]; then cp -p -- "${f}" "${NGINX_BACKUPS}/$(basename "${f}").${STAMP}"; fi
+  done
+  # Keep the newest 5 backups of each file.
+  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+    find "${NGINX_BACKUPS}" -maxdepth 1 -type f -name "$(basename "${f}").*" -printf '%f\n' | sort -r | tail -n +6 | while IFS= read -r b; do rm -f -- "${NGINX_BACKUPS:?}/${b}"; done
+  done
+}
+HAD_SITE=0
+[ -f "${SITE}" ] && HAD_SITE=1
+HAD_LINK=0
+[ -L "${SITE_LINK}" ] && HAD_LINK=1
+# Puts back the files this run found (and removes the ones it created), then reloads if Nginx accepts it.
+restore_nginx() {
+  local f b
+  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+    b="${NGINX_BACKUPS}/$(basename "${f}").${STAMP}"
+    if [ -f "${b}" ]; then cp -p -- "${b}" "${f}"; else rm -f -- "${f}"; fi
+  done
+  [ "${HAD_LINK}" = 1 ] || rm -f -- "${SITE_LINK}"
+  if nginx -t -q 2>/dev/null; then systemctl reload nginx || true; echo "  restored the previous Nginx files" >&2; else warn "Restored the previous Nginx files, but nginx -t still fails; check: nginx -t"; fi
+}
+nginx_test_or_restore() { nginx -t || { restore_nginx; die "nginx -t failed with the new Velum files; the previous ones were restored."; }; }
+link_site() { [ -L "${SITE_LINK}" ] || ln -s "${SITE}" "${SITE_LINK}"; }
+
+# What the live file is: none, managed by Certbot (and which template version), TLS by hand, or plain HTTP.
+SITE_STATE=none
+CUR_VERSION=""
+if [ "${HAD_SITE}" = 1 ]; then
+  CUR_VERSION="$(sed -n 's/^# velum-site-template: \([0-9][0-9]*\).*/\1/p' "${SITE}" | head -n1)"
+  if grep -q 'managed by Certbot' "${SITE}"; then SITE_STATE=certbot
+  elif grep -Eq '^[^#]*(listen[^;]*443|ssl_certificate)' "${SITE}"; then SITE_STATE=manual-tls
+  else SITE_STATE=plain; fi
+fi
+[ "${SITE_STATE}" != manual-tls ] || die "${SITE} has TLS settings that Certbot does not manage. Velum will not rewrite it; update it by hand from deploy/nginx/velum.conf (keep your TLS lines), add the snippets, then re-run with the site file renamed if you want Velum to manage it."
+
+backup_nginx
+render_site >"${NGINX_BACKUPS}/velum.conf.template.${STAMP}"
+render_security_headers "${ENV_FILE}" | install_file "${HEADERS_SNIPPET}" 644 root:root || die "Fix NEXT_PUBLIC_RPC_URL in .env, then re-run."
+proxy_secret_include "${PROXY_SECRET}" | install_file "${PROXY_SNIPPET}" 600 root:root
+
+# HTTPS decision inputs: which names, and which existing certificate (from `certbot certificates`).
 SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
-WWW_IP="$(dig +short A "www.${DOMAIN}" | tail -n1)"
-DOMAINS=(-d "${DOMAIN}")
-if [ "${WWW}" = "yes" ] || { [ "${WWW}" = "auto" ] && [ -n "${WWW_IP}" ] && [ "${WWW_IP}" = "${SERVER_IP}" ]; }; then DOMAINS+=(-d "www.${DOMAIN}"); fi
-certbot --nginx "${DOMAINS[@]}" -m "${EMAIL}" --agree-tos --redirect -n
+WWW_IP="$(dig +short A "www.${DOMAIN}" 2>/dev/null | tail -n1 || true)"
+NAMES=("${DOMAIN}")
+if [ "${WWW}" = "yes" ] || { [ "${WWW}" = "auto" ] && [ -n "${WWW_IP}" ] && [ "${WWW_IP}" = "${SERVER_IP}" ]; }; then NAMES+=("www.${DOMAIN}"); fi
+CERT_NAME=""
+CERT_DOMAINS=""
+CERT_VALID=0
+cert_lookup() {
+  local list pref n d v pick="" first=""
+  CERT_NAME=""; CERT_DOMAINS=""; CERT_VALID=0
+  list="$(certbot certificates 2>/dev/null | awk '
+    /Certificate Name:/ { if (n != "") print n "|" d "|" v; n = $3; d = ""; v = 0 }
+    /Domains:/ { s = $0; sub(/^[[:space:]]*Domains:[[:space:]]*/, "", s); d = s }
+    /Expiry Date:/ { v = ($0 ~ /\(VALID/) ? 1 : 0 }
+    END { if (n != "") print n "|" d "|" v }')" || true
+  pref=""
+  [ -f "${SITE}" ] && pref="$(sed -n 's#.*ssl_certificate[[:space:]][[:space:]]*/etc/letsencrypt/live/\([^/;[:space:]]*\)/fullchain\.pem.*#\1#p' "${SITE}" | head -n1)"
+  while IFS='|' read -r n d v; do
+    [ -n "${n}" ] || continue
+    case " ${d} " in *" ${DOMAIN} "*) ;; *) continue ;; esac
+    [ -n "${first}" ] || first="${n}|${d}|${v}"
+    if [ "${n}" = "${pref}" ]; then pick="${n}|${d}|${v}"; break; fi
+    if [ "${n}" = "${DOMAIN}" ] && [ -z "${pick}" ]; then pick="${n}|${d}|${v}"; fi
+  done <<<"${list}"
+  [ -n "${pick}" ] || pick="${first}"
+  [ -n "${pick}" ] || return 0
+  IFS='|' read -r CERT_NAME CERT_DOMAINS CERT_VALID <<<"${pick}"
+}
+cert_covers() { local n; for n in "${NAMES[@]}"; do case " ${CERT_DOMAINS} " in *" ${n} "*) ;; *) return 1 ;; esac; done; }
+DOMAIN_ARGS=()
+for n in "${NAMES[@]}"; do DOMAIN_ARGS+=(-d "${n}"); done
+# Gets a certificate for NAMES without changing the live site (the ACME challenge runs on what Nginx
+# serves now, so HTTPS stays up). --expand when an existing certificate lacks a name (e.g. www later).
+certbot_get() { certbot certonly --nginx --cert-name "$1" "${DOMAIN_ARGS[@]}" -m "${EMAIL}" --agree-tos --keep-until-expiring --expand -n; }
+# Installs an existing certificate into the site file (adds the 443 listeners and the HTTP redirect),
+# then reloads Nginx itself.
+certbot_install() { certbot install --nginx --cert-name "$1" --redirect -n; }
+cert_lookup
+CERT_FOR="${CERT_NAME:-${DOMAIN}}"
+need_cert=1
+if [ -n "${CERT_NAME}" ] && cert_covers && [ "${CERT_VALID}" = 1 ]; then need_cert=0; fi
 
-echo "› First release (builds and runs as ${APP_USER})"
-APP_USER="${APP_USER}" APP_HOME="${APP_HOME}" BRANCH="${BRANCH}" NGINX_SNIPPET="${NGINX_DIR}/snippets/velum-security-headers.conf" bash "${ROOT}/deploy/deploy.sh"
+echo "› HTTPS (${NAMES[*]}; certificate: ${CERT_NAME:-none yet}${CERT_DOMAINS:+ for ${CERT_DOMAINS}})"
+case "${SITE_STATE}" in
+  certbot)
+    [ -n "${CERT_NAME}" ] || { restore_nginx; die "${SITE} is managed by Certbot, but certbot certificates lists no certificate for ${DOMAIN}. Nothing was changed; fix the certificate by hand (certbot certificates), then re-run."; }
+    if [ "${need_cert}" = 1 ]; then
+      say "Getting a certificate for ${NAMES[*]} (${CERT_FOR}, --expand) while the current site keeps serving HTTPS"
+      certbot_get "${CERT_FOR}" || { restore_nginx; die "certbot could not get a certificate for ${NAMES[*]}; nothing was changed (HTTPS as before)."; }
+      cert_lookup
+    fi
+    if [ "${CUR_VERSION}" = "${TEMPLATE_VERSION}" ]; then
+      merge_ports "${SITE}" | install_file "${SITE}.velum-new" 644 root:root
+      # (Certbot leaves the file without a final newline; awk adds one: compare without that difference.)
+      if cmp -s "${SITE}.velum-new" <(awk '{ print }' "${SITE}") && [ "${need_cert}" = 0 ]; then
+        rm -f "${SITE}.velum-new"
+        echo "  ${SITE} (Certbot-managed, template ${CUR_VERSION}) is up to date"
+      else
+        mv -f "${SITE}.velum-new" "${SITE}"
+        link_site
+        nginx_test_or_restore
+        if [ "${need_cert}" = 1 ]; then certbot_install "${CERT_NAME}" || { restore_nginx; die "certbot install failed; the previous Nginx files were restored (HTTPS as before)."; }; fi
+        systemctl reload nginx
+        echo "  refreshed the upstream ports in ${SITE}; Certbot's HTTPS settings kept"
+      fi
+    else
+      # Older template: render the new one, then let certbot put the certificate back in before any reload.
+      say "${SITE} comes from an older template (${CUR_VERSION:-none}); re-rendering it and re-installing certificate ${CERT_NAME} before Nginx reloads"
+      render_site | install_file "${SITE}" 644 root:root
+      link_site
+      nginx_test_or_restore
+      certbot_install "${CERT_NAME}" || { restore_nginx; die "certbot install failed; the previous Nginx files were restored (HTTPS as before). Template kept at ${NGINX_BACKUPS}/velum.conf.template.${STAMP}."; }
+      if ! grep -q 'managed by Certbot' "${SITE}" || ! nginx -t -q 2>/dev/null; then restore_nginx; die "certbot did not install the certificate into ${SITE}; the previous Nginx files were restored."; fi
+      systemctl reload nginx
+    fi
+    ;;
+  none | plain)
+    render_site | install_file "${SITE}" 644 root:root
+    link_site
+    nginx_test_or_restore
+    systemctl is-active --quiet nginx || systemctl enable --now nginx
+    systemctl reload nginx
+    if [ -n "${CERT_NAME}" ] && [ "${need_cert}" = 0 ]; then
+      if ! certbot_install "${CERT_NAME}"; then
+        if [ "${SITE_STATE}" = plain ]; then restore_nginx; die "certbot install failed; the previous Nginx files were restored."; fi
+        die "certbot install failed. The site answers on plain HTTP; fix it and re-run."
+      fi
+    else
+      certbot_get "${CERT_FOR}" && cert_lookup && certbot_install "${CERT_NAME:-${CERT_FOR}}" || {
+        if [ "${SITE_STATE}" = plain ]; then restore_nginx; die "certbot failed; the previous Nginx files were restored."; fi
+        die "certbot failed (DNS for ${NAMES[*]} pointing here? port 80 reachable?). The site answers on plain HTTP; fix it and re-run."
+      }
+    fi
+    ;;
+esac
+nginx -t -q 2>/dev/null || { restore_nginx; die "nginx -t fails after the HTTPS step; the previous Nginx files were restored."; }
+if ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 'Nginx Full' || true; fi
+# Nginx now sends the proxy secret: the API may require it from the next release on (R2-I4).
+if [ "${NEW_PROXY_SECRET}" = 1 ]; then
+  backup="$(env_backup "${ENV_FILE}")"
+  env_set "${ENV_FILE}" PROXY_SECRET "${PROXY_SECRET}"
+  echo "  added PROXY_SECRET to .env (previous .env kept as ${backup##*/})"
+fi
+unset PROXY_SECRET
 
-echo "› PM2 on boot (as ${APP_USER})"
-env -i PATH="${PATH}" HOME=/root pm2 startup systemd -u "${APP_USER}" --hp "${APP_HOME}" >/dev/null
-app_pm2 install pm2-logrotate >/dev/null 2>&1 || true
-app_pm2 save >/dev/null
+echo "› First release (api + workers as ${APP_USER}, web as ${WEB_USER})"
+APP_USER="${APP_USER}" WEB_USER="${WEB_USER}" BRANCH="${BRANCH}" NGINX_SNIPPET="${HEADERS_SNIPPET}" NGINX_PROXY_SNIPPET="${PROXY_SNIPPET}" NGINX_SITE="${SITE}" bash "${ROOT}/deploy/deploy.sh"
+
+echo "› PM2 on boot (pm2-${APP_USER} and pm2-${WEB_USER})"
+for u in "${APP_USER}" "${WEB_USER}"; do
+  h="$(user_home "${u}")"
+  env -i PATH="${PATH}" HOME=/root pm2 startup systemd -u "${u}" --hp "${h}" >/dev/null
+done
+as_app pm2 install pm2-logrotate >/dev/null 2>&1 || true
+as_web pm2 install pm2-logrotate >/dev/null 2>&1 || true
+as_app pm2 save --force >/dev/null
+as_web pm2 save --force >/dev/null
 
 echo "✓ Velum Phase 2 is live at https://${DOMAIN}"
-echo "  Status:   runuser -u ${APP_USER} -- pm2 status"
+echo "  Status:   runuser -u ${APP_USER} -- pm2 status ; runuser -u ${WEB_USER} -- pm2 status"
 echo "  Logs:     runuser -u ${APP_USER} -- pm2 logs velum-api --lines 100"
 echo "  Health:   curl -s https://${DOMAIN}/api/v1/health"
 echo "  Releases: sudo bash ${ROOT}/deploy/deploy.sh   (roll back: sudo bash ${ROOT}/deploy/deploy.sh --rollback)"

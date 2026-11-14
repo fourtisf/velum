@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Create a hot-wallet key in .env without printing it; prints only the address. Run as root:
-#   sudo bash /opt/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY
+#   sudo bash /srv/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY
 # Never replaces a value that is already there (a valid key is kept, anything else is refused),
 # backs up .env before changing it, and writes it atomically (audit L3). Keep each hot wallet
 # funded with only small amounts. Takes effect for the apps on the next release (deploy.sh).
 set -euo pipefail
 umask 077
+# A dropped SSH session must not stop a rewrite of .env halfway (R2-L6).
+trap '' HUP
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 BASE="$(cd "$(dirname "${SELF}")/.." && pwd)"
 # shellcheck source=deploy/lib/common.sh

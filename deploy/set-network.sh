@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Switch Velum between Robinhood Chain testnet and mainnet, then run a release. Run as root:
-#   sudo bash /opt/velum/deploy/set-network.sh mainnet      (or testnet)
+#   sudo bash /srv/velum/deploy/set-network.sh mainnet      (or testnet)
 # Mainnet in Phase 2: real wallet, public balances and live Robinhood prices; trades simulated.
 # This script never deploys contracts. Velum contracts stay off mainnet until the Phase 5 audit.
 # Afterwards you may put a provider RPC (Alchemy, QuickNode, …) in RPC_URL / NEXT_PUBLIC_RPC_URL
 # (edit .env as root) and run a release; the Content-Security-Policy follows NEXT_PUBLIC_RPC_URL.
 set -euo pipefail
 umask 077
+# A dropped SSH session must not stop a rewrite of .env halfway (R2-L6).
+trap '' HUP
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 BASE="$(cd "$(dirname "${SELF}")/.." && pwd)"
 # shellcheck source=deploy/lib/common.sh

@@ -14,6 +14,13 @@ export interface ApiEnv {
   chainId: number;
   demoMode: boolean;
   logLevel: string;
+  /**
+   * Shared secret Nginx sends in X-Velum-Proxy-Secret (deploy/server-setup.sh generates it). When set,
+   * X-Real-IP is trusted only on requests that carry it; anything else (another program on this host
+   * talking to 127.0.0.1 directly) is keyed by its socket address (audit R2-I4). When empty, the API
+   * trusts X-Forwarded-For from loopback as before.
+   */
+  proxySecret: string | null;
 }
 
 const bool = (v: string | undefined, dflt: boolean): boolean => {
@@ -59,6 +66,9 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     for (const o of corsOrigins) if (!/^https?:\/\/[^/]+$/.test(o)) problems.push(`CORS_ORIGIN entry "${o}" must be an origin like https://velum.example (no path).`);
   }
 
+  const proxySecret = (e.PROXY_SECRET ?? '').trim();
+  if (proxySecret && !/^[0-9a-f]{32,128}$/i.test(proxySecret)) problems.push('PROXY_SECRET must be 32 to 128 hex characters (deploy/server-setup.sh generates one).');
+
   const env: ApiEnv = {
     host: e.HOST || '127.0.0.1',
     port: int('PORT_API', e.PORT_API ?? e.PORT, 4000, 1, 65535),
@@ -72,6 +82,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     chainId,
     demoMode: bool(e.DEMO_MODE, true),
     logLevel: e.LOG_LEVEL || (e.NODE_ENV === 'production' ? 'info' : 'debug'),
+    proxySecret: proxySecret || null,
   };
 
   if (problems.length) throw new Error(`Invalid API environment:\n  - ${problems.join('\n  - ')}`);

@@ -1,17 +1,28 @@
-// PM2 process file. deploy/release.sh starts and reloads it; do not run `pm2 reload` on it by hand
-// from a shell with secrets in its environment (PM2 merges the caller's environment into every app on
-// reload, and cluster workers inherit the PM2 daemon's environment).
+// PM2 process file. deploy/release.sh starts and reloads it; do not run `pm2 reload` on it by hand.
 //
-// Each app gets only the variables it reads (audit M5). Values come from .env, parsed here as data
-// (same rules as deploy/lib/common.sh: KEY=VALUE, no shell evaluation). filter_env stops PM2 from
-// copying the CLI environment into the apps on start.
+// Environment (audit M5, R2-L3): each app gets only the variables it reads, parsed here from an env
+// file as data (same rules as deploy/lib/common.sh: KEY=VALUE, no shell evaluation). PM2 adds the
+// environment of the `pm2` command itself on start and merges it into every app on reload (PM2's
+// filter_env does not stop that: `true` is ignored by PM2 6.0.14 and no form filters reload or the
+// daemon's environment that cluster workers inherit). So release.sh always runs pm2 under `env -i`
+// with only HOME, PATH, LANG, PM2_HOME and VELUM_PM2_SCOPE, and restarts a daemon whose own
+// environment holds secrets. deploy.sh verifies the result from /proc/<pid>/environ in the tests.
+//
+// Scopes (VELUM_PM2_SCOPE, audit R2-M3): on a server the web runs as its own user in its own PM2
+// daemon and reads <base>/web.env (rendered by root, no secrets); api and workers run as the app user
+// and read <base>/.env, which the web user cannot read.
+//   backend  velum-api + velum-workers   (app user, .env)
+//   web      velum-web                   (web user, web.env)
+//   all      all three                   (single-user and local setups, .env)
 //
 // Layout: in a release directory (<base>/releases/<id>/deploy/…) the apps run from <base>/current,
-// the symlink deploy.sh switches atomically, and .env is <base>/.env. Run from a plain checkout
-// (local or manual setups), the apps run from the checkout and .env sits at its root.
+// the symlink deploy.sh switches atomically. Run from a plain checkout (local or manual setups), the
+// apps run from the checkout and the env files sit at its root.
 //
 //   node deploy/ecosystem.config.cjs --keys         app names and the variable NAMES each one gets
 //   node deploy/ecosystem.config.cjs --fingerprint  hash of app definitions + variable names (no values)
+//   node deploy/ecosystem.config.cjs --names        app names in this scope
+//   node deploy/ecosystem.config.cjs --cwds         name=cwd for each app in this scope
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
@@ -21,7 +32,9 @@ const tree = path.resolve(__dirname, '..');
 const inRelease = path.basename(path.dirname(tree)) === 'releases';
 const base = inRelease ? path.dirname(path.dirname(tree)) : tree;
 const appRoot = inRelease ? path.join(base, 'current') : tree;
-const envFile = process.env.VELUM_ENV_FILE || path.join(base, '.env');
+const scope = process.env.VELUM_PM2_SCOPE || 'all';
+if (!['backend', 'web', 'all'].includes(scope)) throw new Error(`VELUM_PM2_SCOPE must be backend, web or all (got ${scope}).`);
+const envFile = process.env.VELUM_ENV_FILE || path.join(base, scope === 'web' ? 'web.env' : '.env');
 
 /** KEY=VALUE parser: no expansion, no escapes; one pair of matching outer quotes removed; last wins. */
 function parseEnv(text) {
@@ -40,11 +53,14 @@ function parseEnv(text) {
 
 const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, 'utf8')) : {};
 
-/** Variables each app reads. Nothing else from .env reaches it (hot keys reach only their worker). */
+/**
+ * Variables each app reads. Nothing else reaches it (hot keys reach only their worker). The web list
+ * must match WEB_ENV_KEYS / WEB_ENV_PREFIX in deploy/lib/common.sh (what root writes to web.env).
+ */
 const ALLOW = {
   'velum-web': { keys: ['NODE_ENV', 'PORT_WEB', 'PUBLIC_SITE_URL'], prefixes: ['NEXT_PUBLIC_'] },
   'velum-api': {
-    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL'],
+    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET'],
     prefixes: ['RATE_LIMIT_'],
   },
   'velum-workers': {
@@ -73,9 +89,9 @@ const PORT_API = port(fileEnv.PORT_API, '4000');
 const PATH = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
 
 // API force-exits 10 s after SIGTERM; give it time to drain before PM2 sends SIGKILL (audit L13).
-const common = { filter_env: true, kill_timeout: 12_000, autorestart: true };
+const common = { kill_timeout: 12_000, autorestart: true };
 
-const apps = [
+const all = [
   {
     ...common,
     name: 'velum-web',
@@ -85,7 +101,8 @@ const apps = [
     instances: 2,
     exec_mode: 'cluster',
     listen_timeout: 15_000,
-    env: envFor('velum-web', { NODE_ENV: 'production', PORT_WEB, PATH }),
+    // NEXT_TELEMETRY_DISABLED: the web user's home stays free of Next's telemetry config.
+    env: envFor('velum-web', { NODE_ENV: 'production', PORT_WEB, PATH, NEXT_TELEMETRY_DISABLED: '1' }),
     max_memory_restart: '700M',
   },
   {
@@ -112,6 +129,9 @@ const apps = [
   },
 ];
 
+const SCOPES = { backend: ['velum-api', 'velum-workers'], web: ['velum-web'], all: ['velum-web', 'velum-api', 'velum-workers'] };
+const apps = all.filter((a) => SCOPES[scope].includes(a.name));
+
 module.exports = { apps };
 
 if (require.main === module) {
@@ -120,6 +140,8 @@ if (require.main === module) {
     process.stdout.write(crypto.createHash('sha256').update(JSON.stringify(shape)).digest('hex') + '\n');
   } else if (process.argv.includes('--names')) {
     process.stdout.write(apps.map((a) => a.name).join(' ') + '\n');
+  } else if (process.argv.includes('--cwds')) {
+    process.stdout.write(apps.map((a) => `${a.name}=${a.cwd}`).join(' ') + '\n');
   } else {
     for (const a of shape) process.stdout.write(`${a.name} (${a.cwd}): ${a.env.join(' ')}\n`);
   }

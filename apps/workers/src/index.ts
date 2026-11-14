@@ -5,12 +5,13 @@
 import { PrismaClient } from '@velum/db';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
-import { demoBackfill, loadSeries, loadSnapshots, resetHistoryOnSourceChange, upsertMarkets } from './bootstrap';
+import { demoBackfill, loadLastTickAt, loadSeries, loadSnapshots, resetHistoryOnSourceChange, upsertMarkets } from './bootstrap';
 import { CANDLES_WORKER, PRICE_WORKER, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
 import { CANDLE_JOB_OPTIONS, runCandles, writeCandleCaches } from './jobs/candles';
 import { runPriceRelay } from './jobs/price-relay';
 import { runPrune } from './jobs/prune';
+import { startLiveness } from './lib/liveness';
 import { createLogger } from './lib/log';
 import { redactUrls } from './lib/redact';
 import { pickSource } from './sources';
@@ -38,6 +39,8 @@ async function main(): Promise<void> {
     if (seeded.candlesInserted) series = await loadSeries(prisma, marketIds);
   }
   await writeCandleCaches(redis, series);
+  // After the reset above, so ticks of a cleared source never count (audit R2-L1).
+  const lastTickAt = await loadLastTickAt(prisma, marketIds);
 
   const defaultJobOptions = { removeOnComplete: true, removeOnFail: 200 } as const;
   const prices = new Queue(Q_PRICES, { connection: redis, defaultJobOptions });
@@ -55,7 +58,7 @@ async function main(): Promise<void> {
     open24h: new Map([...snapshots].map(([k, v]) => [k, v.open24h])),
     lastOpenRefresh: 0,
     series,
-    lastTickAt: new Map(),
+    lastTickAt,
     // A failed candle write is retried (audit L9); runCandles keeps retries from rewinding closes.
     enqueueCandles: async (data) => {
       await candles.add('tick', data, CANDLE_JOB_OPTIONS);
@@ -75,6 +78,9 @@ async function main(): Promise<void> {
     w.on('error', (err) => log.error('worker error', { queue: w.name, err: err.message }));
   }
 
+  // Liveness for /v1/health and deploy.sh's post-release check (audit R2-L5): only once start-up worked.
+  const stopLiveness = await startLiveness(redis, log);
+
   log.info('workers started', {
     workers: [PRICE_WORKER, CANDLES_WORKER, 'prune'],
     source: ctx.source.name,
@@ -88,6 +94,7 @@ async function main(): Promise<void> {
     closing = true;
     log.info('shutting down', { signal });
     setTimeout(() => process.exit(1), 10_000).unref();
+    stopLiveness();
     await Promise.allSettled(workers.map((w) => w.close()));
     await Promise.allSettled([prices.close(), candles.close(), maintenance.close()]);
     await Promise.allSettled([prisma.$disconnect(), redis.quit()]);

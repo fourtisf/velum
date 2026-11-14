@@ -36,43 +36,47 @@ port), and issues HTTPS. `www.` is included only if its DNS points at the server
 ## Phase 2: full stack
 
 ```
-apps/web      Next.js 14   127.0.0.1:3000   (PM2 cluster ×2; next free port if taken)
-apps/api      Fastify      127.0.0.1:4000   (PM2 cluster ×2, Nginx /api/ → :4000/)
-apps/workers  BullMQ       no port          (PM2 fork ×1)
+apps/web      Next.js 14   127.0.0.1:3000   (PM2 cluster ×2 as velum-web; next free port if taken)
+apps/api      Fastify      127.0.0.1:4000   (PM2 cluster ×2 as velum, Nginx /api/ → :4000/)
+apps/workers  BullMQ       no port          (PM2 fork ×1 as velum)
 PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password)
 ```
 
-First time on the server (installs only what's missing, writes `.env` atomically with generated
-passwords, adds the Nginx site and security headers, issues HTTPS, runs the first release, enables
-PM2 on boot). Safe on a VPS that already runs other sites: own `velum` user and PM2, free ports,
-installed packages never upgraded, existing Redis left untouched (but refused without a password).
-The checkout must be root-owned; the apps build and run as `velum`.
+First time on the server, as root in tmux (installs only what's missing, writes `.env` atomically with
+generated passwords, adds the Nginx site and security headers, issues HTTPS, runs the first release,
+enables PM2 on boot). Safe on a VPS that already runs other sites: own users and PM2 daemons, free
+ports, installed packages never upgraded, existing Redis left untouched (but refused without a
+password), other Nginx sites never touched. The clone must be root-owned; api and workers build and run
+as `velum`, the web runs as `velum-web`, which cannot read `.env` or the other apps' environment.
 
 ```bash
-sudo git clone <repo-url> /opt/velum
-cd /opt/velum && sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
+git -c core.hooksPath=/dev/null clone --branch main <repo-url> /srv/velum
+DOMAIN=velum.example EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
 ```
 
-Every release after that (as root; it builds and runs as `velum`):
+Every release after that (as root; re-running setup is safe too and never drops HTTPS):
 
 ```bash
-sudo bash /opt/velum/deploy/deploy.sh               # --rollback switches back to the previous release
+sudo bash /srv/velum/deploy/deploy.sh               # --rollback switches back to the previous release
 ```
 
 Switch the network. Mainnet = real wallet and balances plus live official Robinhood quotes
 (`PRICE_SOURCE=robinhood`); trades stay simulated and no contracts are deployed:
 
 ```bash
-sudo bash /opt/velum/deploy/set-network.sh mainnet
+sudo bash /srv/velum/deploy/set-network.sh mainnet
 ```
 
-`deploy.sh` takes a lock, pulls the branch the checkout is on (`BRANCH=` to override), builds the
-commit in a fresh `releases/<time>-<commit>/` directory (frozen lockfile, every app, migrations),
-switches the `current` symlink atomically, reloads PM2 with zero downtime and checks health. A
-failed build leaves the running site untouched; a failed health check switches back. Each PM2 app
-gets only the environment variables it reads. Servers set up before November 2026 need the one-time
-upgrade in `docs/05-deploy-vps.md` (Upgrading). See that file for the security model, manual steps
-and operations.
+`deploy.sh` takes a lock, checks that the clone is safe for root (root-owned, no symlinks, a
+`.git/config` with only what `git clone` writes), pulls with git hooks disabled, builds the commit in a
+fresh `releases/<time>-<commit>/` directory (frozen lockfile, every app, migrations), switches the
+`current` symlink atomically, reloads PM2 with zero downtime and checks API, web, a fresh workers
+heartbeat and, after a settle period, PM2 restart counts. A failed build leaves the running site
+untouched; a failed health check switches back. Each PM2 app gets only the environment variables it
+reads. **Servers set up before November 2026** (`/opt/velum` owned by `velum`) move to the new layout
+with the tmux procedure in `docs/05-deploy-vps.md` ("Upgrading"): fresh root-owned clone at
+`/srv/velum`, `deploy/import-env.sh` for `.env`, setup, automatic fallback to the old apps if the first
+release fails. See that file for the security model, manual steps and operations.
 
 ## Local development
 
@@ -132,6 +136,16 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
   API: `/v1/health` is rate limited, pools are read with one bounded query, startup errors never print URLs.
   Workers: candle cache follows Postgres and failed candle jobs are retried; Chainlink rounds are time- and
   bounds-checked.
+- **Deploy and backend, second audit round (R2)**: the web runs as its own `velum-web` user with its own
+  PM2 daemon and a root-rendered `web.env` (no secrets); root never writes through paths another user
+  controls; the upgrade from the old in-place layout is a fresh root-owned clone (`/srv/velum`) with a
+  checked `.env` import instead of repairing `/opt/velum`; re-running setup keeps Certbot's HTTPS
+  (template versions, `certbot install` before any reload, explicit certificate names, `--expand`);
+  the first release over the old layout restores the old apps automatically if it fails; health checks
+  cover the workers (liveness heartbeat, `workers` in `/v1/health`) and apps that crash after start;
+  the CSP lists exactly the hosts the installed wallet SDKs use (WalletConnect only with a project ID);
+  the API trusts client addresses only from Nginx (`PROXY_SECRET`); URL redaction never prints any part
+  of a password; a candle retry after a worker restart no longer moves the close back.
 
 ## Stack
 

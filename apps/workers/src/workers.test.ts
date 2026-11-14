@@ -162,6 +162,16 @@ describe('snapshots', () => {
     expect(s.spark.at(-1)).toBe('199');
     expect(a.spark).toEqual(['100']);
   });
+
+  it('fills downtime with the last price so the spark never splices stale history', () => {
+    const a = buildSnapshot(undefined, 'TSLA', '100', '99', 'demo', NOW);
+    const b = buildSnapshot(a, 'TSLA', '105', '99', 'demo', NOW + 4 * SPARK_INTERVAL_MS);
+    expect(b.spark).toEqual(['100', '100', '100', '100', '105']);
+    const c = buildSnapshot(b, 'TSLA', '110', '99', 'demo', NOW + 300 * SPARK_INTERVAL_MS);
+    expect(c.spark).toHaveLength(SPARK_POINTS);
+    expect(c.spark.slice(0, -1).every((p) => p === '105')).toBe(true);
+    expect(c.spark.at(-1)).toBe('110');
+  });
 });
 
 describe('env', () => {

@@ -22,8 +22,14 @@ export function buildSnapshot(
   let spark = prev?.spark ? [...prev.spark] : [];
   const prevMinute = prev ? Math.floor(prev.updatedAt / SPARK_INTERVAL_MS) : -1;
   const minute = Math.floor(now / SPARK_INTERVAL_MS);
-  if (!spark.length || minute > prevMinute) spark.push(price);
-  else spark[spark.length - 1] = price;
+  if (!spark.length || minute > prevMinute) {
+    // After downtime, fill the missing minutes with the last known price so the line
+    // still covers exactly the last hour instead of splicing stale history onto now.
+    const gap = Math.min(SPARK_POINTS, minute - prevMinute - 1);
+    const last = spark[spark.length - 1];
+    if (last !== undefined) for (let i = 0; i < gap; i++) spark.push(last);
+    spark.push(price);
+  } else spark[spark.length - 1] = price;
   if (spark.length > SPARK_POINTS) spark = spark.slice(-SPARK_POINTS);
   return { symbol, price, mark: markOf(price), open24h, spark, source, updatedAt: now };
 }

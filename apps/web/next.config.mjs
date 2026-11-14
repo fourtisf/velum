@@ -4,6 +4,11 @@ const nextConfig = {
   poweredByHeader: false,
   transpilePackages: ['@velum/config', '@velum/math'],
   eslint: { dirs: ['app', 'components', 'lib'] },
+  // Local dev only: proxy /api to Fastify like Nginx does in production (set API_PROXY_TARGET).
+  async rewrites() {
+    const target = process.env.API_PROXY_TARGET;
+    return target ? [{ source: '/api/:path*', destination: `${target.replace(/\/$/, '')}/:path*` }] : [];
+  },
   async redirects() {
     return [
       { source: '/app', destination: '/app/trade/TSLA', permanent: false },

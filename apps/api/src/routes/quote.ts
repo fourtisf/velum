@@ -1,4 +1,4 @@
-import { DEMO, PROTOCOL, QUOTE_SYMBOL, getMarket } from '@velum/config';
+import { CHAIN, DEMO, PROTOCOL, QUOTE_SYMBOL, getMarket } from '@velum/config';
 import { WAD, parseWad, pctToWad, roundSig, roundTo, swapHops, swapQuote, toDecimalString, type Wad } from '@velum/math';
 import type { FastifyPluginAsync } from 'fastify';
 import type { AppDeps } from '../lib/deps';
@@ -17,6 +17,9 @@ interface QuoteBody {
 }
 
 const sig = (w: Wad) => toDecimalString(roundSig(w, QUOTE_SIG_FIGS, 'floor'));
+
+/** Names the configured network ("Robinhood Chain" on mainnet), never a hard-coded "testnet". */
+export const marketClosedMessage = (sym: string, networkLabel: string = CHAIN.label): string => `${sym} isn't on ${networkLabel} yet.`;
 
 export function quoteRoutes(deps: AppDeps): FastifyPluginAsync {
   const now = deps.now ?? Date.now;
@@ -46,7 +49,7 @@ export function quoteRoutes(deps: AppDeps): FastifyPluginAsync {
           if (sym === QUOTE_SYMBOL) continue;
           const m = getMarket(sym);
           if (!m) throw badRequest(`Unknown token ${sym}. Use USDG or a market symbol such as TSLA.`);
-          if (m.status !== 'live') throw new ApiError(400, 'MARKET_CLOSED', `${sym} isn't on Robinhood Chain testnet yet.`);
+          if (m.status !== 'live') throw new ApiError(400, 'MARKET_CLOSED', marketClosedMessage(sym));
         }
         if (from === to) throw badRequest('Choose two different tokens.');
 

@@ -8,10 +8,11 @@ import { Redis } from 'ioredis';
 import { demoBackfill, loadSeries, loadSnapshots, resetHistoryOnSourceChange, upsertMarkets } from './bootstrap';
 import { CANDLES_WORKER, PRICE_WORKER, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
-import { runCandles, writeCandleCaches } from './jobs/candles';
+import { CANDLE_JOB_OPTIONS, runCandles, writeCandleCaches } from './jobs/candles';
 import { runPriceRelay } from './jobs/price-relay';
 import { runPrune } from './jobs/prune';
 import { createLogger } from './lib/log';
+import { redactUrls } from './lib/redact';
 import { pickSource } from './sources';
 
 const Q_PRICES = 'velum-prices';
@@ -54,8 +55,10 @@ async function main(): Promise<void> {
     open24h: new Map([...snapshots].map(([k, v]) => [k, v.open24h])),
     lastOpenRefresh: 0,
     series,
+    lastTickAt: new Map(),
+    // A failed candle write is retried (audit L9); runCandles keeps retries from rewinding closes.
     enqueueCandles: async (data) => {
-      await candles.add('tick', data);
+      await candles.add('tick', data, CANDLE_JOB_OPTIONS);
     },
   };
 
@@ -95,6 +98,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : err);
+  // Never print RPC, database or Redis URLs: they carry API keys and passwords (audit L7).
+  console.error(redactUrls(err instanceof Error ? err.message : String(err)));
   process.exit(1);
 });

@@ -42,30 +42,37 @@ apps/workers  BullMQ       no port          (PM2 fork ×1)
 PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password)
 ```
 
-First time on the server (installs what's missing, writes `.env` with generated passwords, adds
-the Nginx site, issues HTTPS, runs the first release, enables PM2 on boot). Safe on a VPS that
-already runs other sites: own `velum` user and PM2, free ports, existing Redis left untouched.
+First time on the server (installs only what's missing, writes `.env` atomically with generated
+passwords, adds the Nginx site and security headers, issues HTTPS, runs the first release, enables
+PM2 on boot). Safe on a VPS that already runs other sites: own `velum` user and PM2, free ports,
+installed packages never upgraded, existing Redis left untouched (but refused without a password).
+The checkout must be root-owned; the apps build and run as `velum`.
 
 ```bash
-cd /opt/velum && DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
+sudo git clone <repo-url> /opt/velum
+cd /opt/velum && sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
 ```
 
-Every release after that:
+Every release after that (as root; it builds and runs as `velum`):
 
 ```bash
-runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/deploy.sh'
+sudo bash /opt/velum/deploy/deploy.sh               # --rollback switches back to the previous release
 ```
 
 Switch the network. Mainnet = real wallet and balances plus live official Robinhood quotes
 (`PRICE_SOURCE=robinhood`); trades stay simulated and no contracts are deployed:
 
 ```bash
-runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/set-network.sh mainnet'
+sudo bash /opt/velum/deploy/set-network.sh mainnet
 ```
 
-`deploy.sh` pulls the branch the checkout is on (`BRANCH=` to override), installs with the frozen
-lockfile, migrates, builds, reloads PM2 with zero downtime and checks health. See
-`docs/05-deploy-vps.md` for the manual steps and operations.
+`deploy.sh` takes a lock, pulls the branch the checkout is on (`BRANCH=` to override), builds the
+commit in a fresh `releases/<time>-<commit>/` directory (frozen lockfile, every app, migrations),
+switches the `current` symlink atomically, reloads PM2 with zero downtime and checks health. A
+failed build leaves the running site untouched; a failed health check switches back. Each PM2 app
+gets only the environment variables it reads. Servers set up before November 2026 need the one-time
+upgrade in `docs/05-deploy-vps.md` (Upgrading). See that file for the security model, manual steps
+and operations.
 
 ## Local development
 
@@ -117,6 +124,14 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
 - **Deploy**: Nginx security headers now survive per-location `add_header`. Cross-origin isolation
   is deferred to Phase 4 because it breaks wallet popups. Server setup is now one script, and the release script
   re-runs itself after pulling.
+- **Deploy hardening (internal audit, backend M3–M6 and Lows)**: root-owned checkout, apps built and run as
+  `velum` in release directories with an atomic `current` switch, rollback and a deploy lock; per-app env
+  allowlists in PM2 (the web never sees database URLs or keys); `.env` written atomically and parsed as data;
+  psql passwords on stdin; shared Redis without a password refused; HSTS and a CSP that follows the configured
+  RPC; JSON 429 from Nginx on `/api`. `deploy.sh`, `set-network.sh` and `new-key.sh` now run with `sudo`.
+  API: `/v1/health` is rate limited, pools are read with one bounded query, startup errors never print URLs.
+  Workers: candle cache follows Postgres and failed candle jobs are retried; Chainlink rounds are time- and
+  bounds-checked.
 
 ## Stack
 

@@ -14,3 +14,10 @@ contracts/out/
 contracts/cache/
 circuits/target/
 dump.rdb
+# Server-side deploy layout (deploy/deploy.sh)
+/releases/
+/current
+/previous
+/.current.new
+/.previous.new
+/.deploy.lock

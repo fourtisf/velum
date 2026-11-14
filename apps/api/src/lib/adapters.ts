@@ -1,6 +1,6 @@
 /** Production implementations of the readers in deps.ts (Redis, Prisma, viem). */
 import { cacheKeys, type Candle, type MarketSnapshot, type Timeframe } from '@velum/config';
-import type { PrismaClient } from '@velum/db';
+import { Prisma, type PrismaClient } from '@velum/db';
 import type { Redis } from 'ioredis';
 import { createPublicClient, http } from 'viem';
 import type { CacheReader, ChainReader, DbReader, PublishedPool } from './deps';
@@ -51,6 +51,31 @@ export function redisCache(redis: Redis): CacheReader {
 /** Prisma Decimal to a plain decimal string (no exponent notation). */
 const dec = (d: { toFixed(): string }): string => d.toFixed();
 
+/** Upper bound on rows the pools query can return (one per pool; far above the market count). */
+export const MAX_POOLS = 100;
+
+interface PublishedPoolRow {
+  symbol: string;
+  feeBps: number;
+  sizeRounded: { toFixed(): string };
+  aprEst: { toFixed(): string };
+  hour: Date;
+}
+
+export const publishedPoolsSql = Prisma.sql`
+  SELECT m."symbol", p."feeBps", ph."sizeRounded", ph."aprEst", ph."hour"
+  FROM "Pool" p
+  JOIN "Market" m ON m."id" = p."marketId"
+  CROSS JOIN LATERAL (
+    SELECT h."sizeRounded", h."aprEst", h."hour"
+    FROM "PoolHourly" h
+    WHERE h."poolId" = p."id" AND h."published" = true
+    ORDER BY h."hour" DESC
+    LIMIT 1
+  ) ph
+  ORDER BY m."symbol"
+  LIMIT ${MAX_POOLS}`;
+
 export function prismaDb(prisma: PrismaClient): DbReader {
   return {
     async ping() {
@@ -69,16 +94,13 @@ export function prismaDb(prisma: PrismaClient): DbReader {
       return rows.reverse().map((r): Candle => ({ t: r.t.getTime(), o: dec(r.o), h: dec(r.h), l: dec(r.l), c: dec(r.c) }));
     },
     async publishedPools() {
-      const rows = await prisma.poolHourly.findMany({
-        where: { published: true },
-        orderBy: { hour: 'desc' },
-        distinct: ['poolId'],
-        include: { pool: { include: { market: true } } },
-      });
+      // Latest published row per pool, read in SQL: one index probe per pool on the
+      // (poolId, hour) primary key instead of loading every published row (audit L2).
+      const rows = await prisma.$queryRaw<PublishedPoolRow[]>(publishedPoolsSql);
       return rows.map(
         (r): PublishedPool => ({
-          symbol: r.pool.market.symbol,
-          feeBps: r.pool.feeBps,
+          symbol: r.symbol,
+          feeBps: Number(r.feeBps),
           sizeRounded: dec(r.sizeRounded),
           aprEst: dec(r.aprEst),
           hour: r.hour.getTime(),

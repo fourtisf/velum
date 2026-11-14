@@ -3,6 +3,9 @@ import { fromUnits, parseWad, roundTo, toDecimalString } from '@velum/math';
 import { createPublicClient, http, parseAbi, type PublicClient } from 'viem';
 import { floatToDec, stepPrice, type Rng } from '../lib/demo';
 import type { Logger } from '../lib/log';
+import { redactUrls } from '../lib/redact';
+
+export { redactUrls };
 
 /** Fresh prices (decimal strings) for the symbols a source could read this tick. */
 export interface PriceReader {
@@ -34,15 +37,54 @@ const AGGREGATOR_ABI = parseAbi([
   'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
 ]);
 
+/** Prices at or above this (1e9 USDG, as a wad) are rejected outright, for every source. */
+export const MAX_PRICE_WAD = 10n ** 27n;
+/** A feed round dated further ahead than this many seconds is rejected (clock skew allowance). */
+export const FEED_MAX_FUTURE_S = 30;
+/** Feeds reporting more decimals than this are rejected (real feeds use 8 or 18). */
+export const FEED_MAX_DECIMALS = 36;
+
+export interface FeedRound {
+  roundId: bigint;
+  answer: bigint;
+  updatedAt: bigint;
+  answeredInRound: bigint;
+}
+
+export type FeedVerdict =
+  | { ok: true; price: string }
+  | { ok: false; reason: 'decimals' | 'no-timestamp' | 'future' | 'stale' | 'answer' | 'incomplete-round' | 'bounds'; age?: number };
+
+/**
+ * Validates one latestRoundData() answer (audit L14): sane decimals, a timestamp that is set,
+ * not in the future and not older than PROTOCOL.oracleMaxAgeSeconds, a positive answer from a
+ * complete round, and a price inside (0, 1e9) USDG after rounding to 4 decimals.
+ */
+export function checkFeedRound(round: FeedRound, decimals: number, now: number): FeedVerdict {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > FEED_MAX_DECIMALS) return { ok: false, reason: 'decimals' };
+  if (round.updatedAt <= 0n) return { ok: false, reason: 'no-timestamp' };
+  const nowS = BigInt(Math.floor(now / 1000));
+  if (round.updatedAt > nowS + BigInt(FEED_MAX_FUTURE_S)) return { ok: false, reason: 'future', age: Number(nowS - round.updatedAt) };
+  const age = Number(nowS - round.updatedAt);
+  if (age > PROTOCOL.oracleMaxAgeSeconds) return { ok: false, reason: 'stale', age };
+  if (round.answer <= 0n) return { ok: false, reason: 'answer' };
+  if (round.answeredInRound < round.roundId) return { ok: false, reason: 'incomplete-round' };
+  const price = roundTo(fromUnits(round.answer, decimals), 4, 'floor');
+  if (price <= 0n || price >= MAX_PRICE_WAD) return { ok: false, reason: 'bounds' };
+  return { ok: true, price: toDecimalString(price) };
+}
+
+/** The one viem call the Chainlink source needs (injectable for tests). */
+export type FeedClient = Pick<PublicClient, 'readContract'>;
+
 /**
  * Chainlink AggregatorV3 feeds from PRICE_FEEDS. A market is skipped (keeps its last price and
- * goes stale in the API) when it has no feed, the read fails, the answer is not positive, or the
- * round is older than PROTOCOL.oracleMaxAgeSeconds. Stock feeds stop updating when the stock
- * market is closed, so stale outside trading hours is expected.
+ * goes stale in the API) when it has no feed, the read fails, or checkFeedRound rejects the round.
+ * Stock feeds stop updating when the stock market is closed, so stale outside trading hours is expected.
  * TODO(phase 3): check the L2 sequencer uptime feed once its address is verified.
  */
-export function chainlinkSource(rpcUrl: string, feeds: Record<string, Address>, log: Logger): PriceReader {
-  const client = createPublicClient({ transport: http(rpcUrl, { timeout: 5000, retryCount: 1 }) }) as PublicClient;
+export function chainlinkSource(rpcUrl: string, feeds: Record<string, Address>, log: Logger, client?: FeedClient): PriceReader {
+  const rpc: FeedClient = client ?? (createPublicClient({ transport: http(rpcUrl, { timeout: 5000, retryCount: 1 }) }) as PublicClient);
   const decimals = new Map<string, number>();
   return {
     name: 'chainlink',
@@ -53,14 +95,14 @@ export function chainlinkSource(rpcUrl: string, feeds: Record<string, Address>, 
           try {
             let d = decimals.get(symbol);
             if (d === undefined) {
-              d = await client.readContract({ address, abi: AGGREGATOR_ABI, functionName: 'decimals' });
+              d = Number(await rpc.readContract({ address, abi: AGGREGATOR_ABI, functionName: 'decimals' }));
               decimals.set(symbol, d);
             }
-            const [, answer, , updatedAt] = await client.readContract({ address, abi: AGGREGATOR_ABI, functionName: 'latestRoundData' });
-            if (answer <= 0n) return log.warn('feed answer not positive', { symbol });
-            const age = Math.floor(now / 1000) - Number(updatedAt);
-            if (age > PROTOCOL.oracleMaxAgeSeconds) return log.debug('feed stale', { symbol, age });
-            out.set(symbol, toDecimalString(roundTo(fromUnits(answer, d), 4, 'floor')));
+            const [roundId, answer, , updatedAt, answeredInRound] = (await rpc.readContract({ address, abi: AGGREGATOR_ABI, functionName: 'latestRoundData' })) as readonly [bigint, bigint, bigint, bigint, bigint];
+            const v = checkFeedRound({ roundId, answer, updatedAt, answeredInRound }, d, now);
+            if (v.ok) out.set(symbol, v.price);
+            else if (v.reason === 'stale') log.debug('feed stale', { symbol, age: v.age });
+            else log.warn('feed round rejected', { symbol, reason: v.reason, ...(v.age !== undefined ? { age: v.age } : {}) });
           } catch (err) {
             log.warn('feed read failed', { symbol, err: redactUrls(err instanceof Error ? err.message : String(err)) });
           }
@@ -87,20 +129,11 @@ export const RH_MAX_FUTURE_MS = 30_000;
 /** Widest bid/ask spread accepted, as a share of the midpoint (overnight spreads reach ~8%). */
 export const RH_MAX_SPREAD_BPS = 2000n;
 /** Prices outside (0, 1e9) USDG are rejected outright. */
-export const RH_MAX_PRICE = 10n ** 27n;
+export const RH_MAX_PRICE = MAX_PRICE_WAD;
 /** A move larger than this against the last accepted price needs confirming ticks. */
 export const RH_JUMP_BPS = 2500n;
 export const RH_JUMP_CONFIRMATIONS = 3;
 const STRICT_DECIMAL = /^\d{1,12}(\.\d{1,18})?$/;
-
-/** Removes URLs (which can carry provider API keys) from error text before it is logged. */
-export const redactUrls = (msg: string): string => msg.replace(/https?:\/\/[^\s"')]+/g, (u) => {
-  try {
-    return new URL(u).origin + '/…';
-  } catch {
-    return '[url]';
-  }
-});
 
 /**
  * Midpoint of a Robinhood quote as a decimal string, or null when unusable. tokenBid/tokenAsk are

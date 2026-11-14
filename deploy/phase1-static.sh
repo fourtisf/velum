@@ -10,22 +10,31 @@ WWW="${WWW:-auto}"
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo." >&2; exit 1; }
 cd "$(dirname "$0")/.."
 
-echo "› Installing Nginx and Certbot"
-apt-get update -y
-apt-get install -y nginx certbot python3-certbot-nginx dnsutils
-
-# Something else (often Apache on VPS images) may already own port 80.
-if ss -ltnp 'sport = :80' | grep -v -q -e nginx -e '^State'; then
+# Something else (often Apache on VPS images) may already own port 80. Check before installing
+# anything, so a failed Nginx install never leaves the server half-configured (audit L11).
+if ss -ltnp 'sport = :80' | grep -v -e nginx -e '^State' | grep -q .; then
   echo "Port 80 is used by another program:" >&2
   ss -ltnp 'sport = :80' >&2
   echo "Stop it first (for Apache: systemctl disable --now apache2), then run this again." >&2
   exit 1
 fi
 
+echo "› Installing Nginx and Certbot (missing packages only; installed ones are never upgraded)"
+missing=()
+for p in nginx certbot python3-certbot-nginx dnsutils; do
+  dpkg-query -W -f='${Status}' "${p}" 2>/dev/null | grep -q 'install ok installed' || missing+=("${p}")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  apt-get update -y
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade "${missing[@]}"
+fi
+
 echo "› Copying the prototype"
-mkdir -p /var/www/velum
-cp prototype/index.html /var/www/velum/index.html
-chown -R www-data:www-data /var/www/velum
+# Root-owned and read-only for Nginx's www-data user (audit L12).
+install -d -o root -g root -m 755 /var/www/velum
+install -o root -g root -m 644 prototype/index.html /var/www/velum/index.html
+chown -R root:root /var/www/velum
+chmod -R go-w /var/www/velum
 
 echo "› Checking DNS"
 SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
@@ -48,7 +57,7 @@ sed "s/velum.example/${DOMAIN}/g" deploy/nginx/velum-static.conf > /etc/nginx/si
 ln -sf /etc/nginx/sites-available/velum.conf /etc/nginx/sites-enabled/velum.conf
 # Other sites (and the default site) are left alone; this server block only answers for DOMAIN.
 nginx -t
-systemctl enable --now nginx
+systemctl is-active --quiet nginx || systemctl enable --now nginx
 systemctl reload nginx
 
 # Firewall: only add rules if ufw is already on. Never switch it on here: on a shared server

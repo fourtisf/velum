@@ -17,6 +17,7 @@ const env: ApiEnv = {
   corsOrigins: false,
   rateReadPerMin: 120,
   rateQuotePerMin: 30,
+  rateHealthPerMin: 60,
   rpcUrl: 'http://localhost:1',
   chainId: 46630,
   demoMode: true,

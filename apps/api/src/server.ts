@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { buildApp } from './app';
 import { loadEnv } from './env';
 import { prismaDb, redisCache, viemChain } from './lib/adapters';
+import { redactUrls } from './lib/redact';
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : err);
+  // Never print RPC, database or Redis URLs: they carry API keys and passwords (audit L7).
+  console.error(redactUrls(err instanceof Error ? err.message : String(err)));
   process.exit(1);
 });

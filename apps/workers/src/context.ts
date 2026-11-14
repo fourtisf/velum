@@ -30,7 +30,9 @@ export interface WorkerContext {
   /** symbol -> open price 24h ago (decimal string) */
   open24h: Map<string, string>;
   lastOpenRefresh: number;
-  /** seriesKey -> last CANDLE_CACHE_SIZE candles, oldest first */
+  /** seriesKey -> last CANDLE_CACHE_SIZE candles, oldest first. Only advanced after Postgres accepted the tick. */
   series: Map<string, WadCandle[]>;
+  /** symbol -> time of the newest tick folded into candles (a retried older tick must not move the close back). */
+  lastTickAt: Map<string, number>;
   enqueueCandles(data: CandleJobData): Promise<void>;
 }

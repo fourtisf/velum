@@ -19,13 +19,18 @@ export interface WadCandle {
 /**
  * Apply one price tick to an in-memory series (oldest first). Updates the current bucket or
  * opens a new one, keeping at most `max` candles. Late ticks for older buckets are ignored.
- * Returns true when the series changed.
+ * With `keepClose` (a retried tick older than one already applied) only high/low may change.
+ * Returns true when the series changed (or, without keepClose, when the current bucket was hit).
  */
-export function applyTick(series: WadCandle[], t: number, price: Wad, max = CANDLE_CACHE_SIZE): boolean {
+export function applyTick(series: WadCandle[], t: number, price: Wad, max = CANDLE_CACHE_SIZE, keepClose = false): boolean {
   const last = series[series.length - 1];
   if (last && last.t === t) {
-    last.h = wmax(last.h, price);
-    last.l = wmin(last.l, price);
+    const h = wmax(last.h, price);
+    const l = wmin(last.l, price);
+    const moved = h !== last.h || l !== last.l;
+    last.h = h;
+    last.l = l;
+    if (keepClose) return moved;
     last.c = price;
     return true;
   }
@@ -59,18 +64,20 @@ export interface CandleUpsert {
 
 /**
  * One INSERT … ON CONFLICT for many buckets. New buckets open at the tick price; existing
- * buckets keep their open and extend high/low, close follows the tick. Values are parameters.
+ * buckets keep their open and extend high/low, close follows the tick (unless `keepClose`, used
+ * for retried ticks older than the last one applied). Values are parameters.
  */
-export function candleUpsertSql(rows: CandleUpsert[]): Prisma.Sql {
+export function candleUpsertSql(rows: CandleUpsert[], opts: { keepClose?: boolean } = {}): Prisma.Sql {
   const values = rows.map(
     (r) =>
       Prisma.sql`(${r.marketId}, ${r.tf}, CAST(${utcTimestamp(r.t)} AS TIMESTAMP(3)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)))`,
   );
+  const close = opts.keepClose ? Prisma.sql`"Candle"."c"` : Prisma.sql`EXCLUDED."c"`;
   return Prisma.sql`
     INSERT INTO "Candle" ("marketId", "tf", "t", "o", "h", "l", "c")
     VALUES ${Prisma.join(values)}
     ON CONFLICT ("marketId", "tf", "t") DO UPDATE SET
       "h" = GREATEST("Candle"."h", EXCLUDED."h"),
       "l" = LEAST("Candle"."l", EXCLUDED."l"),
-      "c" = EXCLUDED."c"`;
+      "c" = ${close}`;
 }

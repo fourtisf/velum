@@ -1,4 +1,5 @@
 import { CHAIN, NETWORK } from '@velum/config';
+import { redactUrls } from './lib/redact';
 
 export interface ApiEnv {
   host: string;
@@ -8,6 +9,7 @@ export interface ApiEnv {
   corsOrigins: string[] | true | false;
   rateReadPerMin: number;
   rateQuotePerMin: number;
+  rateHealthPerMin: number;
   rpcUrl: string;
   chainId: number;
   demoMode: boolean;
@@ -43,7 +45,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
   if (!/^https?:\/\//.test(rpcUrl)) problems.push('RPC_URL must be an http(s) URL.');
 
   const otherNet = NETWORK === 'mainnet' ? 'rpc.testnet.chain.robinhood.com' : 'rpc.mainnet.chain.robinhood.com';
-  if (rpcUrl.includes(otherNet)) problems.push(`RPC_URL points at the other network (${rpcUrl}) but VELUM_NETWORK=${NETWORK}.`);
+  if (rpcUrl.includes(otherNet)) problems.push(`RPC_URL points at the other network (${redactUrls(rpcUrl)}) but VELUM_NETWORK=${NETWORK}.`);
   const chainId = int('CHAIN_ID', e.CHAIN_ID, CHAIN.id, 1, Number.MAX_SAFE_INTEGER);
   if (chainId !== CHAIN.id) {
     problems.push(`CHAIN_ID ${chainId} does not match VELUM_NETWORK=${NETWORK} (${CHAIN.label}, chain ${CHAIN.id}). Set VELUM_NETWORK and CHAIN_ID together (deploy/set-network.sh does both).`);
@@ -65,6 +67,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     corsOrigins,
     rateReadPerMin: int('RATE_LIMIT_READ_PER_MIN', e.RATE_LIMIT_READ_PER_MIN, 120, 1, 100_000),
     rateQuotePerMin: int('RATE_LIMIT_QUOTE_PER_MIN', e.RATE_LIMIT_QUOTE_PER_MIN, 30, 1, 100_000),
+    rateHealthPerMin: int('RATE_LIMIT_HEALTH_PER_MIN', e.RATE_LIMIT_HEALTH_PER_MIN, 60, 1, 100_000),
     rpcUrl,
     chainId,
     demoMode: bool(e.DEMO_MODE, true),

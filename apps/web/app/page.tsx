@@ -3,7 +3,7 @@ import { HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@
 import { Av } from '@/components/ui';
 import { I, Mark } from '@/components/icons';
 import { Nav } from '@/components/Nav';
-import { COPY } from '@/lib/copy';
+import { COPY, METRICS } from '@/lib/copy';
 
 const STEPS_MINI: Array<[string, string]> = [
   ['Lock margin in a private note', ''],
@@ -171,7 +171,7 @@ export default function Landing() {
                   <div className="mini">
                     <div className="mini-h">
                       <span>TSLA / USDG pool</span>
-                      <span className="badge up">14.2% est. APR</span>
+                      <span className="badge up">{METRICS.real ? '14.2% est. APR' : '0.30% fee'}</span>
                     </div>
                     <PoolSpark />
                   </div>

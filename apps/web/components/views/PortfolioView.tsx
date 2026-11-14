@@ -1,5 +1,5 @@
 'use client';
-import { CHAIN, getMarket, isMarketSymbol } from '@velum/config';
+import { CHAIN, IS_MAINNET, getMarket, isMarketSymbol } from '@velum/config';
 import type { Wad } from '@velum/math';
 import Link from 'next/link';
 import { privTotal, valueOf } from '@/lib/calc';
@@ -17,7 +17,8 @@ const tokName = (t: string) => (t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? '
 const ORDER = ['ETH', 'USDG', 'TSLA', 'AMZN', 'PLTR', 'NVDA', 'NFLX', 'AMD', 'AAPL', 'META', 'MSFT', 'COIN'];
 
 function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
-  const v = usd(valueOf(t, amt));
+  const unpriced = IS_MAINNET && t === 'ETH';
+  const v = unpriced ? '—' : usd(valueOf(t, amt));
   return (
     <tr>
       <td>
@@ -30,7 +31,7 @@ function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
         </div>
       </td>
       <td className="r num">{pub ? fmt(amt, dp(t)) : <Pv>{fmt(amt, dp(t))}</Pv>}</td>
-      {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usd(tokPx(t))}</td>}
+      {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{unpriced ? '—' : usd(tokPx(t))}</td>}
       <td className="r num">{pub ? v : <Pv>{v}</Pv>}</td>
     </tr>
   );

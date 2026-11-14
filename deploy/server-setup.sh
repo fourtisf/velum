@@ -69,6 +69,7 @@ else
   sed -i \
     -e "s#^DOMAIN=.*#DOMAIN=${DOMAIN}#" \
     -e "s#^PUBLIC_SITE_URL=.*#PUBLIC_SITE_URL=https://${DOMAIN}#" \
+    -e "s#^NEXT_PUBLIC_SITE_URL=.*#NEXT_PUBLIC_SITE_URL=https://${DOMAIN}#" \
     -e "s#^NEXT_PUBLIC_API_URL=.*#NEXT_PUBLIC_API_URL=https://${DOMAIN}/api#" \
     -e "s#^CORS_ORIGIN=.*#CORS_ORIGIN=https://${DOMAIN},https://www.${DOMAIN}#" \
     -e "s#^PORT_WEB=.*#PORT_WEB=${PORT_WEB}#" \

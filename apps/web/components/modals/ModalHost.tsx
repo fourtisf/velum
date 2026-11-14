@@ -7,7 +7,6 @@ import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, 
 import { derivePrivateAddress, isPrivateAddress, isPublicAddress, SIGN_MESSAGE } from '@/lib/account';
 import { usePublicBalances } from '@/lib/balances';
 import { lpGo, moveGo, type MoveKind } from '@/lib/demo';
-import { ENV } from '@/lib/env';
 import { dp, floorTo, fmt, shortH } from '@/lib/format';
 import { COPY } from '@/lib/copy';
 import { mk } from '@/lib/markets';
@@ -57,6 +56,12 @@ function ConnectModal({ error }: { error?: string }) {
       const res = await connectAsync({ connector: c, chainId: CHAIN.id });
       openModal(res.chainId === CHAIN.id ? { kind: 'sign' } : { kind: 'network' });
     } catch (e) {
+      const rejected = e instanceof UserRejectedRequestError || (e as { code?: number })?.code === 4001;
+      if (rejected) {
+        setErr(errText(e));
+        setBusy(null);
+        return;
+      }
       // Some wallets reject the chainId hint: connect first, then ask to switch.
       try {
         const res = await connectAsync({ connector: c });
@@ -473,6 +478,7 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
   const [step, setStep] = useState(0);
   const [result, setResult] = useState<{ rows: Array<[ReactNode, ReactNode]> } | null>(null);
   const doneBtn = useRef<HTMLButtonElement>(null);
+  const startAddr = useRef(useApp.getState().account?.addr);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -483,9 +489,19 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
       }
       if (cancelled) return;
       setStep(flow.steps.length);
+      if (useApp.getState().account?.addr !== startAddr.current) {
+        // The wallet changed mid-flow: apply nothing to the new wallet (audit web L2).
+        setResult({ rows: [['Status', 'Cancelled: your wallet changed']] });
+        set({ modalLocked: false });
+        return;
+      }
       const r = flow.done();
       // On mainnet, say plainly on every receipt that nothing touched the chain.
-      setResult({ rows: IS_MAINNET && ENV.demoMode ? [...r.rows, ['Demo', 'Simulated, nothing was sent onchain']] : r.rows });
+      setResult({
+        rows: IS_MAINNET
+          ? [...r.rows.filter(([k]) => k !== 'Visible onchain'), ['Demo', 'Simulated, nothing was sent onchain']]
+          : r.rows,
+      });
       set({ modalLocked: false });
       toast(r.toast);
     })();
@@ -499,7 +515,7 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
   return (
     <>
       <div className="m-head">
-        <h3 id="m-title">{flow.title}</h3>
+        <h3 id="m-title">{IS_MAINNET ? `Simulated: ${flow.title}` : flow.title}</h3>
       </div>
       <ol className="flow">
         {flow.steps.map((st, i) => {

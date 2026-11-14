@@ -1,0 +1,15 @@
+'use client';
+/** Shown instead of a blank "Application error" when a page throws (audit web L3). */
+export default function Error({ reset }: { error: Error; reset: () => void }) {
+  return (
+    <main className="wrap">
+      <div className="empty" style={{ padding: '120px 20px' }}>
+        <p style={{ fontSize: 17, color: 'var(--text)', fontWeight: 500 }}>Something went wrong on this page.</p>
+        <p>Your wallet and balances are not affected. Try again, or reload the page.</p>
+        <button className="btn btn-white" onClick={reset}>
+          Try again
+        </button>
+      </div>
+    </main>
+  );
+}

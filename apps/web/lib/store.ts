@@ -4,7 +4,7 @@
  * are a browser-only demo ledger (Phase 2), persisted per wallet in localStorage.
  * Nothing here is sent to a server.
  */
-import { DEFAULT_SYMBOL, PROTOCOL, type Timeframe } from '@velum/config';
+import { CHAIN, DEFAULT_SYMBOL, IS_MAINNET, PROTOCOL, type Timeframe } from '@velum/config';
 import { parseWad, type Side, type SpotSide, type Wad } from '@velum/math';
 import type { ReactNode } from 'react';
 import { create } from 'zustand';
@@ -181,7 +181,7 @@ export const bal = (o: Record<string, Wad>, k: string): Wad => o[k] ?? 0n;
 export const addBal = (o: Record<string, Wad>, k: string, d: Wad): Record<string, Wad> => ({ ...o, [k]: bal(o, k) + d });
 export const logAct = (l: Ledger, title: string, sub: string, icon: IconName): Ledger => ({
   ...l,
-  history: [{ t: Date.now(), title, sub, icon }, ...l.history].slice(0, 100),
+  history: [{ t: Date.now(), title, sub: IS_MAINNET ? `${sub} · Simulated` : sub, icon }, ...l.history].slice(0, 100),
 });
 export const chainSaw = (l: Ledger, what: string): Ledger => ({
   ...l,
@@ -191,6 +191,13 @@ export const chainSaw = (l: Ledger, what: string): Ledger => ({
 /** New wallets start with the prototype's demo private balance. */
 export function seedLedger(): Ledger {
   const now = Date.now();
+  // Mainnet: a plainly labelled practice balance, never a fabricated on-chain history (audit web M2).
+  if (IS_MAINNET)
+    return {
+      ...emptyLedger(),
+      priv: { USDG: parseWad('10000')! },
+      history: [{ t: now, title: 'Practice balance: 10,000 USDG', sub: 'Simulated for demo trading. Nothing is on-chain.', icon: 'info' }],
+    };
   const l: Ledger = {
     ...emptyLedger(),
     priv: { USDG: parseWad('12500')!, TSLA: parseWad('4')!, AMZN: parseWad('10')! },
@@ -204,8 +211,9 @@ export function seedLedger(): Ledger {
 }
 
 /* ---------- persistence (per wallet, browser only) ---------- */
-const LEDGER_KEY = (addr: string) => `velum:demo:v1:${addr.toLowerCase()}`;
-const SESSION_KEY = 'velum:session:v1';
+// Keys include the chain so a testnet ledger or session never carries over to mainnet (audit web M1).
+const LEDGER_KEY = (addr: string) => `velum:demo:v2:${CHAIN.id}:${addr.toLowerCase()}`;
+const SESSION_KEY = `velum:session:v2:${CHAIN.id}`;
 
 const replacer = (_k: string, v: unknown) => (typeof v === 'bigint' ? `${v.toString()}n` : v);
 const reviver = (_k: string, v: unknown) => (typeof v === 'string' && /^-?\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v);

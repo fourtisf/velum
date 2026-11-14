@@ -9,6 +9,11 @@ import { I } from '../icons';
 import { Av, Pv } from '../ui';
 
 const EXPIRIES = ['6 hours', '24 hours', '7 days'];
+/** Spreads in bps: finite, 0–1,000 (anything else is invalid; audit web L3). */
+const bpsOf = (s: string): number | null => {
+  const n = Number(s.trim());
+  return s.trim() !== '' && Number.isFinite(n) && n >= 0 && n <= 1000 ? n : null;
+};
 
 function Offers() {
   const s = useApp();
@@ -82,7 +87,9 @@ export function MakersView() {
   const [max, setMax] = useState('1000');
   const [open, setOpen] = useState('8');
   const [close, setClose] = useState('5');
-  const v = { sym, back: parseOrZero(back), max: parseOrZero(max), open: Number.parseFloat(open) || 0, close: Number.parseFloat(close) || 0 };
+  const openBps = bpsOf(open);
+  const closeBps = bpsOf(close);
+  const v = { sym, back: parseOrZero(back), max: parseOrZero(max), open: openBps ?? 0, close: closeBps ?? 0 };
   const have = bal(s.ledger.priv, 'USDG');
   let hint = '';
   let b: { label: string; cls: string; disabled: boolean; onClick?: () => void };
@@ -91,6 +98,9 @@ export function MakersView() {
   else if (v.back > have) {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
     hint = `You have ${fmt(have)} USDG available.`;
+  } else if (openBps === null || closeBps === null) {
+    b = { label: 'Check your spreads', cls: 'btn-dark', disabled: true };
+    hint = 'Spreads must be numbers from 0 to 1,000 bps.';
   } else if (v.max <= 0n || v.max > v.back) {
     b = { label: 'Check your largest fill', cls: 'btn-dark', disabled: true };
     hint = 'The largest fill must be above zero and no more than your backing.';

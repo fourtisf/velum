@@ -33,7 +33,8 @@ function PerpsTicket({ sym }: { sym: string }) {
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
-  } else if (c.check === 'no_size') b = { label: 'Enter a size', cls: 'btn-dark', disabled: true };
+  } else if (m.noData) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
+  else if (c.check === 'no_size') b = { label: 'Enter a size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'insufficient') {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
     hint = 'Shield more USDG from Portfolio, or lower the size.';
@@ -42,7 +43,7 @@ function PerpsTicket({ sym }: { sym: string }) {
     hint = `One position can hold up to ${PROTOCOL.maxTokensPerPosition} tokens.`;
   } else b = { label: `Open ${s.side} privately`, cls: s.side === 'long' ? 'btn-up' : 'btn-down', disabled: false, onClick: openPerps };
 
-  const maxLev = m.maxLev || PROTOCOL.maxLeverage;
+  const maxLev = Math.min(m.maxLev || PROTOCOL.maxLeverage, PROTOCOL.maxLeverage);
   const preset = (p: number) => {
     const size = floorTo((maxSize(have, s.lev) * BigInt(p)) / 100n, 2);
     s.set({ size });
@@ -144,7 +145,8 @@ function SpotTicket({ sym }: { sym: string }) {
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
-  } else if (c.amt <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
+  } else if (m.noData) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
+  else if (c.amt <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.amt > c.have) {
     b = { label: `Not enough private ${c.tin}`, cls: 'btn-dark', disabled: true };
     hint = `You have ${fmt(c.have, dp(c.tin))} ${c.tin} available.`;

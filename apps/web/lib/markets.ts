@@ -5,7 +5,7 @@
  * In demo mode only, if the API is unreachable the browser runs the prototype's random walk
  * so the demo keeps working; it switches back as soon as the API answers.
  */
-import { MARKETS, type MarketStatus } from '@velum/config';
+import { IS_MAINNET, MARKETS, type MarketStatus } from '@velum/config';
 import { fromNumber, parseWad, toNumber, type Wad } from '@velum/math';
 import { create } from 'zustand';
 import { api, type MarketDTO } from './api';
@@ -71,7 +71,7 @@ function seedMarkets(): Record<string, LiveMarket> {
       dir: 1,
       stale: true,
       priceSource: 'demo',
-      noData: false,
+      noData: IS_MAINNET,
     };
   }
   return out;
@@ -196,7 +196,8 @@ export function startMarketFeed(): () => void {
   let ctrl: AbortController | undefined;
 
   const goLocal = () => {
-    if (localTimer || !ENV.demoMode) return;
+    // Mainnet never shows simulated prices: markets keep their last real value or show a dash (audit web M4).
+    if (localTimer || !ENV.demoMode || IS_MAINNET) return;
     startLocal();
     localTimer = setInterval(localTick, 1600);
   };

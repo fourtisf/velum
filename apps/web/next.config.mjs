@@ -2,6 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // No image optimizer: removes the attack surface of several Next 14 advisories (audit web M5).
+  images: { unoptimized: true },
   transpilePackages: ['@velum/config', '@velum/math'],
   eslint: { dirs: ['app', 'components', 'lib'] },
   // Local dev only: proxy /api to Fastify like Nginx does in production (set API_PROXY_TARGET).

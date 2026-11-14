@@ -109,6 +109,7 @@ export function closePos(id: string) {
       { t: 'Settling at the oracle price', d: 'Minus the close spread your maker committed to', ms: 700 },
     ],
     done: () => {
+      if (!app().ledger.positions.some((x) => x.id === id)) return { rows: [['Status', 'Already settled']], toast: 'Position already closed' };
       const c = perpsClose(p, mk(p.sym).price, p.cs, PARAMS);
       app().setLedger((l) =>
         logAct(

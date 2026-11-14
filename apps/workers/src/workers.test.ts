@@ -1,0 +1,174 @@
+import { CANDLE_CACHE_SIZE, MARKETS, SPARK_INTERVAL_MS, SPARK_POINTS, TIMEFRAME_MS, TIMEFRAMES } from '@velum/config';
+import { parseWad } from '@velum/math';
+import { describe, expect, it } from 'vitest';
+import { loadEnv } from './env';
+import { applyTick, bucketStart, candleUpsertSql, toCandle, type WadCandle } from './lib/candles';
+import { MIN_PRICE, floatToDec, gauss, genCandles, genSpark, seedOpen24h, stepPrice } from './lib/demo';
+import { buildSnapshot, markOf } from './lib/snapshot';
+import { demoSource } from './sources';
+
+/** Deterministic PRNG (mulberry32) so tests are repeatable. */
+function rng(seed = 42) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const NOW = Date.UTC(2026, 10, 14, 10, 37, 21, 500);
+const w = (s: string) => parseWad(s)!;
+
+describe('demo random walk', () => {
+  it('gauss has roughly unit variance', () => {
+    const r = rng();
+    const xs = Array.from({ length: 20000 }, () => gauss(r));
+    const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
+    const varc = xs.reduce((a, b) => a + (b - mean) ** 2, 0) / xs.length;
+    expect(Math.abs(mean)).toBeLessThan(0.05);
+    expect(Math.abs(varc - 1)).toBeLessThan(0.05);
+  });
+
+  it('never goes below the floor and stays near its anchor over a simulated week', () => {
+    const r = rng(7);
+    for (const m of MARKETS) {
+      const seed = Number(m.seedPrice);
+      let p = seed;
+      let lo = p;
+      let hi = p;
+      for (let i = 0; i < 302_400; i++) {
+        p = stepPrice(p, m.vol, seed, r);
+        lo = Math.min(lo, p);
+        hi = Math.max(hi, p);
+      }
+      expect(lo).toBeGreaterThanOrEqual(MIN_PRICE);
+      expect(lo / seed, m.symbol).toBeGreaterThan(0.55);
+      expect(hi / seed, m.symbol).toBeLessThan(1.8);
+    }
+  });
+
+  it('floors tiny prices at 1', () => {
+    expect(stepPrice(1, 0.5, 400, () => 0.999999)).toBeGreaterThanOrEqual(MIN_PRICE);
+  });
+
+  it('formats floats as clean decimals', () => {
+    expect(floatToDec(391.6549999)).toBe('391.65');
+    expect(floatToDec(391.655)).toBe('391.66');
+    expect(floatToDec(100)).toBe('100');
+    expect(floatToDec(1e-7, 4)).toBe('0');
+  });
+
+  it('demo source walks every market from the last price', async () => {
+    const src = demoSource(rng(3));
+    const first = await src.read(new Map([['TSLA', '500.00']]), NOW);
+    expect(first.size).toBe(MARKETS.length);
+    expect(Math.abs(Number(first.get('TSLA')) - 500)).toBeLessThan(10);
+    for (const v of first.values()) expect(v).toMatch(/^\d+(\.\d{1,2})?$/);
+  });
+
+  it('seeds the 24h open within the prototype band', () => {
+    const r = rng(9);
+    for (let i = 0; i < 1000; i++) {
+      const o = seedOpen24h(100, r);
+      expect(o).toBeGreaterThanOrEqual(96.6);
+      expect(o).toBeLessThanOrEqual(103);
+    }
+  });
+});
+
+describe('candle buckets', () => {
+  it('aligns buckets to UTC', () => {
+    expect(bucketStart(NOW, '15m')).toBe(Date.UTC(2026, 10, 14, 10, 30));
+    expect(bucketStart(NOW, '1h')).toBe(Date.UTC(2026, 10, 14, 10));
+    expect(bucketStart(NOW, '4h')).toBe(Date.UTC(2026, 10, 14, 8));
+    expect(bucketStart(NOW, '1D')).toBe(Date.UTC(2026, 10, 14));
+  });
+
+  it('updates the current bucket, opens new ones, ignores late ticks and caps length', () => {
+    const s: WadCandle[] = [];
+    expect(applyTick(s, 0, w('100'))).toBe(true);
+    applyTick(s, 0, w('103'));
+    applyTick(s, 0, w('98'));
+    applyTick(s, 0, w('101'));
+    expect(toCandle(s[0]!)).toEqual({ t: 0, o: '100', h: '103', l: '98', c: '101' });
+    applyTick(s, 60, w('102'));
+    expect(toCandle(s[1]!)).toEqual({ t: 60, o: '102', h: '102', l: '102', c: '102' });
+    expect(applyTick(s, 0, w('1'))).toBe(false);
+    expect(s[0]!.l).toBe(w('98'));
+    for (let i = 2; i < 10; i++) applyTick(s, i * 60, w('100'), 5);
+    expect(s).toHaveLength(5);
+    expect(s[4]!.t).toBe(9 * 60);
+  });
+
+  it('builds a parameterised upsert', () => {
+    const sql = candleUpsertSql([
+      { marketId: 'm1', tf: '1h', t: Date.UTC(2026, 10, 14, 10), price: '391.65' },
+      { marketId: 'm2', tf: '15m', t: Date.UTC(2026, 10, 14, 10, 30), price: '233.4' },
+    ]);
+    expect(sql.sql).toContain('ON CONFLICT ("marketId", "tf", "t") DO UPDATE');
+    expect(sql.sql).toContain('GREATEST("Candle"."h", EXCLUDED."h")');
+    expect(sql.sql).not.toContain('391.65');
+    expect(sql.values).toEqual(['m1', '1h', '2026-11-14T10:00:00.000', '391.65', '391.65', '391.65', '391.65', 'm2', '15m', '2026-11-14T10:30:00.000', '233.4', '233.4', '233.4', '233.4']);
+  });
+});
+
+describe('demo backfill history', () => {
+  it.each(TIMEFRAMES)('is continuous and ends at the current price (%s)', (tf) => {
+    const list = genCandles(391.65, 0.0017, tf, CANDLE_CACHE_SIZE, NOW, rng(11));
+    expect(list).toHaveLength(CANDLE_CACHE_SIZE);
+    expect(list.at(-1)!.t).toBe(bucketStart(NOW, tf));
+    expect(list.at(-1)!.c).toBe(391.65);
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i]!;
+      expect(c.h).toBeGreaterThanOrEqual(Math.max(c.o, c.c));
+      expect(c.l).toBeLessThanOrEqual(Math.min(c.o, c.c));
+      expect(c.l).toBeGreaterThan(0);
+      if (i > 0) {
+        expect(c.t - list[i - 1]!.t).toBe(TIMEFRAME_MS[tf]);
+        expect(list[i - 1]!.c).toBe(c.o);
+      }
+    }
+    const closes = list.map((c) => c.c);
+    expect(Math.min(...closes) / 391.65).toBeGreaterThan(0.3);
+    expect(Math.max(...closes) / 391.65).toBeLessThan(3);
+  });
+
+  it('generates a sparkline ending at the price', () => {
+    const s = genSpark(100, 0.0017, SPARK_POINTS, 30, rng(5));
+    expect(s).toHaveLength(SPARK_POINTS);
+    expect(s.at(-1)).toBe(100);
+  });
+});
+
+describe('snapshots', () => {
+  it('computes the mark premium', () => {
+    expect(markOf('391.65')).toBe('391.80');
+    expect(markOf('100')).toBe('100.04');
+  });
+
+  it('keeps one spark point per minute, the last tracking the live price', () => {
+    const a = buildSnapshot(undefined, 'TSLA', '100', '99', 'demo', NOW);
+    expect(a).toEqual({ symbol: 'TSLA', price: '100', mark: '100.04', open24h: '99', spark: ['100'], source: 'demo', updatedAt: NOW });
+    const b = buildSnapshot(a, 'TSLA', '101', '99', 'demo', NOW + 2000);
+    expect(b.spark).toEqual(['101']);
+    const c = buildSnapshot(b, 'TSLA', '102', '99', 'demo', NOW + SPARK_INTERVAL_MS);
+    expect(c.spark).toEqual(['101', '102']);
+    let s = c;
+    for (let i = 2; i < 100; i++) s = buildSnapshot(s, 'TSLA', String(100 + i), '99', 'demo', NOW + i * SPARK_INTERVAL_MS);
+    expect(s.spark).toHaveLength(SPARK_POINTS);
+    expect(s.spark.at(-1)).toBe('199');
+    expect(a.spark).toEqual(['100']);
+  });
+});
+
+describe('env', () => {
+  const base = { DATABASE_URL: 'postgresql://a', REDIS_URL: 'redis://b' };
+  it('defaults and validates', () => {
+    expect(loadEnv(base)).toMatchObject({ demoMode: true, pricePollMs: 2000, priceSource: 'demo', chainId: 46630, tickRetentionDays: 7 });
+    expect(loadEnv({ ...base, PRICE_SOURCE: 'chainlink' }).priceSource).toBe('chainlink');
+    expect(() => loadEnv({ ...base, PRICE_SOURCE: 'binance', PRICE_POLL_MS: '10', CHAIN_ID: '4663' })).toThrow(/CHAIN_ID 4663[\s\S]*PRICE_SOURCE[\s\S]*PRICE_POLL_MS/);
+  });
+});

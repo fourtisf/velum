@@ -1,0 +1,58 @@
+import { CHAIN, type PriceSource } from '@velum/config';
+
+export interface WorkerEnv {
+  databaseUrl: string;
+  redisUrl: string;
+  demoMode: boolean;
+  pricePollMs: number;
+  priceSource: PriceSource;
+  rpcUrl: string;
+  chainId: number;
+  tickRetentionDays: number;
+}
+
+const bool = (v: string | undefined, dflt: boolean): boolean =>
+  v === undefined || v === '' ? dflt : ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
+
+/** Read and validate the environment. Throws one error listing every problem. */
+export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
+  const problems: string[] = [];
+  const int = (name: string, raw: string | undefined, dflt: number, min: number, max: number): number => {
+    if (raw === undefined || raw === '') return dflt;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      problems.push(`${name} must be an integer between ${min} and ${max} (got "${raw}").`);
+      return dflt;
+    }
+    return n;
+  };
+
+  const databaseUrl = e.DATABASE_URL ?? '';
+  if (!/^postgres(ql)?:\/\//.test(databaseUrl)) problems.push('DATABASE_URL must be a postgresql:// URL.');
+  const redisUrl = e.REDIS_URL ?? '';
+  if (!/^rediss?:\/\//.test(redisUrl)) problems.push('REDIS_URL must be a redis:// URL.');
+
+  const rpcUrl = e.RPC_URL && !e.RPC_URL.startsWith('VERIFY') ? e.RPC_URL : CHAIN.rpcUrl;
+  if (!/^https?:\/\//.test(rpcUrl)) problems.push('RPC_URL must be an http(s) URL.');
+
+  const chainId = int('CHAIN_ID', e.CHAIN_ID, CHAIN.id, 1, Number.MAX_SAFE_INTEGER);
+  if (chainId !== CHAIN.id) {
+    problems.push(`CHAIN_ID ${chainId} does not match packages/config (${CHAIN.id}, Robinhood Chain testnet). Mainnet is not allowed before the Phase 5 audit.`);
+  }
+
+  const src = (e.PRICE_SOURCE || 'demo').trim().toLowerCase();
+  if (src !== 'demo' && src !== 'chainlink') problems.push(`PRICE_SOURCE must be "demo" or "chainlink" (got "${e.PRICE_SOURCE}").`);
+
+  const env: WorkerEnv = {
+    databaseUrl,
+    redisUrl,
+    demoMode: bool(e.DEMO_MODE, true),
+    pricePollMs: int('PRICE_POLL_MS', e.PRICE_POLL_MS, 2000, 500, 60_000),
+    priceSource: src === 'chainlink' ? 'chainlink' : 'demo',
+    rpcUrl,
+    chainId,
+    tickRetentionDays: int('PRICE_TICK_RETENTION_DAYS', e.PRICE_TICK_RETENTION_DAYS, 7, 1, 365),
+  };
+  if (problems.length) throw new Error(`Invalid workers environment:\n  - ${problems.join('\n  - ')}`);
+  return env;
+}

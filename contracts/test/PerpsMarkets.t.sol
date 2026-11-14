@@ -522,7 +522,11 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
             - _refFunding(true, p.qty, _fundingIndex() - p.fundingIndexAtOpen);
         assertEq(_bal(alice, usdg) - aliceBefore, uint256(claim));
         assertEq(perps.insurance(), insBefore); // no fee, no penalty
-        assertEq(bob.balance, 1 ether); // bond refunded to the requester
+        assertEq(perps.bondRefunds(bob), 0.001 ether); // refund recorded, never pushed (audit F-01)
+        vm.prank(bob);
+        perps.claimBond();
+        assertEq(bob.balance, 1 ether);
+        assertEq(perps.bondRefunds(bob), 0);
         _assertPerpsSolvent();
     }
 
@@ -537,6 +541,9 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 aliceBefore = _bal(alice, usdg);
         perps.settleForcedExit(id);
         assertEq(int256(_bal(alice, usdg) - aliceBefore), int256(p.takerMargin) - funding); // pnl 0 at entry
+        assertEq(perps.bondRefunds(alice), 0.001 ether);
+        vm.prank(alice);
+        perps.claimBond();
         assertEq(alice.balance, 1 ether);
     }
 

@@ -40,11 +40,12 @@ abstract contract PerpsForcedExit is PerpsFunding {
         _settle(p, takerOut, makerOut);
     }
 
-    /// @notice Withdraw a bond refund that could not be sent automatically.
+    /// @notice Withdraw forced-exit bond refunds (refunds are never pushed during settlement).
     function claimBond() external nonReentrant {
         uint256 amount = bondRefunds[msg.sender];
         if (amount == 0) revert NothingToClaim();
         bondRefunds[msg.sender] = 0;
+        emit BondClaimed(msg.sender, amount);
         (bool ok,) = msg.sender.call{value: amount}("");
         if (!ok) revert RefundFailed();
     }

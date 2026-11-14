@@ -132,6 +132,7 @@ abstract contract PerpsBase is ReentrancyGuard {
     event ForcedExitRequested(uint256 indexed id, address indexed requester, uint256 settleAfter);
     event ForcedExitSettled(uint256 indexed id, uint256 price, bool atEntryPrice);
     event BondRefundDeferred(address indexed account, uint256 amount);
+    event BondClaimed(address indexed account, uint256 amount);
 
     error NotDeployer();
     error AlreadySetUp();
@@ -239,12 +240,12 @@ abstract contract PerpsBase is ReentrancyGuard {
         if (amount != 0) vault.transferInternal(usdg, address(this), to, amount);
     }
 
+    /// @dev Pull-only (internal audit F-01): never send ETH inside settlement. A push to a
+    ///      user-controlled address let a contract block every close, liquidation and forced
+    ///      exit by returning a huge revert payload. The owner withdraws with claimBond().
     function _refundBond(address to) internal {
-        (bool ok,) = to.call{value: FORCED_EXIT_BOND}("");
-        if (!ok) {
-            bondRefunds[to] += FORCED_EXIT_BOND;
-            emit BondRefundDeferred(to, FORCED_EXIT_BOND);
-        }
+        bondRefunds[to] += FORCED_EXIT_BOND;
+        emit BondRefundDeferred(to, FORCED_EXIT_BOND);
     }
 
     function _emitChange(uint256 id, Position storage p, Action action, uint256 price) internal {

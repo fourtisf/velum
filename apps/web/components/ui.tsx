@@ -2,10 +2,24 @@
 import { getMarket } from '@velum/config';
 import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
 import { fmt, pct, usd } from '@/lib/format';
+import { LOGOS } from '@/lib/logos';
 import { useMarket } from '@/lib/markets';
 
-/** Neutral circle with the company initial (no third-party logos). */
+/** Company logo on a brand-colour disc (lib/logos.ts); USDG, ETH and unknown tokens use the neutral initial. */
 export function Av({ sym, size = '' }: { sym: string; size?: '' | 'sm' | 'lg' }) {
+  const logo = LOGOS[sym];
+  if (logo)
+    return (
+      <span className={`av logo ${size}`.trim()} aria-hidden="true" style={{ background: logo.bg, color: logo.fg }}>
+        {logo.path ? (
+          <svg viewBox="0 0 24 24" fill="currentColor" focusable="false" style={logo.scale ? { width: `${logo.scale * 100}%`, height: `${logo.scale * 100}%` } : undefined}>
+            <path d={logo.path} />
+          </svg>
+        ) : (
+          logo.text
+        )}
+      </span>
+    );
   const ch = sym === 'USDG' ? '$' : sym === 'ETH' ? 'Ξ' : (getMarket(sym)?.name[0] ?? sym[0]);
   return (
     <span className={`av ${size}`.trim()} aria-hidden="true">

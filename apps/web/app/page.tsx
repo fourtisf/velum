@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
+import { Av } from '@/components/ui';
 import { I, Mark } from '@/components/icons';
 import { Nav } from '@/components/Nav';
 import { COPY } from '@/lib/copy';
@@ -78,21 +79,21 @@ export default function Landing() {
                     </div>
                     <div className="mini-big num pvd">$24,180.52</div>
                     <div className="mini-row">
-                      <span className="av sm">T</span>
+                      <Av sym="TSLA" size="sm" />
                       <div>
                         <b>TSLA</b> <small>Long 2×</small>
                       </div>
                       <b className="v num up pvd">+$231.06</b>
                     </div>
                     <div className="mini-row">
-                      <span className="av sm">N</span>
+                      <Av sym="NVDA" size="sm" />
                       <div>
                         <b>NVDA</b> <small>Spot</small>
                       </div>
                       <b className="v num pvd">$1,864.00</b>
                     </div>
                     <div className="mini-row">
-                      <span className="av sm">A</span>
+                      <Av sym="AMZN" size="sm" />
                       <div>
                         <b>AMZN</b> <small>Short 3×</small>
                       </div>

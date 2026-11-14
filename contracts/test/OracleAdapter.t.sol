@@ -150,61 +150,100 @@ contract OracleAdapterTest is VelumBase {
         cl.pushPrices(t, v);
     }
 
-    // ------------------------------------------------------------ price band (audit F-04, F-02)
+    // ------------------------------------------------------------ rate limit (audit F-04, F-02, R2-01)
 
-    function test_band_clampsAndFlagsLagging() public {
-        uint256 hi = TSLA_PRICE * 11_000 / 10_000;
+    /// @dev The range a recording at `t` may report after `last` was recorded at `lastAt`, exactly as
+    ///      OracleAdapter._limit computes it (5% x min(dt, 5 min) / 5 min, rounded toward `last`).
+    function _range(uint256 last, uint256 lastAt, uint256 t) internal pure returns (uint256 lo, uint256 hi) {
+        uint256 dt = t - lastAt;
+        if (dt > 5 minutes) dt = 5 minutes;
+        uint256 m = (last * 500 * dt) / (10_000 * 5 minutes);
+        return (last - m, last + m);
+    }
+
+    function _bandOf(OracleAdapter o, address token) internal view returns (uint256 last, uint256 lastAt) {
+        (uint128 l, uint64 at,) = o.bands(token);
+        return (l, at);
+    }
+
+    function test_limit_clampsPerSecondAndFlagsLagging() public {
+        (uint256 last, uint256 at) = _bandOf(oracle, address(tsla));
+        assertEq(last, TSLA_PRICE);
+        (, uint256 hi) = _range(last, at, block.timestamp + 1);
+        assertEq(hi, TSLA_PRICE + TSLA_PRICE / 3000, "two seconds: 2/6000");
         vm.expectEmit(address(oracle));
         emit OracleAdapter.PriceRelayed(address(tsla), 431e18, hi, block.timestamp + 1);
-        _pushPrice(address(tsla), 431e18); // > 10% above the reference
+        _pushPrice(address(tsla), 431e18); // +10% in one push
         assertEq(oracle.price(address(tsla)), hi);
         assertTrue(oracle.lagging(address(tsla)));
-        // within the same window the band does not move, whatever the relayer pushes
-        _pushPrice(address(tsla), 2000e18);
-        assertEq(oracle.price(address(tsla)), hi);
+        // each further second moves at most 1/6000 from the last recorded price, either way
+        uint256 prev = hi;
         _pushPrice(address(tsla), 1e18);
-        uint256 lo = (TSLA_PRICE * 9000 + 9999) / 10_000;
-        assertEq(oracle.price(address(tsla)), lo);
-        // back inside the band: not lagging
-        _pushPrice(address(tsla), 400e18);
-        assertEq(oracle.price(address(tsla)), 400e18);
+        assertEq(oracle.price(address(tsla)), prev - prev / 6000);
+        prev = prev - prev / 6000;
+        // a price inside the allowance is taken as is: not lagging
+        _pushPrice(address(tsla), prev + prev / 7000);
+        assertEq(oracle.price(address(tsla)), prev + prev / 7000);
         assertFalse(oracle.lagging(address(tsla)));
     }
 
-    function test_band_firstUpdateAfterSilenceIsCapped() public {
+    function test_limit_firstUpdateAfterSilenceCappedAtFivePercent() public {
         vm.warp(block.timestamp + 16 hours); // e.g. overnight, relay silent
-        _pushPrice(address(tsla), TSLA_PRICE * 70 / 100); // -30% gap
-        assertEq(oracle.price(address(tsla)), (TSLA_PRICE * 9000 + 9999) / 10_000, "capped at -10%");
+        _pushPrice(address(tsla), (TSLA_PRICE * 70) / 100); // -30% gap
+        assertEq(oracle.price(address(tsla)), (TSLA_PRICE * 95) / 100, "capped at -5%");
         assertTrue(oracle.lagging(address(tsla)));
     }
 
-    function test_band_walksTenPercentPerWindow() public {
+    function test_limit_sameSecondCannotMove() public {
+        assertTrue(cl.poke(address(tsla)));
+        vm.warp(block.timestamp + 1 hours);
+        feed.set(30_000_000_000, block.timestamp); // 300
+        assertTrue(cl.poke(address(tsla)));
+        uint256 p = cl.price(address(tsla));
+        assertEq(p, (391.65e18 * 95) / 100);
+        feed.set(20_000_000_000, block.timestamp); // a second update in the same second
+        assertTrue(cl.poke(address(tsla)));
+        assertEq(cl.price(address(tsla)), p, "no time passed: no move");
+    }
+
+    function test_limit_walksFivePercentPerWindow() public {
         uint256 target = TSLA_PRICE * 2;
         uint256 expected = TSLA_PRICE;
-        for (uint256 i; i < 7; ++i) {
+        for (uint256 i; i < 14; ++i) {
             _nextWindowPush(address(tsla), target);
-            expected = expected * 11_000 / 10_000;
+            expected += expected / 20;
             assertEq(_effectivePrice(address(tsla)), expected);
             assertTrue(oracle.lagging(address(tsla)));
         }
         _nextWindowPush(address(tsla), target);
-        assertEq(_effectivePrice(address(tsla)), target, "8 windows to double");
+        assertEq(_effectivePrice(address(tsla)), target, "15 windows (75 min) to double");
         assertFalse(oracle.lagging(address(tsla)));
     }
 
-    function test_band_referenceRollsAtMostOncePerWindow() public {
-        // pushes every second for a whole window: the reference stays put
-        uint256 hi = TSLA_PRICE * 11_000 / 10_000;
-        (, uint64 refAt,,) = oracle.bands(address(tsla));
-        while (block.timestamp + 1 < refAt + 10 minutes) {
-            _pushPrice(address(tsla), 1000e18);
+    /// @notice A poke is a recording like a push or a read, under the same limit: poked every second or not
+    ///         at all, the price after t seconds stays within (1 + 1/6000)^t of where it was (what a relayer
+    ///         pushing every second could reach anyway), and one recording never moves it more than 5%.
+    ///         There is no window phase to pick any more.
+    function test_limit_pokeStaysWithinCompoundingLimit() public {
+        _pushPrice(address(tsla), 1000e18);
+        (uint256 last0, uint256 t0) = _bandOf(oracle, address(tsla));
+        uint256 snap = vm.snapshotState();
+        vm.warp(t0 + 10 minutes);
+        assertTrue(oracle.poke(address(tsla)));
+        uint256 quiet = _effectivePrice(address(tsla));
+        vm.revertToState(snap);
+        for (uint256 i; i < 600; ++i) {
+            vm.warp(block.timestamp + 1);
+            assertTrue(oracle.poke(address(tsla)));
         }
-        assertEq(_effectivePrice(address(tsla)), hi);
-        _pushPrice(address(tsla), 1000e18); // 600 s after the last roll
-        assertEq(_effectivePrice(address(tsla)), hi * 11_000 / 10_000);
+        uint256 busy = _effectivePrice(address(tsla));
+        assertEq(last0, TSLA_PRICE + TSLA_PRICE / 3000, "two seconds after the last recording");
+        assertEq(quiet, last0 + last0 / 20, "one recording after a silence: +5%");
+        assertLe(busy, (last0 * 110_518) / 100_000, "every second: at most e^0.1");
+        assertGt(busy, quiet);
     }
 
-    /// @notice The view price simulates the reference roll that the next recording would do.
+    /// @notice The view price is what the next recording would report.
     function test_band_viewMatchesRead() public {
         _pushPrice(address(tsla), 600e18);
         vm.warp(block.timestamp + 10 minutes);
@@ -215,11 +254,11 @@ contract OracleAdapterTest is VelumBase {
         assertTrue(lag);
     }
 
-    function test_band_chainlinkGapIsClamped() public {
-        assertTrue(cl.poke(address(tsla))); // first valid price becomes the reference
+    function test_limit_chainlinkGapIsClamped() public {
+        assertTrue(cl.poke(address(tsla))); // first valid price is taken as is
         vm.warp(block.timestamp + 16 hours);
         feed.set(27_415_500_000, block.timestamp); // -30%
-        uint256 lo = 352.485e18; // 391.65 x 0.9
+        uint256 lo = 372.0675e18; // 391.65 x 0.95
         assertEq(cl.price(address(tsla)), lo);
         assertTrue(cl.lagging(address(tsla)));
         (uint256 p, bool lag) = cl.read(address(tsla), 60);
@@ -227,24 +266,44 @@ contract OracleAdapterTest is VelumBase {
         assertTrue(lag);
     }
 
-    /// @notice Seen from outside: after n reference rolls (at most one per 10 minutes) the price is
-    ///         within 1.1^(n+1) / 0.9^(n+1) of where it started, whatever the relayer pushes.
-    function testFuzz_band_walkBound(uint256[8] memory pushes, uint256[8] memory waits) public {
-        (, uint64 t0,,) = oracle.bands(address(tsla));
-        for (uint256 i; i < 8; ++i) {
-            vm.warp(block.timestamp + bound(waits[i], 0, 15 minutes));
-            _pushPrice(address(tsla), bound(pushes[i], 1e18, 100_000e18));
-            uint256 n = (block.timestamp - t0) / 10 minutes + 1;
-            uint256 hi = TSLA_PRICE;
-            uint256 lo = TSLA_PRICE;
-            for (uint256 k; k < n; ++k) {
-                hi = hi * 11_000 / 10_000;
-                lo = lo * 9000 / 10_000;
+    /// @notice Whatever mix of pushes, pokes and reads, at whatever spacing: every recording lies between the
+    ///         last price and the source price, within the per-recording limit, and over the whole run the
+    ///         price stays within (1 + 1/6000)^t of where it started.
+    function testFuzz_limit_everyRecordingWithinLimit(uint256[12] memory ops) public {
+        (uint256 start, uint256 t0) = _bandOf(oracle, address(tsla));
+        for (uint256 i; i < 12; ++i) {
+            vm.warp(block.timestamp + bound(ops[i] >> 160, 1, 15 minutes));
+            (uint256 last, uint256 at) = _bandOf(oracle, address(tsla));
+            (uint256 lo, uint256 hi) = _range(last, at, block.timestamp);
+            uint256 kind = (ops[i] >> 128) % 3;
+            if (kind == 0) {
+                uint256 raw = bound(uint128(ops[i]), 1e18, 100_000e18);
+                vm.prank(relayer);
+                address[] memory t = new address[](1);
+                uint256[] memory v = new uint256[](1);
+                t[0] = address(tsla);
+                v[0] = raw;
+                oracle.pushPrices(t, v);
+            } else if (kind == 1) {
+                assertTrue(oracle.poke(address(tsla)));
+            } else {
+                (, uint256 updatedAt) = oracle.latest(address(tsla));
+                if (block.timestamp > updatedAt + 60) continue;
+                oracle.read(address(tsla), 60);
             }
-            uint256 p = _effectivePrice(address(tsla));
-            assertLe(p, hi);
-            assertGe(p, lo);
+            (uint256 now_, uint256 nowAt) = _bandOf(oracle, address(tsla));
+            assertEq(nowAt, block.timestamp);
+            assertGe(now_, lo);
+            assertLe(now_, hi);
         }
+        // compounding bound over the run: (1 + 1/6000)^t <= e^(t/6000)
+        uint256 elapsed = block.timestamp - t0;
+        uint256 p = _effectivePrice(address(tsla));
+        uint256 capHi = start;
+        for (uint256 s; s < elapsed; s += 60) {
+            capHi = (capHi * 10_101) / 10_000; // >= (1 + 1/6000)^60 per started minute
+        }
+        assertLe(p, capHi);
     }
 
     // ------------------------------------------------------------ freshness

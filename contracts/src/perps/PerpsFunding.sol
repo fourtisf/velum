@@ -13,7 +13,7 @@ import {FixedMath} from "../libraries/FixedMath.sol";
 ///      open, close, margin change, liquidation and forced exit, and by anyone through
 ///      `advanceFunding`. Because opening always accrues first, "funding ran within the last hour"
 ///      holds for every new match by construction. Each accrual also records the oracle reading
-///      (band roll and last valid time, internal audit F-03/F-04).
+///      (rate-limited last price and last valid time, internal audit F-03/F-04, R2-01).
 abstract contract PerpsFunding is PerpsCover {
     /// @notice Bring a market's funding index up to the current time (needs a price at most 60 s old).
     function advanceFunding(address market) external nonReentrant returns (int256 index) {

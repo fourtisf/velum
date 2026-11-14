@@ -24,7 +24,8 @@ interface IDecimals {
 ///   PRICE_RELAYER=<dedicated relay key address> \
 ///   forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast --private-key $DEPLOYER_KEY
 /// Required on testnet: PRICE_RELAYER, a dedicated key that is not the deployer (internal audit F-04).
-/// Optional env: GUARDIAN (close-only switch, default none), OI_CAP_TOKENS (per side, default 10000),
+/// Optional env: GUARDIAN (close-only switch, default none: the script then warns that the split/dividend
+///   procedure in contracts/README.md is unavailable), OI_CAP_TOKENS (per side, default 10000),
 ///   PRICE_MIN_USD / PRICE_MAX_USD (relay bounds, default 1 / 100000),
 ///   USDG_ADDRESS + STOCK_ADDRESSES + STOCK_SYMBOLS (comma lists) to override the config file.
 /// Anvil with no env: deploys mock USDG (6 dp), TSLA and AMZN (18 dp), uses the deployer as relayer and
@@ -66,6 +67,7 @@ contract Deploy is Script {
         address relayer = relayerSet ? vm.envAddress("PRICE_RELAYER") : deployer;
         checkRelayer(block.chainid, relayerSet, relayer, deployer);
         address guardian = vm.envOr("GUARDIAN", address(0));
+        console2.log(guardianNotice(guardian));
         Tokens memory t = _tokens();
         uint256 startBlock = block.number;
         Deployed memory d = _deploy(t);
@@ -74,6 +76,26 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         _write(t, d, relayer, guardian, startBlock);
+        // Repeated after the addresses so it is the last thing the operator sees (internal audit F-07).
+        console2.log(guardianNotice(guardian));
+    }
+
+    /// @notice What the operator must know about the guardian (internal audit F-07). The guardian stays
+    ///         off unless GUARDIAN is set (owner sign-off); without it no market can be put in close-only,
+    ///         so the corporate-actions procedure cannot run.
+    function guardianNotice(address guardian) public pure returns (string memory) {
+        if (guardian != address(0)) {
+            return string.concat(
+                "Velum: guardian ",
+                vm.toString(guardian),
+                " can switch markets into or out of close-only (corporate-actions procedure available)."
+            );
+        }
+        return string.concat(
+            "\n!!! WARNING Velum: GUARDIAN is not set. No market can ever be put in close-only, so the stock ",
+            "split / dividend procedure (contracts/README.md, Emergency controls) is UNAVAILABLE for this ",
+            "deployment. To enable it, redeploy with GUARDIAN=<address> after owner sign-off. !!!\n"
+        );
     }
 
     /// @notice Testnet needs a dedicated price-relay key: one key controlling both deployment and every
@@ -101,18 +123,8 @@ contract Deploy is Script {
 
     /// @dev One-time setup of every contract; each locks itself permanently afterwards.
     function _wire(Deployed memory d, Tokens memory t, address relayer, address guardian) internal {
+        _wireVault(d, t);
         uint256 n = t.stocks.length;
-        address[] memory vaultTokens = new address[](n + 1);
-        vaultTokens[0] = t.usdg;
-        for (uint256 i; i < n; ++i) {
-            vaultTokens[i + 1] = t.stocks[i];
-        }
-        address[] memory modules = new address[](3);
-        modules[0] = address(d.pools);
-        modules[1] = address(d.book);
-        modules[2] = address(d.perps);
-        d.vault.setup(vaultTokens, modules);
-
         // Chainlink feeds for testnet are not verified yet, so every stock is relay-sourced.
         uint128[] memory mins = new uint128[](n);
         uint128[] memory maxs = new uint128[](n);
@@ -132,6 +144,23 @@ contract Deploy is Script {
         d.pools.setup(t.stocks);
         d.book.setup(address(d.perps), t.stocks);
         d.perps.setup(t.stocks, caps, guardian);
+    }
+
+    /// @dev Vault: tokens, modules, and the protocol contracts that can never withdraw (R2-05).
+    function _wireVault(Deployed memory d, Tokens memory t) internal {
+        uint256 n = t.stocks.length;
+        address[] memory vaultTokens = new address[](n + 1);
+        vaultTokens[0] = t.usdg;
+        for (uint256 i; i < n; ++i) {
+            vaultTokens[i + 1] = t.stocks[i];
+        }
+        address[] memory modules = new address[](3);
+        modules[0] = address(d.pools);
+        modules[1] = address(d.book);
+        modules[2] = address(d.perps);
+        address[] memory blocked = new address[](1);
+        blocked[0] = address(d.oracle);
+        d.vault.setup(vaultTokens, modules, blocked);
     }
 
     function _seedPrices(OracleAdapter oracle, address[] memory stocks) internal {

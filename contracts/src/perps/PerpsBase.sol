@@ -40,9 +40,10 @@ abstract contract PerpsBase is ReentrancyGuard {
     /// @notice Opens need a price at most 10 s old (F-06); closes, liquidations and funding 60 s.
     uint256 public constant OPEN_MAX_AGE = 10;
     uint256 public constant MAX_PRICE_AGE = 60;
-    /// @notice Shortfall cover is settled per hourly funding epoch (F-02)...
+    /// @notice Shortfall cover is paid per hourly epoch (F-02)...
     uint256 public constant COVER_EPOCH = 1 hours;
-    /// @notice ...pro rata across that epoch's claims, capped at 10% of the insurance fund.
+    /// @notice ...pro rata across that epoch's claims. Cover plus keeper top-ups of one epoch draw at most
+    ///         10% of the insurance fund as it stood at the epoch's first draw (R2-02, R2-03).
     uint256 public constant COVER_CAP_BPS = 1000;
 
     struct Market {
@@ -110,7 +111,7 @@ abstract contract PerpsBase is ReentrancyGuard {
     uint256 public totalMargin;
     /// @notice Forced-exit bonds whose ETH refund failed; claim with `claimBond`.
     mapping(address account => uint256) public bondRefunds;
-    /// @notice Cover budgets of settled epochs not yet paid to claimants (moved out of `insurance`).
+    /// @notice Cover reserved for filed claims and not yet paid (moved out of `insurance` when filed).
     ///         This contract's vault balance == totalMargin + insurance + coverReserved.
     uint256 public coverReserved;
 
@@ -316,7 +317,7 @@ abstract contract PerpsBase is ReentrancyGuard {
 
     // ---------------------------------------------------------------- funding hooks
 
-    /// @dev Bring funding up to date with a price no older than `maxAge`; returns the banded price and
+    /// @dev Bring funding up to date with a price no older than `maxAge`; returns the effective price and
     ///      whether it is lagging its source.
     function _accrue(address market, uint256 maxAge) internal virtual returns (uint256 price, bool lagging);
 

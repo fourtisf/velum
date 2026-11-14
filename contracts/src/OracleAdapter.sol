@@ -10,14 +10,25 @@ import {FixedMath} from "./libraries/FixedMath.sol";
 ///         guarded by the L2 sequencer-uptime feed) or (testnet only) a price-relay updater that pushes
 ///         prices within bounds. Prices are USDG per whole token, scaled by 1e18. No owner after setup.
 ///
-/// Price band (internal audit F-04, F-02). The price this adapter reports, the "effective" price, stays
-/// within ±MAX_MOVE_BPS (10%) of a reference price. The reference moves to the last recorded effective
-/// price at most once per MOVE_WINDOW (10 minutes). So a source can move the reported price by at most
-/// 10% per 10 minutes, and after a gap or a silence the first price is capped at 10% from the last valid
-/// one; further moves walk in steps. While the source is outside the band the price is "lagging": perps
-/// refuses opens, closes and margin removal on it, but liquidations go on at the banded price. A 5x
-/// position that is above maintenance at the reference price stays solvent within the band, so a gap
-/// alone can no longer create a shortfall: one needs keepers to miss a whole window.
+/// Price rate limit (internal audit F-04, F-02, round 2 R2-01). The price this adapter reports, the
+/// "effective" price, moves from the LAST RECORDED effective price by at most
+///         maxMove = last x MAX_MOVE_BPS x dt / (BPS x MOVE_WINDOW),   dt = min(now - lastAt, MOVE_WINDOW)
+/// per recording (a source price outside [last - maxMove, last + maxMove] is clamped to it). So the price
+/// moves at most 1/6000 per second (1% per minute, 5% per 5 minutes), compounding to at most
+/// (1 + 1/6000)^t over t seconds (1.005% per minute), and no single recording, even the first after a long
+/// silence, moves it more than 5%. Recording more often gives no reach beyond that compounding, so `poke`
+/// cannot shape the limit. While the source is outside the limit the price is "lagging": perps refuses
+/// opens, closes, forced exits and margin removal on it, but liquidations and funding go on at the
+/// effective price.
+///
+/// Guarantees for a 5x pair (taker and maker margin 20%, maintenance 10%; test/audit/Round2PoC.t.sol):
+///   - a side that is not liquidatable at a recorded price needs a 10% adverse move to reach zero: never
+///     in one recording (at most 5%), and at least 9.5 minutes of recordings. Between its last
+///     non-liquidatable recording and the first insolvent one there are always at least 60 s of fresh
+///     prices at which it is liquidatable and solvent (9.5 minutes if the source reports every minute);
+///   - no side of a pair opened at any non-lagging price can fall below zero within 12 minutes of the
+///     open, for every leverage, side and open spread the book allows (13.1 minutes at the worst spread);
+///   - a compromised relay key moves a maker's claim by at most 5.5% of its margin per minute.
 ///
 /// Liveness (F-03). `lastValidAt` is the newest valid source timestamp recorded by `read`, `poke` or
 /// `pushPrices`. A failed or out-of-bounds read only makes the price stale. A token is dead when no valid
@@ -32,10 +43,10 @@ contract OracleAdapter is IOracleAdapter {
     uint256 internal constant BPS = 10_000;
     uint256 public constant MAX_AGE = 60;
     uint256 public constant DEAD_AFTER = 14 days;
-    /// @notice The effective price moves at most 10% from the band reference...
-    uint256 public constant MAX_MOVE_BPS = 1000;
-    /// @notice ...and the reference moves at most once per 10 minutes.
-    uint256 public constant MOVE_WINDOW = 10 minutes;
+    /// @notice The effective price moves at most 5% per recording...
+    uint256 public constant MAX_MOVE_BPS = 500;
+    /// @notice ...and only 5% x dt / MOVE_WINDOW when dt < 5 minutes have passed since the last recording.
+    uint256 public constant MOVE_WINDOW = 5 minutes;
     /// @notice Opens and liquidations wait this long after the L2 sequencer comes back up.
     uint256 public constant SEQUENCER_GRACE = 1 hours;
 
@@ -52,13 +63,12 @@ contract OracleAdapter is IOracleAdapter {
         uint64 updatedAt;
     }
 
-    /// @dev ref: band centre for the window that started at refAt (0 = no price yet).
-    ///      last: last recorded effective price. lastValidAt: newest valid source timestamp recorded.
+    /// @dev last: last recorded effective price (0 = no price yet). lastAt: block time of that recording.
+    ///      lastValidAt: newest valid source timestamp recorded.
     struct Band {
-        uint128 ref;
-        uint64 refAt;
-        uint64 lastValidAt;
         uint128 last;
+        uint64 lastAt;
+        uint64 lastValidAt;
     }
 
     address public immutable deployer;
@@ -72,7 +82,7 @@ contract OracleAdapter is IOracleAdapter {
     mapping(address token => Band) public bands;
 
     event Setup(address[] tokens, address[] feeds, address relayer, address sequencerFeed);
-    /// @param price The price the relayer pushed. @param effectivePrice The banded price now reported.
+    /// @param price The price the relayer pushed. @param effectivePrice The rate-limited price now reported.
     event PriceRelayed(address indexed token, uint256 price, uint256 effectivePrice, uint256 timestamp);
 
     error NotDeployer();
@@ -132,7 +142,7 @@ contract OracleAdapter is IOracleAdapter {
     }
 
     /// @notice Push prices for relay-sourced tokens (testnet price-relay worker). Any price within the
-    ///         absolute bounds is accepted, but the reported price follows it only through the band.
+    ///         absolute bounds is accepted, but the reported price follows it only at the rate limit.
     function pushPrices(address[] calldata tokens, uint256[] calldata prices) external {
         if (msg.sender != relayer) revert NotRelayer();
         if (tokens.length != prices.length) revert LengthMismatch();
@@ -170,11 +180,12 @@ contract OracleAdapter is IOracleAdapter {
         return true;
     }
 
-    /// @notice Latest valid banded price and its source timestamp, without the freshness check.
+    /// @notice Latest valid effective price (what a recording now would report) and its source timestamp,
+    ///         without the freshness check.
     function latest(address token) public view returns (uint256 p, uint256 updatedAt) {
         uint256 raw;
         (raw, updatedAt) = _validSource(token);
-        p = _clamp(raw, _bandRef(bands[token]));
+        p = _limit(bands[token], raw);
     }
 
     /// @inheritdoc IOracleAdapter
@@ -184,10 +195,10 @@ contract OracleAdapter is IOracleAdapter {
         if (block.timestamp > updatedAt + MAX_AGE) revert StalePrice(token, updatedAt);
     }
 
-    /// @notice True when the source price is outside the band, i.e. the reported price is catching up.
+    /// @notice True when the source price is outside the rate limit, i.e. the reported price is catching up.
     function lagging(address token) external view returns (bool) {
         (uint256 raw,) = _validSource(token);
-        return _clamp(raw, _bandRef(bands[token])) != raw;
+        return _limit(bands[token], raw) != raw;
     }
 
     /// @notice Newest valid source timestamp recorded for `token` (0 = none yet).
@@ -220,43 +231,32 @@ contract OracleAdapter is IOracleAdapter {
 
     // ---------------------------------------------------------------- internals
 
-    /// @dev Record a valid source reading: roll the band reference if its window is over, clamp the
-    ///      price into the band and remember it, and advance lastValidAt.
+    /// @dev Record a valid source reading: rate-limit it against the last recorded effective price,
+    ///      remember the result and the time, and advance lastValidAt.
     function _record(address token, uint256 raw, uint256 updatedAt) internal returns (uint256 effective) {
         Band storage b = bands[token];
-        if (b.ref == 0) {
-            // First valid price ever: it becomes the reference. raw <= maxPrice fits uint128.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            b.ref = uint128(raw);
-            // forge-lint: disable-next-line(unsafe-typecast)
-            b.refAt = uint64(block.timestamp);
-            effective = raw;
-        } else {
-            if (block.timestamp >= uint256(b.refAt) + MOVE_WINDOW) {
-                b.ref = b.last;
-                // forge-lint: disable-next-line(unsafe-typecast)
-                b.refAt = uint64(block.timestamp);
-            }
-            effective = _clamp(raw, b.ref);
-        }
-        // effective lies between raw and the reference, both within the uint128 price bounds.
+        effective = _limit(b, raw);
+        // effective lies between raw and the last price, both within the uint128 price bounds.
         // forge-lint: disable-next-line(unsafe-typecast)
         b.last = uint128(effective);
+        // forge-lint: disable-next-line(unsafe-typecast)
+        b.lastAt = uint64(block.timestamp);
         // forge-lint: disable-next-line(unsafe-typecast)
         if (updatedAt > b.lastValidAt) b.lastValidAt = uint64(updatedAt);
     }
 
-    /// @dev The reference `_record` would use now (a view of the roll).
-    function _bandRef(Band memory b) internal view returns (uint256) {
-        if (b.ref == 0) return 0;
-        return block.timestamp >= uint256(b.refAt) + MOVE_WINDOW ? b.last : b.ref;
-    }
-
-    function _clamp(uint256 p, uint256 ref) internal pure returns (uint256) {
-        if (ref == 0) return p;
-        uint256 lo = ref.mulDivUp(BPS - MAX_MOVE_BPS, BPS);
-        uint256 hi = ref.mulDivDown(BPS + MAX_MOVE_BPS, BPS);
-        return p < lo ? lo : (p > hi ? hi : p);
+    /// @dev The effective price a recording of `raw` would produce now: `raw` clamped to
+    ///      last +- last x MAX_MOVE_BPS x min(dt, MOVE_WINDOW) / (BPS x MOVE_WINDOW), rounded toward `last`.
+    ///      The first valid price ever is taken as is.
+    function _limit(Band memory b, uint256 raw) internal view returns (uint256) {
+        uint256 last = b.last;
+        if (last == 0) return raw;
+        uint256 dt = block.timestamp - b.lastAt;
+        if (dt > MOVE_WINDOW) dt = MOVE_WINDOW;
+        uint256 maxMove = last.mulDivDown(MAX_MOVE_BPS * dt, BPS * MOVE_WINDOW);
+        if (raw + maxMove < last) return last - maxMove;
+        if (raw > last + maxMove) return last + maxMove;
+        return raw;
     }
 
     function _inBounds(address token, uint256 p) internal view returns (bool) {

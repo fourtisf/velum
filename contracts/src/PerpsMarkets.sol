@@ -18,11 +18,14 @@ import {PerpsForcedExit} from "./perps/PerpsForcedExit.sol";
 ///   makerMargin = S / maxL, taken from the offer's backing
 ///   qty         = S / entry, at most 100 tokens; per-market open-interest cap per side; S >= 10 USDG
 ///   needs: price at most 10 s old and not lagging, sequencer up past grace, market not close-only.
-/// Closing (taker, any time, no maker signature):
+/// Closing (taker, any time, no maker signature), at a price up to 60 s old that is not lagging:
 ///   exit = oracle ∓ the maker's committed close spread; fee = 0.06% of exit notional;
 ///   taker gets max(0, margin + pnl - funding - fee) capped by the pool; the maker gets the rest.
-///   A liquidatable position is settled as a liquidation instead (internal audit F-12): an insolvent
-///   counterparty's shortfall becomes a cover claim rather than being forfeited.
+///   A liquidatable position is settled as a liquidation instead (internal audit F-12), at the oracle
+///   price with no close spread or fee: an insolvent counterparty's shortfall becomes a cover claim
+///   rather than being forfeited, and a losing taker pays the 1% penalty but gets the liquidator half
+///   back. `priceLimit` is checked against the spread-adjusted exit before either route; it does not
+///   account for the penalty.
 contract PerpsMarkets is PerpsForcedExit {
     using FixedMath for uint256;
 
@@ -133,14 +136,20 @@ contract PerpsMarkets is PerpsForcedExit {
         p.takerMargin = takerMargin;
     }
 
-    /// @notice Close at the oracle price minus the maker's committed close spread. If the position is
-    ///         liquidatable it is liquidated instead, with the taker as liquidator (reward paid on top).
-    /// @param priceLimit Worst acceptable exit (min for longs, max for shorts); 0 = no limit.
+    /// @notice Close at the oracle price minus the maker's committed close spread. Refused while the price is
+    ///         lagging its source. If the position is liquidatable it is liquidated instead, with the taker
+    ///         as liquidator (reward paid on top).
+    /// @param priceLimit Worst acceptable spread-adjusted exit (min for longs, max for shorts); 0 = no limit.
+    ///        A close that settles as a liquidation uses the oracle price (no spread) but, for a losing
+    ///        taker, also the 1% penalty (half refunded as the reward); the limit does not cover that.
     /// @return takerOut The taker's share of the pool (excluding any liquidator reward or cover claim).
     function close(uint256 id, uint256 priceLimit) external nonReentrant returns (uint256 takerOut) {
         Position storage p = _position(id);
         if (msg.sender != p.taker) revert NotTaker();
         (uint256 price, bool lagging) = _accrue(p.market, MAX_PRICE_AGE);
+        // R2-04: no exit at a known-lagging price on either route: as a liquidation it would let a losing
+        // taker leave at the stale, more favourable effective price. Keepers still use liquidate().
+        if (lagging) revert PriceLagging(p.market);
         uint256 exit =
             p.isLong ? price.mulDivDown(BPS - p.closeSpreadBps, BPS) : price.mulDivUp(BPS + p.closeSpreadBps, BPS);
         if (priceLimit != 0 && (p.isLong ? exit < priceLimit : exit > priceLimit)) revert PriceLimit(exit, priceLimit);
@@ -150,7 +159,6 @@ contract PerpsMarkets is PerpsForcedExit {
             (takerOut,) = _liquidateAt(id, p, price, msg.sender);
             return takerOut;
         }
-        if (lagging) revert PriceLagging(p.market);
         return _closeAt(id, p, price, exit);
     }
 

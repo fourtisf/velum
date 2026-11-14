@@ -32,7 +32,7 @@ contract Handler is Test {
     bool public liquidationOverpaid;
     /// @dev A liquidation paid more than the pool plus the capped keeper top-up (cover must be deferred).
     bool public immediateCoverPaid;
-    /// @dev An epoch's cover budget exceeded 10% of the insurance fund at settlement.
+    /// @dev An epoch's cap was not 10% of the fund at its first draw, or its draws exceeded the cap.
     bool public coverOverCap;
     /// @dev A guardian action moved funds.
     bool public guardianMovedFunds;
@@ -114,11 +114,23 @@ contract Handler is Test {
         return _claimants[epoch][i];
     }
 
-    /// @dev Remember any cover claim a settlement just filed for either side of position `p`.
-    function _trackClaims(PerpsBase.Position memory p) internal {
+    /// @dev Remember any cover claim a settlement just filed for either side of position `p`, and check the
+    ///      epoch's cap: fixed at 10% of the fund at the first draw (`capWasSet` = before the settlement),
+    ///      never exceeded by top-ups plus reserved cover (audit R2-02, R2-03).
+    function _trackClaims(PerpsBase.Position memory p, bool capWasSet) internal {
         uint256 e = perps.currentCoverEpoch();
         _trackClaimant(e, p.taker);
         _trackClaimant(e, p.maker);
+        (,, uint256 budget,, uint256 cap, uint256 drawn, bool capSet,) = perps.coverEpochs(e);
+        if (drawn > cap || budget > drawn) coverOverCap = true;
+        // On the first draw everything drawn came from this settlement, so the fund then was insurance + drawn.
+        if (capSet && !capWasSet && cap != ((perps.insurance() + drawn) * perps.COVER_CAP_BPS()) / 10_000) {
+            coverOverCap = true;
+        }
+    }
+
+    function _capSet() internal view returns (bool capSet) {
+        (,,,,,, capSet,) = perps.coverEpochs(perps.currentCoverEpoch());
     }
 
     function _trackClaimant(uint256 e, address a) internal {
@@ -293,10 +305,11 @@ contract Handler is Test {
         uint256 id = positionIds[idx % positionIds.length];
         PerpsBase.Position memory p = perps.getPosition(id);
         if (!p.open) return;
+        bool capWasSet = _capSet();
         vm.prank(p.taker);
         try perps.close(id, 0) {
             closes++;
-            _trackClaims(p);
+            _trackClaims(p, capWasSet);
         } catch {}
     }
 
@@ -335,6 +348,7 @@ contract Handler is Test {
         uint256 tb = vault.balanceOf(p.taker, address(usdg));
         uint256 mb = vault.balanceOf(p.maker, address(usdg));
         uint256 lb = vault.balanceOf(liquidator, address(usdg));
+        bool capWasSet = _capSet();
         vm.prank(liquidator);
         perps.liquidate(id);
         liquidations++;
@@ -342,7 +356,7 @@ contract Handler is Test {
             + (vault.balanceOf(liquidator, address(usdg)) - lb);
         if (paid > pool + insBefore) liquidationOverpaid = true;
         if (paid > pool + perps.keeperRewardCap()) immediateCoverPaid = true;
-        _trackClaims(p);
+        _trackClaims(p, capWasSet);
     }
 
     function requestForcedExit(uint256 idx, bool byMaker) external {
@@ -361,10 +375,11 @@ contract Handler is Test {
         for (uint256 i; i < positionIds.length; ++i) {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open || p.exitRequestedAt == 0) continue;
+            bool capWasSet = _capSet();
             vm.prank(liquidator); // a liquidatable position settles as a liquidation: reward to the keeper
             try perps.settleForcedExit(positionIds[i]) {
                 forcedExits++;
-                _trackClaims(p);
+                _trackClaims(p, capWasSet);
             } catch {}
         }
     }
@@ -375,7 +390,7 @@ contract Handler is Test {
 
     // ------------------------------------------------------------ cover claims and guardian
 
-    /// @dev Pay one recorded claim of an ended epoch, checking the 10% cap when it settles the epoch.
+    /// @dev Pay one recorded claim of an ended epoch (the budget was fixed while the epoch ran).
     function claimCover(uint256 epochSeed, uint256 claimantSeed) external {
         if (claimEpochs.length == 0) return;
         uint256 e = claimEpochs[epochSeed % claimEpochs.length];
@@ -386,14 +401,11 @@ contract Handler is Test {
     }
 
     function _claim(uint256 e, address a) internal {
-        (,,,, bool settled) = perps.coverEpochs(e);
-        uint256 insBefore = perps.insurance();
+        (,, uint256 budgetBefore,,,,,) = perps.coverEpochs(e);
         perps.claimCover(e, a);
         coverClaimsPaid++;
-        if (!settled) {
-            (,, uint256 budget,,) = perps.coverEpochs(e);
-            if (budget > (insBefore * perps.COVER_CAP_BPS()) / 10_000) coverOverCap = true;
-        }
+        (,, uint256 budget,,,,,) = perps.coverEpochs(e);
+        if (budget != budgetBefore) coverOverCap = true; // settling never changes the budget
     }
 
     /// @dev Let time pass into a later cover epoch.
@@ -418,19 +430,22 @@ contract Handler is Test {
 
     // ------------------------------------------------------------ market
 
-    /// @dev Move one relayed price by up to ±10% and refresh both; `roll` first waits for the band
-    ///      reference to roll (otherwise repeated moves leave the reported price lagging).
-    function movePrice(uint256 stockSeed, uint256 bps, bool up, bool roll) external {
+    /// @dev Move one relayed price by up to ±5% and refresh both. Usually the move comes slowly enough for
+    ///      the rate limit (1% per minute) to absorb it; a quarter of the moves are fast (one second), so the
+    ///      reported price lags for a while and lagging-price paths get exercised.
+    function movePrice(uint256 stockSeed, uint256 bps, bool up, bool slow) external {
         uint256 k = stockSeed % 2;
-        uint256 move = (price[k] * bound(bps, 0, 1000)) / 10_000;
+        bps = bound(bps, 0, 500);
+        uint256 move = (price[k] * bps) / 10_000;
         uint256 next = up ? price[k] + move : price[k] - move;
         if (next < 2e18 || next > 50_000e18) return;
         price[k] = next;
-        if (roll) vm.warp(block.timestamp + oracle.MOVE_WINDOW());
+        // bps x 60 s per 100 bps, plus slack for rounding; refreshPrices adds the last second
+        if (slow || bps % 4 != 0) vm.warp(block.timestamp + (bps * 60) / 100 + 2);
         refreshPrices();
     }
 
-    /// @dev A 15-40% gap with keepers absent: the band walks there over several windows and nobody
+    /// @dev A 15-40% gap with keepers absent: the rate-limited price walks there (5% per window) and nobody
     ///      liquidates on the way, so positions can end insolvent (shortfall claims, audit F-02).
     function gap(uint256 stockSeed, uint256 pct, bool up) external {
         uint256 k = stockSeed % 2;
@@ -439,7 +454,7 @@ contract Handler is Test {
         if (next < 2e18 || next > 50_000e18) return;
         price[k] = next;
         refreshPrices();
-        for (uint256 i; i < 6 && oracle.lagging(address(stocks[k])); ++i) {
+        for (uint256 i; i < 12 && oracle.lagging(address(stocks[k])); ++i) {
             vm.warp(block.timestamp + oracle.MOVE_WINDOW());
             refreshPrices();
         }
@@ -455,7 +470,7 @@ contract Handler is Test {
     // ------------------------------------------------------------ wind down (afterInvariant)
 
     function windDown() external {
-        // Plain closes refuse a lagging (banded) price: let the band catch up with the relayed prices.
+        // Closes refuse a lagging price: let the rate-limited price catch up with the relayed prices.
         for (uint256 i; i < 400; ++i) {
             if (!oracle.lagging(address(stocks[0])) && !oracle.lagging(address(stocks[1]))) break;
             vm.warp(block.timestamp + oracle.MOVE_WINDOW());
@@ -465,9 +480,10 @@ contract Handler is Test {
         for (uint256 i; i < positionIds.length; ++i) {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open) continue;
+            bool capWasSet = _capSet();
             vm.prank(p.taker);
             perps.close(positionIds[i], 0);
-            _trackClaims(p);
+            _trackClaims(p, capWasSet);
         }
         for (uint256 i; i < offerIds.length; ++i) {
             (address maker,,,,,,, bool active) = book.offers(offerIds[i]);

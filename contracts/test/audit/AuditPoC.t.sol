@@ -118,8 +118,8 @@ contract AuditPoC is VelumBase {
         vm.warp(block.timestamp + 16 hours); // market closed overnight, relay silent
         uint256 gap = down ? (TSLA_PRICE * 70) / 100 : (TSLA_PRICE * 130) / 100; // 30% gap
         _pushPrice(address(tsla), gap);
-        // The first price after the silence is capped at 10% from the last valid one (F-04 band).
-        uint256 capped = down ? (TSLA_PRICE * 9000 + 9999) / 10_000 : (TSLA_PRICE * 11_000) / 10_000;
+        // The first price after the silence moves at most 5% from the last recorded one (rate limit, R2-01).
+        uint256 capped = down ? (TSLA_PRICE * 95) / 100 : (TSLA_PRICE * 105) / 100;
         assertEq(_effectivePrice(address(tsla)), capped);
         assertTrue(oracle.lagging(address(tsla)));
         // No shortfall can be cashed in at once; closing at a known-wrong price is refused too.
@@ -131,8 +131,8 @@ contract AuditPoC is VelumBase {
             vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
             perps.close(id, 0);
         }
-        // The price walks; the first liquidatable step is solvent (the band keeps a 5x pair solvent
-        // within a window) and pays the 1% penalty.
+        // The price walks 5% per window; the first liquidatable step is solvent (one recording moves at most
+        // 5%, half the 10% maintenance cushion) and pays the 1% penalty.
         while (!perps.isLiquidatable(id)) {
             _nextWindowPush(address(tsla), gap);
         }
@@ -171,9 +171,10 @@ contract AuditPoC is VelumBase {
         assertLt(pnl, -int256(fee));
     }
 
-    /// @notice F-02 worst case: keepers stay away for whole band windows, so both an honest pair and the
-    ///         attacker's self-pair go insolvent. Cover is not paid at liquidation; claims wait for the
-    ///         epoch to end, then share a budget capped at 10% of the fund pro rata; the rest is a haircut.
+    /// @notice F-02 worst case: keepers stay away while the price walks, so both an honest pair and the
+    ///         attacker's self-pair go insolvent. Cover is not paid at liquidation: it is reserved against the
+    ///         epoch's cap (10% of the fund at its first draw, shared with keeper top-ups, R2-02), paid after
+    ///         the epoch ends, pro rata; the rest is a haircut.
     function test_F02_fixed_worstCaseCoverDeferredCappedProRata() public {
         _seedInsurance(20_000 * USD);
         uint256 honestOffer = _offerAs(bob, 10_000 * USD, 5, 5);
@@ -185,7 +186,7 @@ contract AuditPoC is VelumBase {
         uint256 evil = perps.open(evilOffer, address(tsla), true, 20_000 * USD, 10, 0);
 
         vm.warp(block.timestamp + 16 hours);
-        _movePriceTo(address(tsla), (TSLA_PRICE * 70) / 100); // walks 4 windows, nobody liquidates
+        _movePriceTo(address(tsla), (TSLA_PRICE * 70) / 100); // walks 7 windows, nobody liquidates
         uint256 insBefore = perps.insurance();
         uint256 bobBefore = _bal(bob, usdg);
         uint256 malloryBefore = _bal(mallory, usdg);
@@ -196,7 +197,12 @@ contract AuditPoC is VelumBase {
         vm.stopPrank();
         assertEq(_bal(bob, usdg) - bobBefore, 4000 * USD, "winner gets the pool, no cover yet");
         assertEq(_bal(mallory, usdg) - malloryBefore, 8000 * USD, "winner gets the pool, no cover yet");
-        assertEq(insBefore - perps.insurance(), 2 * USD, "only the two capped keeper rewards");
+        (,, uint256 budget,, uint256 cap, uint256 drawn,,) = perps.coverEpochs(epoch);
+        assertEq(cap, insBefore / 10, "cap: 10% of the fund at the epoch's first draw");
+        assertEq(drawn - budget, 2 * USD, "only the two capped keeper rewards paid now");
+        assertEq(drawn, cap, "large claims: the whole cap is drawn");
+        assertEq(insBefore - perps.insurance(), drawn);
+        assertEq(perps.coverReserved(), budget, "cover reserved, not paid");
         uint256 bobClaim = perps.coverClaims(epoch, bob);
         uint256 evilClaim = perps.coverClaims(epoch, mallory);
         assertGt(bobClaim, 0);
@@ -206,8 +212,7 @@ contract AuditPoC is VelumBase {
         perps.claimCover(epoch, mallory);
         vm.warp((epoch + 1) * 1 hours);
         uint256 ins = perps.insurance();
-        uint256 budget = perps.settleCoverEpoch(epoch);
-        assertEq(budget, ins / 10, "capped at 10% of the fund");
+        assertEq(perps.settleCoverEpoch(epoch), budget, "budget fixed while the epoch ran");
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.EpochSettled.selector, epoch));
         perps.settleCoverEpoch(epoch);
         uint256 evilCover = perps.claimCover(epoch, mallory);
@@ -218,17 +223,18 @@ contract AuditPoC is VelumBase {
         assertLt(evilCover, evilClaim, "haircut");
         assertLt(bobCover, bobClaim, "haircut");
         assertEq(perps.coverReserved(), 0, "dust back to the fund");
-        assertEq(perps.insurance(), ins - evilCover - bobCover);
+        assertEq(perps.insurance(), ins + budget - evilCover - bobCover);
         vm.expectRevert(PerpsBase.NothingToClaim.selector);
         perps.claimCover(epoch, mallory);
         // Bounded: the attacker took at most its share of a tenth of the fund, only by keepers missing
-        // a 10-minute window in which its position offered an ~80 USDG liquidation reward.
-        assertLe(evilCover, ins / 10);
+        // more than 9 minutes in which its position offered a ~100 USDG liquidation reward.
+        assertLe(evilCover, insBefore / 10);
         _assertPerpsSolvent();
     }
 
-    /// @notice F-02 property: right after an open, no relayed price within the band window can push
-    ///         either side of a pair below zero, whatever the leverage, side or open spread.
+    /// @notice F-02 property: right after an open, no relayed price can push either side of a pair below zero
+    ///         at the next recording, whatever the leverage, side or open spread (the 12-minute version at
+    ///         arbitrary open prices is testFuzz_R2_01_fixed_noSideInsolventWithin12MinOfAnyNonLaggingOpen).
     function testFuzz_F02_fixed_bandKeepsPairsSolventWithinWindow(
         uint256 size,
         uint8 levHalf,
@@ -251,9 +257,11 @@ contract AuditPoC is VelumBase {
 
     // ------------------------------------------------------------ F-04: relayer power
 
-    /// @notice F-04 regression: the relayer key pushed +10% eight times in 8 s to double the price and
-    ///         let an accomplice take the maker's margin plus insurance. Now the reported price moves at
-    ///         most 10% per 10-minute window, and the accomplice gets the +10% P&L, not the pool.
+    /// @notice F-04 regression: the relayer key pushed +10% eight times in 8 s to double the price and let an
+    ///         accomplice take the maker's margin plus insurance. Now the reported price moves at most 1/6000
+    ///         per second from the last recorded price (1% per minute, at most 5% per recording): after those
+    ///         8 s it has moved 0.13%, the maker is nowhere near liquidation, the accomplice cannot exit at the
+    ///         pushed price, and doubling takes over 69 minutes.
     function test_F04_fixed_relayerCannotDoublePriceQuickly() public {
         _seedInsurance(1000 * USD);
         uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
@@ -266,23 +274,24 @@ contract AuditPoC is VelumBase {
             _pushPrice(address(tsla), p);
         }
         assertGt(p, 2 * TSLA_PRICE);
-        assertEq(_effectivePrice(address(tsla)), (TSLA_PRICE * 11_000) / 10_000, "still +10% after 8 s");
-        uint256 before = _bal(mallory2, usdg);
+        assertLe(_effectivePrice(address(tsla)), (TSLA_PRICE * 10_014) / 10_000, "+0.13% after 8 s");
         uint256 ins = perps.insurance();
         vm.prank(mallory2);
-        perps.liquidate(id); // the maker is just below maintenance at +10%
-        uint256 got = _bal(mallory2, usdg) - before;
-        emit log_named_decimal_uint("accomplice payout on 200 margin", got, 6);
-        assertLt(got, 310 * USD, "was > 400 (whole pool + insurance)");
-        assertGe(perps.insurance(), ins, "no insurance paid out");
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotLiquidatable.selector, id));
+        perps.liquidate(id);
+        vm.prank(mallory2);
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
+        perps.close(id, 0);
+        assertEq(perps.insurance(), ins, "no insurance paid out");
         assertEq(perps.coverClaims(perps.currentCoverEpoch(), mallory2), 0);
 
-        // doubling now takes at least 7 band windows (70 minutes): time for makers and keepers to react
+        // Doubling now takes 15 recording windows (75 minutes) with one push per window, and at least
+        // 69 minutes even with a recording every second: time for makers and keepers to react.
         uint256 t0 = block.timestamp;
         while (_effectivePrice(address(tsla)) < 2 * TSLA_PRICE) {
             _nextWindowPush(address(tsla), 2 * TSLA_PRICE);
         }
-        assertGe(block.timestamp - t0, 70 minutes);
+        assertGe(block.timestamp - t0, 69 minutes);
     }
 
     // ------------------------------------------------------------ F-06: free option on stale prices
@@ -387,7 +396,7 @@ contract AuditPoC is VelumBase {
         vm.prank(alice);
         perps.requestForcedExit{value: 0.001 ether}(id);
         vm.warp(block.timestamp + 7 days);
-        _pushPrice(address(tsla), 353e18);
+        _movePriceTo(address(tsla), 353e18);
         perps.advanceFunding(address(tsla));
         assertTrue(perps.isLiquidatable(id));
         int256 claim = perps.takerClaimAt(id, 353e18);
@@ -440,7 +449,8 @@ contract AuditPoC is VelumBase {
     }
 
     /// @notice F-11: an insolvent position (nothing left for a penalty) still pays its liquidator a
-    ///         flat 1 USDG from insurance, so bad debt gets cleared.
+    ///         flat 1 USDG from insurance, so bad debt gets cleared. The top-up is drawn against the epoch's
+    ///         cover cap, ahead of the shortfall's cover (R2-02).
     function test_F11_fixed_insolventLiquidationPaysKeeper() public {
         _seedInsurance(100 * USD);
         uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
@@ -454,7 +464,10 @@ contract AuditPoC is VelumBase {
         uint256 reward = perps.liquidate(id);
         assertEq(reward, 1 * USD);
         assertEq(_bal(liquidator, usdg), 1 * USD);
-        assertEq(ins - perps.insurance(), 1 * USD);
+        (,, uint256 budget,, uint256 cap, uint256 drawn,,) = perps.coverEpochs(perps.currentCoverEpoch());
+        assertEq(drawn - budget, 1 * USD, "top-up drawn against the cap");
+        assertEq(drawn, cap, "the rest of the cap reserved for the maker's claim");
+        assertEq(ins - perps.insurance(), drawn);
         _assertPerpsSolvent();
     }
 
@@ -627,6 +640,20 @@ contract AuditDeployPoC is Test {
         d.checkRelayer(4663, true, relay, deployer);
     }
 
+    /// @notice F-07 (round 2): the guardian stays off by default, but the deploy script now says loudly that
+    ///         without GUARDIAN the split/dividend procedure is unavailable.
+    function test_F07_fixed_deployWarnsWithoutGuardian() public {
+        Deploy d = new Deploy();
+        string memory none = d.guardianNotice(address(0));
+        assertTrue(vm.contains(none, "WARNING"));
+        assertTrue(vm.contains(none, "GUARDIAN is not set"));
+        assertTrue(vm.contains(none, "split / dividend procedure"));
+        assertTrue(vm.contains(none, "UNAVAILABLE"));
+        string memory set = d.guardianNotice(makeAddr("guardian"));
+        assertFalse(vm.contains(set, "WARNING"));
+        assertTrue(vm.contains(set, "corporate-actions procedure available"));
+    }
+
     function test_F04_fixed_deployRefusesMainnet() public {
         Deploy d = new Deploy();
         vm.chainId(4663);
@@ -676,7 +703,9 @@ contract AuditChainlinkPoC is Test {
         address[] memory modules = new address[](2);
         modules[0] = address(book);
         modules[1] = address(perps);
-        vault.setup(tokens, modules);
+        address[] memory blocked = new address[](1);
+        blocked[0] = address(oracle);
+        vault.setup(tokens, modules, blocked);
 
         address[] memory stocks = new address[](1);
         stocks[0] = address(tsla);
@@ -729,7 +758,11 @@ contract AuditChainlinkPoC is Test {
 
         vm.warp(block.timestamp + 7 days);
         feed.set(360.3e8, block.timestamp); // -8%: alice is losing ~80 USDG
-        perps.advanceFunding(address(tsla));
+        perps.advanceFunding(address(tsla)); // the first recording after the silence moves 5% (rate limit)
+        vm.warp(block.timestamp + 5 minutes);
+        feed.set(360.3e8, block.timestamp);
+        perps.advanceFunding(address(tsla)); // caught up
+        assertFalse(oracle.lagging(address(tsla)));
         assertEq(oracle.lastValidAt(address(tsla)), block.timestamp, "perps accrual records the reading");
         uint256 atEntry = uint256(perps.takerClaimAt(id, perps.getPosition(id).entry));
 
@@ -776,12 +809,13 @@ contract AuditChainlinkPoC is Test {
         uint256 offer = _offer();
         uint256 a = _openLong(alice, offer, 10);
         uint256 b = _openLong(carol, offer, 10);
-        // walk the feed down 15% in two band windows: both 5x longs below maintenance, still solvent
-        vm.warp(block.timestamp + 1);
-        feed.set(352.5e8, block.timestamp);
-        assertTrue(oracle.poke(address(tsla)));
-        vm.warp(block.timestamp + 10 minutes);
-        feed.set(332.9e8, block.timestamp);
+        // walk the feed down 15% (5% per 5-minute recording): both 5x longs below maintenance, still solvent
+        for (uint256 i; i < 4; ++i) {
+            vm.warp(block.timestamp + 5 minutes);
+            feed.set(332.9e8, block.timestamp);
+            assertTrue(oracle.poke(address(tsla)));
+        }
+        assertFalse(oracle.lagging(address(tsla)));
         assertTrue(perps.isLiquidatable(a));
 
         sequencer.set(1, block.timestamp); // sequencer down

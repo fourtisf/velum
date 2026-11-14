@@ -59,7 +59,9 @@ abstract contract VelumBase is Test {
         modules[0] = address(pools);
         modules[1] = address(book);
         modules[2] = address(perps);
-        vault.setup(tokens, modules);
+        address[] memory blocked = new address[](1);
+        blocked[0] = address(oracle);
+        vault.setup(tokens, modules, blocked);
 
         address[] memory stocks = _stocks();
         address[] memory feeds = new address[](2);

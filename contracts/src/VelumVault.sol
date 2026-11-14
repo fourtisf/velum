@@ -12,7 +12,8 @@ import {IVelumVault} from "./interfaces/IVelumVault.sol";
 ///         Modules (spot pools, maker book, perps) move internal balances between accounts; they
 ///         never mint and never transfer tokens out.
 /// @dev No owner, no pause, no upgrade. The deployer calls `setup` exactly once to fix the token
-///      list and the module set; after that nothing can be changed by anyone.
+///      list, the module set and the protocol addresses that may not receive deposits; after that
+///      nothing can be changed by anyone.
 contract VelumVault is IVelumVault, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -21,13 +22,15 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
 
     mapping(address token => bool) public isToken;
     mapping(address module => bool) public isModule;
+    /// @notice Protocol contracts that are not modules and can never call withdraw (e.g. the oracle).
+    mapping(address account => bool) public isBlockedRecipient;
     mapping(address account => mapping(address token => uint256)) public balanceOf;
     /// @notice Sum of all internal balances per token. Always equals what the vault received
     ///         minus what it paid out, so it never exceeds the vault's token holdings.
     mapping(address token => uint256) public totalInternal;
     mapping(address account => mapping(address module => bool)) public approved;
 
-    event Setup(address[] tokens, address[] modules);
+    event Setup(address[] tokens, address[] modules, address[] blockedRecipients);
     /// @notice Public deposit ("shield" in the product). `amount` is what actually arrived.
     event Deposited(address indexed from, address indexed to, address indexed token, uint256 amount);
     /// @notice Public withdrawal ("unshield" in the product).
@@ -44,6 +47,7 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     error ZeroAmount();
     error UnknownToken(address token);
     error ModuleRecipient(address module);
+    error ProtocolRecipient(address account);
     error NotModule(address caller);
     error NotApproved(address account, address module);
     error InsufficientBalance(address account, address token, uint256 balance, uint256 needed);
@@ -52,8 +56,12 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
         deployer = msg.sender;
     }
 
-    /// @notice One-time wiring. Fixes the accepted tokens and the modules, then locks forever.
-    function setup(address[] calldata tokens, address[] calldata modules) external {
+    /// @notice One-time wiring. Fixes the accepted tokens, the modules and the protocol addresses that can
+    ///         never withdraw (deposits to them are refused), then locks forever.
+    /// @param blockedRecipients Protocol contracts other than modules and tokens, e.g. the oracle.
+    function setup(address[] calldata tokens, address[] calldata modules, address[] calldata blockedRecipients)
+        external
+    {
         if (msg.sender != deployer) revert NotDeployer();
         if (locked) revert AlreadySetUp();
         locked = true;
@@ -65,17 +73,24 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
             if (modules[i] == address(0)) revert ZeroAddress();
             isModule[modules[i]] = true;
         }
-        emit Setup(tokens, modules);
+        for (uint256 i; i < blockedRecipients.length; ++i) {
+            if (blockedRecipients[i] == address(0)) revert ZeroAddress();
+            isBlockedRecipient[blockedRecipients[i]] = true;
+        }
+        emit Setup(tokens, modules, blockedRecipients);
     }
 
     /// @notice Deposit `amount` of `token` and credit `to`. Fee-on-transfer safe: credits the
-    ///         amount that actually arrived. `to` may not be a module: modules only hold balances they
-    ///         account for, so a deposit credited to one would be stranded (internal audit I-1).
+    ///         amount that actually arrived. `to` may not be a module (modules only hold balances they
+    ///         account for, internal audit I-1), the vault itself, a listed token or a blocked protocol
+    ///         address such as the oracle (none of them can ever withdraw, R2-05): the deposit would be
+    ///         stranded.
     function deposit(address token, uint256 amount, address to) external nonReentrant returns (uint256 received) {
         if (!locked) revert NotSetUp();
         if (!isToken[token]) revert UnknownToken(token);
         if (to == address(0)) revert ZeroAddress();
         if (isModule[to]) revert ModuleRecipient(to);
+        if (to == address(this) || isToken[to] || isBlockedRecipient[to]) revert ProtocolRecipient(to);
         if (amount == 0) revert ZeroAmount();
         uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -86,9 +101,11 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
         emit Deposited(msg.sender, to, token, received);
     }
 
-    /// @notice Withdraw from the caller's own internal balance to any address.
+    /// @notice Withdraw from the caller's own internal balance to any address except the vault itself
+    ///         (tokens sent there would be held without any internal balance, stranded for good).
     function withdraw(address token, uint256 amount, address to) external nonReentrant {
         if (to == address(0)) revert ZeroAddress();
+        if (to == address(this)) revert ProtocolRecipient(to);
         if (amount == 0) revert ZeroAmount();
         uint256 bal = balanceOf[msg.sender][token];
         if (bal < amount) revert InsufficientBalance(msg.sender, token, bal, amount);

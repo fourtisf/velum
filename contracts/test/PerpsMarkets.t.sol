@@ -146,8 +146,8 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         assertEq(perps.minPositionSize(), 10 * USD);
         assertEq(perps.keeperRewardCap(), 1 * USD);
         assertEq(book.MIN_OPEN_SPREAD_BPS(), 2);
-        assertEq(oracle.MAX_MOVE_BPS(), 1000);
-        assertEq(oracle.MOVE_WINDOW(), 10 minutes);
+        assertEq(oracle.MAX_MOVE_BPS(), 500);
+        assertEq(oracle.MOVE_WINDOW(), 5 minutes);
         assertEq(oracle.SEQUENCER_GRACE(), 1 hours);
     }
 
@@ -269,22 +269,22 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
 
     function test_close_longProfit() public {
         uint256 id = _open(alice, offerId, true, 500 * USD, 4);
-        _pushPrice(address(tsla), 411.23e18); // +5%
+        _movePriceTo(address(tsla), 411.23e18); // +5% (one rate-limit window)
         _checkClose(id, 411.23e18);
     }
 
     function test_close_longLoss() public {
         uint256 id = _open(alice, offerId, true, 2000 * USD, 2);
-        _pushPrice(address(tsla), 380e18);
+        _movePriceTo(address(tsla), 380e18);
         _checkClose(id, 380e18);
     }
 
     function test_close_shortProfitAndLoss() public {
         uint256 id = _open(alice, offerId, false, 1000 * USD, 6);
-        _pushPrice(address(tsla), 370e18);
+        _movePriceTo(address(tsla), 370e18);
         _checkClose(id, 370e18);
         uint256 id2 = _open(alice, offerId, false, 1000 * USD, 6);
-        _pushPrice(address(tsla), 395e18);
+        _movePriceTo(address(tsla), 395e18);
         _checkClose(id2, 395e18);
     }
 
@@ -307,9 +307,9 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 out = perps.close(id, 0);
         assertEq(out, pool, "whole pool to the taker");
         assertEq(_bal(bob, usdg), bobBefore, "insolvent maker gets nothing");
-        // keeper top-up: min(half the 1% penalty, 1 USDG, insurance)
-        assertEq(_bal(alice, usdg) - aliceBefore, pool + ins);
-        assertEq(perps.insurance(), 0);
+        // keeper top-up: min(half the 1% penalty, 1 USDG, the epoch's cap of 10% of the fund)
+        assertEq(_bal(alice, usdg) - aliceBefore, pool + ins / 10);
+        assertEq(perps.insurance(), ins - ins / 10, "the cap is used up by the top-up");
         assertEq(perps.coverClaims(perps.currentCoverEpoch(), alice), uint256(claim) - pool, "shortfall claimed");
         assertFalse(_pos(id).open);
         _assertPerpsSolvent();
@@ -427,7 +427,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotLiquidatable.selector, id));
         perps.liquidate(id);
 
-        _pushPrice(address(tsla), 356e18); // -9.1%: claim ~108.5 still above 10% of ~908.5 notional
+        _movePriceTo(address(tsla), 356e18); // -9.1%: claim ~108.5 still above 10% of ~908.5 notional
         assertFalse(perps.isLiquidatable(id));
         _movePriceTo(address(tsla), 345e18); // claim ~80 < ~88 maintenance
         perps.advanceFunding(address(tsla)); // so the expected claim below uses the same index
@@ -498,8 +498,9 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 reward = perps.liquidate(id);
         assertEq(reward, 1 * USD, "insolvent: flat keeper reward from insurance (audit F-11)");
         assertEq(_bal(bob, usdg) - bobBefore, pool, "winner gets the pool now, no cover yet");
-        assertEq(insBefore - perps.insurance(), reward);
         assertEq(perps.coverClaims(epoch, bob), uint256(-claim));
+        assertEq(perps.coverReserved(), uint256(-claim), "cover reserved at once (under the 10% cap)");
+        assertEq(insBefore - perps.insurance(), reward + uint256(-claim));
         _assertPerpsSolvent();
 
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.EpochNotOver.selector, epoch));
@@ -508,12 +509,13 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 insAtSettle = perps.insurance();
         perps.claimCover(epoch, bob); // anyone may trigger; paid to bob
         assertEq(_bal(bob, usdg) - bobBefore, pool + uint256(-claim), "fully covered: under the 10% cap");
-        assertEq(insAtSettle - perps.insurance(), uint256(-claim));
+        assertEq(perps.insurance(), insAtSettle, "paid from the reserve");
         assertEq(perps.coverReserved(), 0);
         _assertPerpsSolvent();
     }
 
-    /// @notice One epoch's cover is capped at 10% of the fund; the rest is a haircut to the winner.
+    /// @notice One epoch's top-ups plus cover are capped at 10% of the fund at its first draw; the rest is a
+    ///         haircut to the winner.
     function test_liquidate_shortfallCoverCappedAtTenPercent() public {
         _fund(carol, usdg, 500 * USD);
         vm.prank(carol);
@@ -522,17 +524,19 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         PerpsBase.Position memory p = _pos(id);
         uint256 epoch = perps.currentCoverEpoch();
         uint256 bobBefore = _bal(bob, usdg);
+        uint256 insBefore = perps.insurance();
         vm.prank(liquidator);
-        perps.liquidate(id);
+        perps.liquidate(id); // keeper top-up of 1 USDG drawn first
+        uint256 budget = insBefore / 10 - 1 * USD;
+        assertLt(budget, uint256(-claim));
+        assertEq(perps.coverReserved(), budget);
+        assertEq(perps.insurance(), insBefore - insBefore / 10);
         vm.warp((epoch + 1) * 1 hours);
         uint256 ins = perps.insurance();
-        uint256 budget = ins / 10;
-        assertLt(budget, uint256(-claim));
         assertEq(perps.settleCoverEpoch(epoch), budget);
-        assertEq(perps.coverReserved(), budget);
         perps.claimCover(epoch, bob);
         assertEq(_bal(bob, usdg) - bobBefore, p.takerMargin + p.makerMargin + budget); // pool + capped cover
-        assertEq(perps.insurance(), ins - budget);
+        assertEq(perps.insurance(), ins);
         assertEq(perps.coverReserved(), 0);
         _assertPerpsSolvent();
     }
@@ -654,7 +658,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 before = _bal(alice, usdg) + _bal(bob, usdg) + book.totalBacking() + perps.insurance();
         uint256 id = _open(alice, offerId, isLong, size, levHalf);
         uint256 price = up ? TSLA_PRICE * (100 + movePct) / 100 : TSLA_PRICE * (100 - movePct) / 100;
-        _pushPrice(address(tsla), price);
+        _movePriceTo(address(tsla), price);
         if (perps.isLiquidatable(id)) {
             vm.prank(liquidator);
             perps.liquidate(id);

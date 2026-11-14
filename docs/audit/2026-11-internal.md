@@ -4,14 +4,15 @@ Three independent reviewers (contracts, backend + deploy, frontend) audited the 
 commit `0f2b776`+. Each tried to prove findings with tests. This is an **internal** review: it does
 not replace the external audit that docs/04 §3 requires before any contract handles real funds.
 
-Proof-of-concept tests: `contracts/test/audit/AuditPoC.t.sol` (tests named `*_fixed_*` are
-regressions; the others still demonstrate open findings and must be inverted when fixed).
+Proof-of-concept tests: `contracts/test/audit/AuditPoC.t.sol` and, for the second contracts pass,
+`contracts/test/audit/Round2PoC.t.sol` (tests named `*_fixed*` are regressions; the others still
+demonstrate open findings and must be inverted when fixed).
 
 ## Summary
 
 | Area | Critical | High | Medium | Low | Fixed so far |
 |---|---|---|---|---|---|
-| Contracts (`contracts/`) | 1 | 1 | 5 | 6 | F-01–F-08, F-11, F-12, I-1; F-10, F-13 mitigated; F-09 accepted |
+| Contracts (`contracts/`) | 1 | 1 | 6 | 8 | F-01–F-08, F-11, F-12, I-1; F-10, F-13 mitigated; F-09 accepted. Round 2: R2-01–R2-05 fixed, R2-06/R2-07 documented, F-07 completed |
 | Backend + deploy (`apps/api`, `apps/workers`, `deploy/`) | 0 | 0 | 6 | 14 | All (M1–M6, L1–L14); existing servers need the one-time upgrade in docs/05 |
 | Frontend (`apps/web`) | 0 | 0 | 5 | 14 | M1–M4, M5 (mitigated), L1–L14, I2, I4–I6, I9 |
 
@@ -26,19 +27,31 @@ Next 14 remains end-of-life (mitigated; upgrade to 15.5.x awaits sign-off). A se
 | ID | Sev | Finding | Status |
 |---|---|---|---|
 | F-01 | Critical | Forced-exit bond was pushed to a user-controlled address during settlement; a huge revert payload blocked every close, liquidation and forced exit (freeze counterparties, drain insurance) | **Fixed**: pull-only refunds + `claimBond()` (`516d20b`), regression tests |
-| F-04 | High | Testnet relay oracle: one key controls every price (10% per second, unbounded after 1 h) | **Fixed**: every price is banded (±10% from a reference that rolls at most once per 10 min; first price after silence capped); deploy refuses testnet without a dedicated `PRICE_RELAYER` |
-| F-02 | Medium | Self-paired positions profit from insurance on price gaps > 20% (immediate, first-come cover) | **Fixed**: shortfalls become claims settled per hourly epoch, pro rata, capped at 10% of the fund (rest is a haircut); with the band the PoC straddle now loses 93–174 USDG instead of gaining 1,988 |
+| F-04 | High | Testnet relay oracle: one key controls every price (10% per second, unbounded after 1 h) | **Fixed** (completed by R2-01): every price is rate-limited against the last recorded price, 1/6000 per second (1%/min), at most 5% per recording; deploy refuses testnet without a dedicated `PRICE_RELAYER`. A compromised key moves a 5x maker's claim by ≤ 5.5% of its margin per minute |
+| F-02 | Medium | Self-paired positions profit from insurance on price gaps > 20% (immediate, first-come cover) | **Fixed** (completed by R2-01–R2-03): shortfalls become claims paid per hourly epoch, pro rata, from a budget capped at 10% of the fund at the epoch's first draw (shared with keeper top-ups; rest is a haircut); with the rate limit the PoC straddle loses money (e.g. −121 USDG when self-liquidated at the first chance) |
 | F-03 | Medium | `isDead` true on one failed/out-of-bounds Chainlink read; forced exit then settles at entry | **Fixed**: `lastValidAt` recorded on every perps accrual / `poke`; failed or out-of-bounds reads are stale; dead only 14 days after `max(lastValidAt, setupAt)` |
 | F-05 | Medium | No L2 sequencer-uptime check / grace period | **Fixed**: sequencer feed is a setup parameter (required with Chainlink feeds); down or < 1 h grace blocks opens, liquidations and margin removal; close and add margin allowed |
 | F-06 | Medium | Takers get a free option on prices up to 60 s old against 0-spread offers | **Fixed**: opens need a price ≤ 10 s old (closes 60 s) and offers need an open spread ≥ 2 bps |
-| F-07 | Medium | Stock splits/dividends not handled; immutable bounds can kill a market | **Fixed** (procedural): optional guardian fixed at setup can only toggle per-market close-only; split/dividend procedure in `contracts/README.md`; guardian needs owner sign-off |
+| F-07 | Medium | Stock splits/dividends not handled; immutable bounds can kill a market | **Fixed** (procedural): optional guardian fixed at setup can only toggle per-market close-only; split/dividend procedure in `contracts/README.md`. Round 2 found it incomplete (guardian off by default, so the procedure can't run): the deploy script keeps the default (none, owner sign-off) but reads `GUARDIAN` and warns loudly when it is unset (`test_F07_fixed_deployWarnsWithoutGuardian`) |
 | F-08 | Low | Forced exit of a liquidatable position skipped the liquidation penalty | **Fixed**: such a settlement is a liquidation (penalty applies, settler gets the keeper reward) |
 | F-09 | Low | Funding wash trading with self-paired positions | **Accepted**, documented: bounded by the 0.01%/h cap, costs fees and 40% locked margin; clean fix needs identity or a new funding model |
 | F-10 | Low | OI-cap griefing (and dust positions) | **Mitigated**: 10 USDG minimum position; filling a cap still possible at 40% of capped notional in margin (size caps accordingly) |
-| F-11 | Low | No keeper reward on bad debt | **Fixed**: insurance tops the liquidator up to half the full penalty, ≤ 1 USDG, when the loser can't pay it |
-| F-12 | Low | Closing against an insolvent counterparty forfeited insurance cover | **Fixed**: closing a liquidatable position settles it as a liquidation, so the shortfall is claimed |
+| F-11 | Low | No keeper reward on bad debt | **Fixed**: insurance tops the liquidator up to half the full penalty, ≤ 1 USDG, when the loser can't pay it; since R2-02 within the epoch's cover cap |
+| F-12 | Low | Closing against an insolvent counterparty forfeited insurance cover | **Fixed**: closing a liquidatable position settles it as a liquidation, so the shortfall is claimed (at a lagging price, R2-04, the winner calls `liquidate`) |
 | F-13 | Low | No emergency controls | **Mitigated**: the optional close-only guardian (F-07); no fund-moving powers by design |
 | I-1 | Info | `deposit(..., to = module)` stranded funds | **Fixed**: deposits to module addresses are refused |
+
+Second contracts pass (`contracts/test/audit/Round2PoC.t.sol`; each round-2 proof of concept inverted into a `*_fixed*` regression):
+
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| R2-01 | Medium | Price band anchored to a reference fixed for 10 minutes: one push moved the price +22% inside a window (relayer + accomplice drained an honest maker's 10,000 USDG backing in 10 s), two records around an attacker-timed roll (`poke`) moved it +21% (F-02 straddle profitable again). Made F-02 and F-04 incomplete | **Fixed**: rate limit against the last recorded price, `maxMove = last × 5% × min(dt, 5 min) / 5 min` (1/6000 per second, ≤ 5% per recording); `poke` is an ordinary recording. Proven: no side of a 5x pair opened at any non-lagging price goes below zero within 12 min (worst case 13.1 min); a non-liquidatable side survives the next recording and needs ≥ 9.5 min of recordings to reach zero; a compromised relayer moves a maker's claim ≤ 5.5% of its margin per minute (maker liquidatable no sooner than 8.7 min). Regressions `test_R2_01*_fixed*`, `testFuzz_limit_everyRecordingWithinLimit`. Trade-off for the owner: with exact "effective ≠ source ⇒ lagging", normal volatility makes some opens retry (see `contracts/README.md`, limitations) |
+| R2-02 | Low | The F-11 keeper top-up was paid at once outside the 10%/epoch cover cap (30 small insolvent self-pairs took 30% of the fund at once, 35%+ in total) | **Fixed**: top-ups draw on the epoch's cap ahead of the cover for that shortfall; the PoC event now takes ≤ 10% of the fund (`test_R2_02_fixed_keeperTopUpsCountAgainstEpochCap`) |
+| R2-03 | Info | Epoch budget set by whoever settles first (fund size at settlement); one event can straddle two epochs; README's "a single event takes at most a tenth" overstated | **Fixed**: cap fixed at the epoch's first draw, draws leave the fund at once, budget independent of settlement time; README states the real bound (10% per epoch, 19% over two, 1 − 0.9^k over k) (`test_R2_03_fixed_capFixedAtFirstDrawAndTwoEpochsAtMost19Percent`) |
+| R2-04 | Low | `close()` routed a liquidatable position to liquidation before the lagging check, so a losing taker exited at a known-wrong banded price | **Fixed**: `close()` refuses a lagging price on both routes; third-party keepers still liquidate; the bound for any liquidation at a lagging price is documented (loser keeps < 9% of notional vs the source price) (`test_R2_04_fixed_*`) |
+| R2-05 | Info | `deposit` still accepted the vault itself and the oracle as recipients (stranded) | **Fixed**: refuses the vault, listed tokens and a deny-list fixed at setup (deploy passes the oracle); `withdraw` to the vault refused too (`test_R2_05_fixed_depositToProtocolContractsRefused`) |
+| R2-06 | Info | README: "a close only removes risk" was wrong (a 60 s old close price is an exit option) | **Documented**: README corrected (option bounded by the rate limit and lagging refusal; priced by the close spread) |
+| R2-07 | Info | README/NatSpec silent on the penalty when a losing taker's close settles as a liquidation, and on `priceLimit` checking only the spread-adjusted exit | **Documented**: README and `close()` NatSpec corrected (`test_R2_07_closeAsLiquidationPaysPenaltyNotSpread`) |
 
 ## Backend and deploy
 

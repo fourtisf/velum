@@ -11,11 +11,11 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 ///   1. No token leaves the vault except through withdraw.
 ///   2. Sum of internal balances (users + pools + offers + margins + insurance) == vault holdings.
 ///   3. A liquidation never pays out more than the posted margins plus the insurance fund; shortfall
-///      cover is never paid at liquidation (only the capped keeper top-up), and one epoch's cover never
-///      exceeds 10% of the fund (audit F-02).
+///      cover is never paid at liquidation (only the capped keeper top-up), and one epoch's top-ups plus
+///      cover never exceed 10% of the fund at the epoch's first draw (audit F-02, R2-02, R2-03).
 ///   4. Closing the whole book returns every unit: nothing is stuck and nothing is created.
-///   5. Cover bookkeeping: reserved cover equals the unpaid budgets of settled epochs, outstanding claims
-///      equal the claims recorded, and the guardian never moves funds (audit F-07).
+///   5. Cover bookkeeping: reserved cover equals the unpaid budgets of epochs with unpaid claims,
+///      outstanding claims equal the claims recorded, and the guardian never moves funds (audit F-07).
 contract InvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
 
@@ -108,15 +108,16 @@ contract InvariantsTest is StdInvariant, VelumBase {
     function invariant_liquidationsNeverOverpay() public view {
         assertFalse(handler.liquidationOverpaid(), "overpaid");
         assertFalse(handler.immediateCoverPaid(), "cover paid at liquidation");
-        assertFalse(handler.coverOverCap(), "epoch cover above 10% of the fund");
+        assertFalse(handler.coverOverCap(), "epoch draws above 10% of the fund at its first draw");
     }
 
-    /// 5. Reserved cover == unpaid budgets of settled epochs; outstanding == recorded claims.
+    /// 5. Reserved cover == unpaid budgets of epochs with unpaid claims; outstanding == recorded claims.
     function invariant_coverAccounting() public view {
         uint256 reserved;
         for (uint256 i; i < handler.claimEpochCount(); ++i) {
             uint256 e = handler.claimEpochs(i);
-            (uint256 claimed, uint256 outstanding, uint256 budget, uint256 paid, bool settled) = perps.coverEpochs(e);
+            (uint256 claimed, uint256 outstanding, uint256 budget, uint256 paid, uint256 cap, uint256 drawn,,) =
+                perps.coverEpochs(e);
             uint256 sum;
             for (uint256 j; j < handler.claimantCount(e); ++j) {
                 sum += perps.coverClaims(e, handler.claimant(e, j));
@@ -125,8 +126,9 @@ contract InvariantsTest is StdInvariant, VelumBase {
             assertLe(outstanding, claimed);
             assertLe(budget, claimed, "budget above claims");
             assertLe(paid, budget, "paid above budget");
-            if (settled && outstanding != 0) reserved += budget - paid;
-            if (!settled) assertEq(budget, 0);
+            assertLe(budget, drawn, "budget outside the draws");
+            assertLe(drawn, cap, "draws above the epoch cap");
+            if (outstanding != 0) reserved += budget - paid;
         }
         assertEq(perps.coverReserved(), reserved, "reserved cover");
         assertFalse(handler.guardianMovedFunds(), "guardian moved funds");
@@ -199,7 +201,7 @@ contract InvariantsTest is StdInvariant, VelumBase {
         assertEq(perps.totalMargin(), 0, "margins left");
         assertEq(perps.coverReserved(), 0, "cover left reserved");
         for (uint256 i; i < handler.claimEpochCount(); ++i) {
-            (, uint256 outstanding,,,) = perps.coverEpochs(handler.claimEpochs(i));
+            (, uint256 outstanding,,,,,,) = perps.coverEpochs(handler.claimEpochs(i));
             assertEq(outstanding, 0, "claims left unpaid");
         }
         assertEq(vault.balanceOf(address(perps), address(usdg)), perps.insurance(), "perps holds only insurance");

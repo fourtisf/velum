@@ -1,0 +1,49 @@
+{
+  "_note": "Collected from public sources on 2026-11-14. VERIFY every value against official Robinhood Chain / Paxos docs and the explorer before use. Tickers are not unique on-chain: always match by exact address.",
+  "network": {
+    "name": "Robinhood Chain Testnet",
+    "chainId": 46630,
+    "nativeCurrency": { "name": "Ether", "symbol": "ETH", "decimals": 18 },
+    "rpcUrl": "VERIFY_FROM_OFFICIAL_DOCS",
+    "explorer": "https://explorer.testnet.chain.robinhood.com",
+    "explorerApi": "https://explorer.testnet.chain.robinhood.com/api/v2",
+    "faucets": {
+      "ethAndStockTokens": "https://faucet.testnet.chain.robinhood.com",
+      "usdg": "https://faucet.paxos.com"
+    }
+  },
+  "mainnetReference": {
+    "name": "Robinhood Chain",
+    "chainId": 4663,
+    "note": "Arbitrum-stack L2, mainnet since 2026-07-01. Gas paid in ETH. Do not deploy here before the Phase 5 audit."
+  },
+  "tokens": {
+    "USDG": { "address": "0x7E955252E15c84f5768B83c41a71F9eba181802F", "decimals": "VERIFY", "issuer": "Paxos (testnet)" },
+    "TSLA": { "address": "0xC9f9c86933092BbbfFF3CCb4b105A4A94bf3Bd4E", "decimals": "VERIFY", "name": "Tesla" },
+    "AMZN": { "address": "0x5884aD2f920c162CFBbACc88C9C51AA75eC09E02", "decimals": "VERIFY", "name": "Amazon" },
+    "PLTR": { "address": "0x1FBE1a0e43594b3455993B5dE5Fd0A7A266298d0", "decimals": "VERIFY", "name": "Palantir" },
+    "NFLX": { "address": "0x3b8262A63d25f0477c4DDE23F83cfe22Cb768C93", "decimals": "VERIFY", "name": "Netflix" },
+    "AMD":  { "address": "0x71178BAc73cBeb415514eB542a8995b82669778d", "decimals": "VERIFY", "name": "AMD" }
+  },
+  "comingSoon": ["NVDA", "AAPL", "META", "MSFT", "COIN"],
+  "priceFeeds": {
+    "_note": "Robinhood Stock Tokens track prices via Chainlink feeds. Look up the official feed address per token and network; reject any feed not on the official list."
+  },
+  "protocol": {
+    "maxLeverage": 5,
+    "leverageStep": 0.5,
+    "maintenanceMarginFactor": 0.5,
+    "takerFeeBps": 6,
+    "liquidationPenaltyBps": 100,
+    "spotPoolFeeBps": 30,
+    "maxTokensPerPosition": 100,
+    "makerFillWindowMinutes": 15,
+    "forcedExitDelayDays": 7,
+    "forcedExitBondEth": "0.001",
+    "oracleMaxAgeSeconds": 60,
+    "oracleDeadAfterDays": 14,
+    "maxFundingPerHourPct": 0.01,
+    "defaultSlippagePct": 0.5,
+    "publicAggregate": { "minFills": 10, "minMakers": 2, "maxSingleFillShare": 0.25, "sigFigs": 2 }
+  }
+}

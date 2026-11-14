@@ -1,0 +1,1508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Velum | Private stock trading on Robinhood Chain</title>
+<meta name="description" content="Velum is a private exchange for tokenized stocks. Spot and perps with balances, positions and P&L encrypted end to end.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inter+Tight:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#08090B; --bg1:#0D0E11; --bg2:#131418; --bg3:#1A1C21;
+  --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.11); --line3:rgba(255,255,255,.17);
+  --text:#F4F5F6; --muted:#8B9099; --faint:#5E626A;
+  --acc:#8F96FF; --acc-bg:rgba(143,150,255,.12); --acc-deep:#6E79F3;
+  --up:#3FCF8E; --down:#F25C61; --up-bg:rgba(63,207,142,.12); --down-bg:rgba(242,92,97,.12);
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --display:"Inter Tight","Inter",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.6;font-feature-settings:"cv11","ss01","ss03";-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;min-height:100vh;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,select,output{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
+::selection{background:var(--acc-bg)}
+.num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum","cv11"}
+.up{color:var(--up)!important} .down{color:var(--down)!important}
+.muted{color:var(--muted)} .faint{color:var(--faint)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+.flash-up{animation:fu .6s ease} .flash-down{animation:fd .6s ease}
+@keyframes fu{0%{color:var(--up)}100%{color:inherit}}
+@keyframes fd{0%{color:var(--down)}100%{color:inherit}}
+.pv{transition:filter .25s}
+body.veiled .pv,.veil .pv,.pvd{filter:blur(6px);user-select:none}
+
+/* buttons + controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:9px;font-weight:500;font-size:14px;white-space:nowrap;transition:background .15s,border-color .15s,opacity .15s,color .15s}
+.btn-white{background:#F4F5F6;color:#08090B}
+.btn-white:hover{background:#fff}
+.btn-dark{background:var(--bg3);color:var(--text);border:1px solid var(--line2)}
+.btn-dark:hover{border-color:var(--line3);background:#1F2127}
+.btn-ghost{color:var(--muted)}
+.btn-ghost:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.btn-up{background:var(--up);color:#03140B}
+.btn-down{background:var(--down);color:#fff}
+.btn-up:hover,.btn-down:hover{opacity:.92}
+.btn-lg{height:44px;padding:0 20px;font-size:15px;border-radius:10px}
+.btn-sm{height:30px;padding:0 11px;font-size:13px;border-radius:8px}
+.btn-block{width:100%;height:44px;margin-top:16px;font-size:14.5px;border-radius:10px}
+.btn[disabled]{opacity:.38;cursor:not-allowed}
+.btn svg{width:15px;height:15px}
+.iconbtn{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;color:var(--muted);border:1px solid var(--line2);background:var(--bg2)}
+.iconbtn:hover{color:var(--text);border-color:var(--line3)}
+.iconbtn svg{width:17px;height:17px}
+.iconbtn[aria-pressed=true]{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent);background:var(--acc-bg)}
+.seg{display:inline-flex;gap:2px;padding:3px;border-radius:9px;background:var(--bg2);border:1px solid var(--line)}
+.seg button{height:28px;padding:0 11px;border-radius:6px;color:var(--muted);font-size:13px;font-weight:500;transition:background .12s,color .12s}
+.seg button:hover{color:var(--text)}
+.seg button.on{background:var(--bg3);color:var(--text);box-shadow:0 0 0 1px var(--line2)}
+.seg.full{display:flex;width:100%}.seg.full button{flex:1}
+.sides{display:grid;grid-template-columns:1fr 1fr;gap:3px;padding:3px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+.sides button{height:36px;border-radius:7px;font-weight:500;font-size:14px;color:var(--muted);transition:background .12s,color .12s}
+.sides button:hover{color:var(--text)}
+.sides button.on.long{background:var(--up-bg);color:var(--up)}
+.sides button.on.short{background:var(--down-bg);color:var(--down)}
+.badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:6px;font-size:12px;font-weight:500;background:rgba(255,255,255,.06);color:var(--muted);white-space:nowrap}
+.badge.acc{background:var(--acc-bg);color:var(--acc)}
+.badge.up{background:var(--up-bg)} .badge.down{background:var(--down-bg)}
+.badge .d{width:6px;height:6px;border-radius:50%;background:currentColor}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(180deg,#24262C,#17181C);border:1px solid var(--line2);display:grid;place-items:center;font-size:12.5px;font-weight:600;color:#D9DBE0;flex:none}
+.av.sm{width:24px;height:24px;font-size:11px}
+.av.lg{width:36px;height:36px;font-size:14px}
+.card{background:var(--bg1);border:1px solid var(--line);border-radius:14px}
+
+/* nav */
+.nav{position:sticky;top:0;z-index:50;background:rgba(8,9,11,.74);backdrop-filter:saturate(1.6) blur(14px);-webkit-backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--line)}
+.nav-in{height:60px;display:flex;align-items:center;gap:26px;max-width:1480px;margin:0 auto;padding:0 24px}
+.brand{display:flex;align-items:center;gap:9px;font-family:var(--display);font-weight:600;font-size:17px;letter-spacing:-.02em}
+.brand svg{width:22px;height:22px}
+.nlinks{display:flex;gap:2px}
+.nlinks a{padding:6px 11px;border-radius:8px;color:var(--muted);font-size:14px;font-weight:500;transition:color .12s,background .12s}
+.nlinks a:hover{color:var(--text)}
+.nlinks a.on{color:var(--text);background:rgba(255,255,255,.05)}
+.nright{margin-left:auto;display:flex;align-items:center;gap:8px}
+.walletbtn{display:inline-flex;align-items:center;gap:9px;height:36px;padding:0 12px 0 6px;border-radius:9px;background:var(--bg2);border:1px solid var(--line2);font-size:13.5px;font-weight:500}
+.walletbtn:hover{border-color:var(--line3)}
+.walletbtn i{width:24px;height:24px;border-radius:6px;background:linear-gradient(135deg,var(--acc),#C2B8FF)}
+.walletbtn .b{color:var(--muted)}
+
+/* hero */
+.hero{position:relative;text-align:center;padding:104px 0 0;isolation:isolate}
+.hero::before{content:"";position:absolute;left:50%;top:-180px;width:1200px;height:760px;transform:translateX(-50%);background:radial-gradient(closest-side,rgba(110,121,243,.20),rgba(110,121,243,.06) 55%,transparent);pointer-events:none;z-index:-1}
+.hero::after{content:"";position:absolute;left:50%;top:0;width:1px;height:92px;transform:translateX(-50%);background:linear-gradient(180deg,transparent,rgba(143,150,255,.55),transparent);z-index:-1}
+.pill{display:inline-flex;align-items:center;gap:10px;height:32px;padding:0 12px 0 4px;border-radius:999px;border:1px solid var(--line2);background:rgba(255,255,255,.025);font-size:13px;color:var(--muted);transition:border-color .15s}
+.pill:hover{border-color:var(--line3);color:var(--text)}
+.pill .badge{border-radius:999px;height:24px;padding:0 9px}
+.pill svg{width:13px;height:13px}
+.pill{max-width:100%}.pill .pt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.hero h1{font-family:var(--display);font-weight:600;font-size:clamp(44px,6.6vw,82px);letter-spacing:-.048em;line-height:1.02;margin:26px auto 0;max-width:13.5ch;background:linear-gradient(180deg,#FFFFFF 25%,#9EA3AD);-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:4px}
+.hero .lead{max-width:620px;margin:22px auto 0;font-size:18px;color:var(--muted);line-height:1.55}
+.hero .ctas{display:flex;justify-content:center;gap:10px;margin-top:34px;flex-wrap:wrap}
+.frame-wrap{perspective:2400px;max-width:1360px;margin:76px auto 0;padding:0 20px}
+.frame{border-radius:18px;border:1px solid var(--line2);background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.012));padding:7px;box-shadow:0 60px 160px -50px rgba(110,121,243,.42),0 30px 60px -30px rgba(0,0,0,.9);transform:rotateX(20deg) scale(.94);transform-origin:50% 0;transition:transform 1.4s cubic-bezier(.16,1,.3,1),box-shadow 1.4s}
+.frame.in{transform:none}
+.frame-in{border-radius:12px;background:var(--bg);border:1px solid var(--line);padding:14px;overflow:hidden;text-align:left}
+.frame-cap{text-align:center;margin-top:18px;font-size:13px;color:var(--faint)}
+
+/* stats */
+.stats4{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin-top:110px}
+.stats4>div{padding:30px 26px;border-left:1px solid var(--line)}
+.stats4>div:first-child{border-left:0}
+.stats4 b{display:block;font-family:var(--display);font-size:34px;font-weight:600;letter-spacing:-.035em;line-height:1.1}
+.stats4 small{display:block;margin-top:6px;color:var(--muted);font-size:14px}
+
+/* sections */
+.sec{padding-top:150px}
+.eyebrow{color:var(--acc);font-size:14px;font-weight:500}
+.sec h2{font-family:var(--display);font-weight:600;font-size:clamp(34px,4.2vw,54px);letter-spacing:-.042em;line-height:1.05;margin-top:12px;max-width:17ch}
+.sec .lead{color:var(--muted);font-size:17px;max-width:56ch;margin-top:16px;line-height:1.6}
+.sec-top{display:flex;justify-content:space-between;align-items:flex-end;gap:30px;flex-wrap:wrap}
+
+/* bento */
+.bento{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:52px}
+.bc{background:var(--bg1);border:1px solid var(--line);border-radius:16px;padding:26px;display:flex;flex-direction:column;min-height:320px;overflow:hidden;position:relative;transition:border-color .2s}
+.bc:hover{border-color:var(--line2)}
+.bc.span2{grid-column:span 2} .bc.span3{grid-column:span 3}
+.bc h3{font-size:16px;font-weight:600;letter-spacing:-.01em}
+.bc p{color:var(--muted);font-size:14.5px;margin-top:6px;max-width:44ch;line-height:1.55}
+.bc .vis{margin-top:auto;padding-top:26px}
+.mini{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:16px}
+.mini-h{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
+.mini-big{font-family:var(--display);font-size:34px;font-weight:600;letter-spacing:-.03em;margin:8px 0 6px}
+.mini-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line);font-size:13.5px}
+.mini-row b{font-weight:500}
+.mini-row small{color:var(--muted);font-size:12.5px}
+.mini-row .v{margin-left:auto}
+.bc.reveal .pvd{transition:filter .35s}
+.bc.reveal:hover .pvd,.bc.reveal.open .pvd{filter:none}
+.hinttag{position:absolute;right:20px;top:22px}
+.kv2{display:flex;justify-content:space-between;font-size:13.5px;padding:7px 0;color:var(--muted)}
+.kv2 b{color:var(--text);font-weight:500}
+.lbar{height:4px;border-radius:4px;background:var(--bg3);margin:10px 0 8px;position:relative}
+.lbar i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--acc)}
+.lbar i::after{content:"";position:absolute;right:-7px;top:-5px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(143,150,255,.2)}
+.steps-mini{display:grid;gap:8px}
+.steps-mini div{display:flex;align-items:center;gap:10px;font-size:13.5px;padding:10px 12px;border-radius:10px;background:var(--bg2);border:1px solid var(--line)}
+.steps-mini .ck{width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:var(--up-bg);color:var(--up)}
+.steps-mini .ck svg{width:11px;height:11px}
+.steps-mini small{margin-left:auto;color:var(--faint);font-size:12.5px}
+.bignum{font-family:var(--display);font-size:64px;font-weight:600;letter-spacing:-.05em;line-height:1}
+.bignote{color:var(--muted);font-size:13.5px;margin-top:6px}
+.devgrid{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:30px;align-items:start}
+.ep{display:flex;gap:14px;align-items:baseline;padding:11px 0;border-top:1px solid var(--line);font-size:14px}
+.ep code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--text);white-space:nowrap;min-width:126px}
+.ep span{color:var(--muted)}
+.code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.8px;line-height:1.75;padding:20px 22px;border-radius:12px;background:var(--bg);border:1px solid var(--line);white-space:pre;overflow:auto;color:#C9CCD3}
+.code .c{color:var(--faint)} .code .k{color:#C3A6FF} .code .s{color:#9BE3BF} .code .f{color:#8FB8FF}
+
+/* steps */
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:28px;margin-top:52px}
+.step{border-top:1px solid var(--line2);padding-top:22px;position:relative}
+.step::before{content:"";position:absolute;left:0;top:-1px;width:34px;height:1px;background:var(--acc)}
+.step small{font-size:13px;color:var(--acc);font-weight:500}
+.step h3{font-size:18px;font-weight:600;letter-spacing:-.015em;margin-top:10px}
+.step p{color:var(--muted);font-size:14.5px;margin-top:8px;line-height:1.55}
+
+/* privacy duo */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:52px}
+.pcard{padding:26px}
+.pcard .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.pcard .hd b{font-size:15.5px;font-weight:600}
+.prow{display:flex;justify-content:space-between;align-items:center;height:48px;border-top:1px solid var(--line);font-size:14.5px}
+.prow span{color:var(--muted)}
+.prow b{font-weight:500}
+.hidden-bar{display:inline-block;width:84px;height:10px;border-radius:5px;background:var(--bg3)}
+
+/* tables */
+.tbl-wrap{overflow-x:auto;position:relative}
+.tbl{width:100%;border-collapse:collapse;font-size:14px}
+.tbl th{text-align:left;font-weight:500;color:var(--faint);font-size:12.5px;padding:11px 16px;white-space:nowrap}
+.tbl td{padding:13px 16px;border-top:1px solid var(--line);white-space:nowrap}
+.tbl th.r,.tbl td.r{text-align:right}
+.tbl tbody tr{transition:background .12s}
+.tbl tbody tr:hover{background:rgba(255,255,255,.015)}
+.mcell{display:flex;align-items:center;gap:11px}
+.mcell b{display:block;font-weight:500}
+.mcell small{display:block;color:var(--muted);font-size:12.5px;line-height:1.3}
+.rowbtns{display:inline-flex;gap:6px}
+.chainrow td{background:rgba(143,150,255,.05);white-space:normal}
+.chainbox{display:flex;gap:28px;flex-wrap:wrap;font-size:12.5px;color:var(--muted)}
+.chainbox b{display:block;color:var(--text);font-weight:500;font-size:13px}
+.spark{width:110px;height:30px;display:block}
+.spark path{fill:none;stroke-width:1.5}
+.empty{padding:36px 20px;text-align:center;color:var(--muted);display:grid;justify-items:center;gap:12px;font-size:14px}
+.empty p{max-width:44ch}
+
+/* faq + cta + footer */
+.faqgrid{display:grid;grid-template-columns:.8fr 1.2fr;gap:40px;align-items:start}
+.faq details{border-top:1px solid var(--line);padding:20px 0}
+.faq details:last-child{border-bottom:1px solid var(--line)}
+.faq summary{cursor:pointer;list-style:none;font-size:16px;font-weight:500;display:flex;justify-content:space-between;align-items:center;gap:20px}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::after{content:"";width:10px;height:10px;flex:none;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg) translate(-2px,-2px);transition:transform .2s}
+.faq details[open] summary::after{transform:rotate(-135deg) translate(-2px,-2px)}
+.faq details p{color:var(--muted);margin-top:10px;max-width:64ch;font-size:15px;line-height:1.6}
+.cta{position:relative;text-align:center;margin-top:160px;padding:90px 20px;border-top:1px solid var(--line);isolation:isolate;overflow:hidden}
+.cta::before{content:"";position:absolute;left:50%;top:100%;width:1000px;height:700px;transform:translate(-50%,-55%);background:radial-gradient(closest-side,rgba(110,121,243,.22),transparent);z-index:-1}
+.cta h2{font-family:var(--display);font-weight:600;font-size:clamp(34px,4.6vw,58px);letter-spacing:-.045em;line-height:1.04;max-width:16ch;margin:0 auto}
+.cta p{color:var(--muted);font-size:17px;margin:16px auto 0;max-width:46ch}
+.cta .ctas{display:flex;justify-content:center;gap:10px;margin-top:30px;flex-wrap:wrap}
+.foot{border-top:1px solid var(--line);padding:44px 0 56px}
+.foot-in{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:30px}
+.foot p{color:var(--faint);font-size:13.5px;margin-top:12px;max-width:40ch}
+.foot h4{font-size:13.5px;font-weight:500;margin-bottom:12px}
+.foot a{display:block;color:var(--muted);font-size:14px;padding:3px 0}
+.foot a:hover{color:var(--text)}
+
+/* app */
+#app{padding-bottom:40px}
+#landing{overflow-x:clip}
+body.in-app #landing{display:none}
+body:not(.in-app) #app{display:none}
+.appw{max-width:1480px;margin:0 auto;padding:18px 24px 0}
+.strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:12px;scrollbar-width:none}
+.strip::-webkit-scrollbar{display:none}
+.mchip{flex:none;display:flex;align-items:center;gap:10px;height:46px;padding:0 14px 0 8px;border-radius:10px;background:var(--bg1);border:1px solid var(--line);font-size:13.5px;transition:border-color .12s,background .12s}
+.mchip:hover{border-color:var(--line2)}
+.mchip.on{background:var(--bg2);border-color:var(--line3)}
+.mchip b{font-weight:600}
+.mchip .p{color:var(--muted)}
+.tr-grid{display:grid;grid-template-columns:minmax(0,1fr) 356px;gap:12px;align-items:start}
+.lcol,.rcol{display:grid;gap:12px;min-width:0;align-content:start;grid-template-columns:minmax(0,1fr)}
+.chartbox{padding:16px 16px 8px;min-width:0}
+.ch-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ch-id{display:flex;align-items:center;gap:11px;margin-right:6px}
+.ch-id b{display:block;font-size:16px;font-weight:600;letter-spacing:-.01em}
+.ch-id small{display:block;color:var(--muted);font-size:12.5px;line-height:1.3}
+.ch-top .tf{margin-left:auto}
+.ch-stats{display:flex;gap:30px;margin:16px 2px 0;flex-wrap:wrap}
+.ch-stats small{display:block;color:var(--faint);font-size:12px}
+.ch-stats b{font-weight:500;font-size:14px}
+.ch-stats b.big{font-family:var(--display);font-size:24px;font-weight:600;letter-spacing:-.025em}
+.ohlc{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--faint);margin:14px 2px 0}
+.ohlc b{color:var(--muted);font-weight:500}
+.chart{position:relative;height:420px;margin-top:4px}
+.chart canvas{display:block;width:100%;height:100%;cursor:crosshair}
+.ticket{padding:16px}
+.fl{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;color:var(--muted);margin:16px 1px 8px}
+.fl b{color:var(--text);font-weight:500}
+.inp{display:flex;align-items:center;gap:10px;height:48px;padding:0 10px 0 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line2);transition:border-color .15s,box-shadow .15s}
+.inp:focus-within{border-color:color-mix(in srgb,var(--acc) 60%,transparent);box-shadow:0 0 0 3px var(--acc-bg)}
+.inp input,.inp output{flex:1;min-width:0;width:100%;background:none;border:0;outline:0;font-size:18px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.inp output{color:var(--muted)}
+.unit{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--muted);flex:none}
+.inp.sm{height:42px}
+.inp.sm input{font-size:15px}
+.pcts{margin-top:8px}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:4px;background:linear-gradient(90deg,var(--acc) var(--p,25%),var(--bg3) var(--p,25%));outline:0;margin:8px 0}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(143,150,255,.22),0 2px 6px rgba(0,0,0,.5);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border:0;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(143,150,255,.22);cursor:pointer}
+input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--acc)}
+.ticks{display:flex;justify-content:space-between;font-size:11.5px;color:var(--faint)}
+.sumbox{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);display:grid;gap:9px}
+.sumbox>div{display:flex;justify-content:space-between;gap:10px;font-size:13px}
+.sumbox>div>span{color:var(--muted)}
+.sumbox b{font-weight:500;text-align:right;font-variant-numeric:tabular-nums}
+.hint{font-size:12.5px;color:var(--down);margin-top:8px;text-align:center}
+.hint:empty{display:none}
+.note{display:flex;gap:8px;margin-top:12px;font-size:12.5px;color:var(--faint);line-height:1.5}
+.note svg{width:14px;height:14px;flex:none;margin-top:2px}
+.posbox{min-width:0}
+.ptabs{display:flex;gap:2px;padding:10px 10px 0}
+.ptabs button{height:30px;padding:0 11px;border-radius:7px;color:var(--muted);font-weight:500;font-size:13px}
+.ptabs button.on{background:var(--bg3);color:var(--text)}
+.count{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;border-radius:5px;background:rgba(255,255,255,.07);font-size:11px;margin-left:6px}
+.acct{padding:16px}
+.acct h3{font-size:13.5px;font-weight:500;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+.acct .bigv{font-family:var(--display);font-size:28px;font-weight:600;letter-spacing:-.03em;margin:6px 0 8px}
+.acct .r{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);padding:6px 0;border-top:1px solid var(--line)}
+.acct .r b{color:var(--text);font-weight:500}
+.lastc{margin-top:10px;padding:12px;border-radius:10px;background:var(--bg2);border:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.lastc b{display:block;color:var(--text);font-weight:500;font-size:13px;margin-top:2px}
+.lastc code{display:block;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--faint);margin-top:4px}
+
+/* app pages */
+.vhead{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;margin:22px 0 20px;flex-wrap:wrap}
+.vtitle{font-family:var(--display);font-size:30px;font-weight:600;letter-spacing:-.035em;line-height:1.1}
+.vsub{color:var(--muted);margin-top:6px;max-width:62ch;font-size:14.5px}
+.search{display:flex;align-items:center;gap:9px;height:38px;min-width:260px;padding:0 12px;border-radius:9px;background:var(--bg2);border:1px solid var(--line2)}
+.search:focus-within{border-color:color-mix(in srgb,var(--acc) 60%,transparent)}
+.search svg{width:15px;height:15px;color:var(--faint)}
+.search input{background:none;border:0;outline:0;flex:1;min-width:0;font-size:14px}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:12px}
+.stat{padding:16px 18px}
+.stat small{display:block;color:var(--muted);font-size:12.5px}
+.stat b{display:block;font-family:var(--display);font-weight:600;font-size:24px;letter-spacing:-.03em;margin-top:4px}
+.swap-wrap{max-width:460px;margin:0 auto 20px}
+.swap-wrap .vhead{justify-content:center;text-align:center}
+.swap-wrap .vsub{margin-left:auto;margin-right:auto}
+.swapcard{padding:12px}
+.sbox{padding:14px 16px;border-radius:12px;background:var(--bg2);border:1px solid var(--line)}
+.sbox .lb{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted)}
+.sbox .lb b{color:var(--text);font-weight:500}
+.srow{display:flex;align-items:center;gap:12px;margin-top:6px}
+.srow input,.srow output{flex:1;min-width:0;width:100%;background:none;border:0;outline:0;font-family:var(--display);font-size:30px;font-weight:500;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.srow output{color:var(--muted)}
+.sel{appearance:none;-webkit-appearance:none;height:36px;padding:0 30px 0 12px;border-radius:9px;background:var(--bg3) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='none' stroke='%238B9099' stroke-width='1.6'%3E%3Cpath d='M2 3.5 5 6.5 8 3.5'/%3E%3C/svg%3E") no-repeat right 11px center;border:1px solid var(--line2);font-weight:500;font-size:14px;cursor:pointer}
+.sel option{background:var(--bg1);color:var(--text)}
+.sel.full{width:100%;height:42px;background-color:var(--bg2)}
+.flipbtn{display:grid;place-items:center;width:34px;height:34px;margin:-8px auto;position:relative;z-index:2;border-radius:9px;background:var(--bg1);border:1px solid var(--line2);color:var(--muted)}
+.flipbtn:hover{color:var(--text)}
+.flipbtn svg{width:15px;height:15px}
+.route{display:inline-flex;align-items:center;gap:4px}
+.route svg{width:10px;height:10px;color:var(--faint)}
+.pf{display:grid;gap:12px;grid-template-columns:minmax(0,1fr);padding-bottom:20px}
+.pf>*{min-width:0}
+.pf-hero{padding:24px;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
+.pf-big{font-family:var(--display);font-weight:600;font-size:clamp(36px,4.6vw,52px);letter-spacing:-.045em;line-height:1.05;margin-top:6px}
+.pf-sub{margin-top:12px;display:flex;gap:10px;align-items:center;color:var(--muted);font-size:13px;flex-wrap:wrap}
+.paddr{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 4px 0 10px;border-radius:7px;background:var(--bg2);border:1px solid var(--line);font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text)}
+.icb{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;color:var(--muted)}
+.icb:hover{color:var(--text);background:rgba(255,255,255,.06)}
+.icb svg{width:12px;height:12px}
+.pf-actions{display:flex;gap:8px;flex-wrap:wrap}
+.pf-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:12px}
+.ph{font-size:14.5px;font-weight:600;padding:16px 16px 0}
+.ph-sub{color:var(--muted);font-size:12.5px;padding:2px 16px 6px}
+.act{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:12px 16px;border-top:1px solid var(--line)}
+.act .ic{width:28px;height:28px;border-radius:8px;background:var(--bg2);border:1px solid var(--line);display:grid;place-items:center;color:var(--muted)}
+.act .ic svg{width:14px;height:14px}
+.act b{display:block;font-weight:500;font-size:13.5px}
+.act small{display:block;color:var(--muted);font-size:12px}
+.pools{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.pool{padding:18px;display:grid;gap:14px}
+.pool-h{display:flex;align-items:center;gap:10px}
+.pool-h b{font-weight:600;white-space:nowrap}
+.pool-h .badge{margin-left:auto}
+.pair{display:inline-flex}.pair .av+.av{margin-left:-7px;box-shadow:0 0 0 2px var(--bg1)}
+.kv{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.kv>div{padding:10px 12px;border-radius:9px;background:var(--bg2);border:1px solid var(--line)}
+.kv small{display:block;color:var(--muted);font-size:12px}
+.kv b{font-weight:500;font-size:15px;font-variant-numeric:tabular-nums}
+.pool .rowbtns{display:flex}.pool .rowbtns .btn{flex:1}
+.mk-grid{display:grid;grid-template-columns:400px minmax(0,1fr);gap:12px;align-items:start;padding-bottom:20px}
+.form{padding:18px}
+.form h2{font-size:15px;font-weight:600}
+.row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.stack2{display:grid;gap:12px;grid-template-columns:minmax(0,1fr)}
+.stack2>*{min-width:0}
+.boxnote{display:flex;gap:9px;margin-top:12px;padding:11px 13px;border-radius:10px;background:var(--bg2);border:1px solid var(--line);font-size:13px;color:var(--muted);line-height:1.5}
+.boxnote svg{width:15px;height:15px;flex:none;margin-top:1px;color:var(--acc)}
+.boxnote.warn svg{color:#F2B35C}
+
+/* modal + toast */
+.modal-bg{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;place-items:center;padding:20px}
+.modal-bg.open{display:grid}
+.modal{width:min(440px,100%);max-height:calc(100vh - 40px);overflow:auto;background:var(--bg1);border:1px solid var(--line2);border-radius:16px;padding:22px;box-shadow:0 40px 120px -20px rgba(0,0,0,.85);animation:pop .18s ease}
+@keyframes pop{from{opacity:0;transform:translateY(6px) scale(.99)}}
+.m-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px}
+.m-head h3{font-family:var(--display);font-size:19px;font-weight:600;letter-spacing:-.02em}
+.m-text{color:var(--muted);font-size:14px;line-height:1.55}
+.xbtn{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--muted)}
+.xbtn:hover{background:rgba(255,255,255,.06);color:var(--text)}
+.xbtn svg{width:14px;height:14px}
+.wopt{display:flex;gap:12px;align-items:center;width:100%;padding:12px;border-radius:11px;background:var(--bg2);border:1px solid var(--line);text-align:left;margin-top:8px;transition:border-color .12s}
+.wopt:hover{border-color:var(--line3)}
+.wopt .ic{width:36px;height:36px;border-radius:9px;background:var(--bg3);display:grid;place-items:center;color:var(--text)}
+.wopt .ic svg{width:17px;height:17px}
+.wopt b{display:block;font-weight:500;font-size:14px}
+.wopt small{display:block;color:var(--muted);font-size:12.5px}
+.flow{list-style:none;margin-top:4px}
+.flow li{display:grid;grid-template-columns:24px 1fr;gap:12px;padding:10px 0;align-items:start}
+.flow .ic{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--line3);display:grid;place-items:center;margin-top:1px}
+.flow .ic svg{width:11px;height:11px}
+.flow li.active .ic{border-color:var(--acc);border-top-color:transparent;animation:spin .8s linear infinite}
+.flow li.done .ic{background:var(--up);border-color:var(--up);color:#03140B}
+.flow .t{font-weight:500;font-size:14px}
+.flow li:not(.active):not(.done) .t{color:var(--faint)}
+.flow .d{color:var(--faint);font-size:12.5px}
+.bar{height:3px;border-radius:3px;background:var(--bg3);margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--acc);border-radius:3px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.receipt{margin-top:10px;border-radius:11px;background:var(--bg2);border:1px solid var(--line);padding:13px 15px;display:grid;gap:8px;font-size:13px}
+.receipt>div{display:flex;justify-content:space-between;gap:12px}
+.receipt>div>span{color:var(--muted)}
+.receipt b{font-weight:500;text-align:right;font-variant-numeric:tabular-nums}
+.toasts{position:fixed;right:20px;bottom:20px;z-index:70;display:grid;gap:8px}
+.toast{display:flex;align-items:center;gap:9px;background:var(--bg2);border:1px solid var(--line2);padding:11px 15px;border-radius:10px;font-size:13.5px;font-weight:500;box-shadow:0 20px 40px -12px rgba(0,0,0,.6);animation:pop .18s}
+.toast svg{width:15px;height:15px;color:var(--up)}
+
+/* responsive */
+@media (max-width:1100px){
+  .bento{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .bc.span3{grid-column:span 2}
+  .devgrid{grid-template-columns:minmax(0,1fr)}
+  .steps{grid-template-columns:repeat(2,1fr)}
+  .mk-grid{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:960px){
+  .nlinks.land{display:none}
+  .hide-md{display:none}
+  .tr-grid{display:flex;flex-direction:column;gap:12px}
+  .lcol,.rcol{display:contents}
+  .chartbox{order:1}.ticket{order:2}.posbox{order:3}.acct{order:4}
+  .duo,.pf-grid,.faqgrid{grid-template-columns:minmax(0,1fr)}
+  .stats4{grid-template-columns:repeat(2,1fr)}
+  .stats4>div:nth-child(3){border-left:0}
+  .stats4>div:nth-child(n+3){border-top:1px solid var(--line)}
+  .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .foot-in{grid-template-columns:1fr 1fr}
+  .nlinks.tabs{position:fixed;left:10px;right:10px;bottom:10px;z-index:55;justify-content:space-between;padding:4px;border-radius:12px;background:rgba(13,14,17,.94);border:1px solid var(--line2);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+  .nlinks.tabs a{flex:1;text-align:center;padding:8px 2px;font-size:12.5px}
+  body.in-app{padding-bottom:64px}
+  .nav{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(8,9,11,.95)}
+  .frame{transform:none}
+}
+@media (max-width:640px){
+  .wrap{padding-left:18px;padding-right:18px}
+  .nav-in{padding:0 14px;gap:12px}
+  .appw{padding:12px 12px 0}
+  .hide-sm{display:none}
+  .hero{padding-top:64px}
+  .hero::after{display:none}
+  .pill{font-size:12.5px}
+  .hero .lead{font-size:16px}
+  .hero .ctas .btn{flex:1}
+  .frame-wrap{padding:0 10px;margin-top:48px}
+  .frame-in{padding:10px}
+  .bento{grid-template-columns:minmax(0,1fr)}
+  .bc.span2,.bc.span3{grid-column:auto}
+  .bc{min-height:0}
+  .steps{grid-template-columns:minmax(0,1fr)}
+  .chart{height:300px}
+  .ch-top .tf{margin-left:0}
+  .ch-stats{gap:18px}
+  .search{min-width:0;width:100%}
+  .row2{grid-template-columns:minmax(0,1fr)}
+  .stats4 b{font-size:28px}
+  .sec{padding-top:110px}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}.frame{transform:none}}
+</style>
+</head>
+<body>
+
+<header class="nav"><div class="nav-in" id="nav-in"></div></header>
+
+<!-- ===================== LANDING ===================== -->
+<div id="landing">
+  <section class="hero">
+    <div class="wrap">
+      <a class="pill" href="#/app/trade"><span class="badge acc">Testnet</span><span class="pt">Private perps are live on Robinhood Chain</span><span id="pill-chev"></span></a>
+      <h1>Trade stocks onchain, privately.</h1>
+      <p class="lead">Velum is a private exchange for tokenized stocks. Spot and perps, with your balance, positions and P&amp;L encrypted end to end.</p>
+      <div class="ctas"><a class="btn btn-white btn-lg" href="#/app/trade">Start trading</a><a class="btn btn-dark btn-lg" href="#how">How it works</a></div>
+    </div>
+    <div class="frame-wrap"><div class="frame" id="frame"><div class="frame-in" id="hero-term"></div></div></div>
+    <p class="frame-cap">Live demo with test prices. Connect a test wallet to place a private trade.</p>
+  </section>
+
+  <div class="wrap">
+    <div class="stats4">
+      <div><b class="num">10</b><small>Stock markets, spot and perps</small></div>
+      <div><b class="num">5×</b><small>Max leverage, long or short</small></div>
+      <div><b class="num">0</b><small>Admin keys that can touch funds</small></div>
+      <div><b class="num">~2s</b><small>To prove a trade in your browser</small></div>
+    </div>
+
+    <section class="sec" id="features">
+      <span class="eyebrow">Product</span>
+      <h2>Everything a trader needs. Nothing anyone else can see.</h2>
+      <div class="bento">
+        <div class="bc span2 reveal" id="bc-reveal">
+          <span class="badge hinttag">Hover to reveal</span>
+          <h3>Private by default</h3>
+          <p>Your balance, positions and profit live in encrypted notes that only your device can read. Everyone else sees a commitment.</p>
+          <div class="vis"><div class="mini">
+            <div class="mini-h"><span>Private balance</span><span class="badge acc"><span class="d"></span>Encrypted</span></div>
+            <div class="mini-big num pvd" id="bc-bal">$24,180.52</div>
+            <div class="mini-row"><span class="av sm">T</span><div><b>TSLA</b> <small>Long 2×</small></div><b class="v num up pvd" id="bc-pl1">+$231.06</b></div>
+            <div class="mini-row"><span class="av sm">N</span><div><b>NVDA</b> <small>Spot</small></div><b class="v num pvd">$1,864.00</b></div>
+            <div class="mini-row"><span class="av sm">A</span><div><b>AMZN</b> <small>Short 3×</small></div><b class="v num down pvd">-$12.40</b></div>
+          </div></div>
+        </div>
+        <div class="bc">
+          <h3>Long or short, up to 5×</h3>
+          <p>Post margin, pick a side, and a maker's standing offer fills you. Close on your own at any time.</p>
+          <div class="vis"><div class="mini">
+            <div class="sides" style="pointer-events:none"><button class="on long" tabindex="-1">Long</button><button tabindex="-1">Short</button></div>
+            <div class="kv2" style="margin-top:12px"><span>Leverage</span><b class="num">3.0×</b></div>
+            <div class="lbar"><i style="width:50%"></i></div>
+            <div class="kv2"><span>Position</span><b class="num">7.70 TSLA</b></div>
+            <div class="kv2"><span>Liquidation</span><b class="num">290.11</b></div>
+          </div></div>
+        </div>
+        <div class="bc">
+          <h3>Proofs made on your device</h3>
+          <p>Your browser proves each trade follows the rules. The chain checks the math, never the trade.</p>
+          <div class="vis"><div class="steps-mini" id="steps-mini"></div></div>
+        </div>
+        <div class="bc">
+          <h3>Nobody can freeze your funds</h3>
+          <p>No admin key, no pause on balances. If services go quiet, a forced exit settles your position.</p>
+          <div class="vis"><div style="display:flex;gap:28px"><div><div class="bignum">0</div><div class="bignote">admin keys</div></div><div><div class="bignum">7d</div><div class="bignote">to exit on your own</div></div></div></div>
+        </div>
+        <div class="bc">
+          <h3>Earn from every swap</h3>
+          <p>Add to a pool and keep 0.30% of each trade through it. Your share stays private.</p>
+          <div class="vis"><div class="mini"><div class="mini-h"><span>TSLA / USDG pool</span><span class="badge up">14.2% est. APR</span></div><svg class="spark" data-spark="TSLA" viewBox="0 0 300 60" preserveAspectRatio="none" style="width:100%;height:60px;margin-top:12px" aria-hidden="true"><path/></svg></div></div>
+        </div>
+        <div class="bc span3" id="developers">
+          <div class="devgrid">
+            <div>
+              <h3>Built for builders</h3>
+              <p>Read markets with a plain HTTP API. Make proofs on the client with the SDK. The relayer submits them and never holds a key.</p>
+              <div style="margin-top:22px">
+                <div class="ep"><code>GET /v1/markets</code><span>Prices, funding and open interest</span></div>
+                <div class="ep"><code>GET /v1/pools</code><span>Pool list with rounded sizes</span></div>
+                <div class="ep"><code>POST /v1/quote</code><span>Swap estimate</span></div>
+                <div class="ep"><code>POST /v1/relay</code><span>Submit a proof you already made</span></div>
+              </div>
+            </div>
+<pre class="code" aria-label="Code example"><span class="k">import</span> { openAccount, proveTrade } <span class="k">from</span> <span class="s">"@velum/sdk"</span>;
+
+<span class="c">// One wallet signature derives keys on the client.</span>
+<span class="k">const</span> account = <span class="k">await</span> <span class="f">openAccount</span>(signature);
+
+<span class="c">// The proof shows the trade is valid without revealing it.</span>
+<span class="k">const</span> proof = <span class="k">await</span> <span class="f">proveTrade</span>(account, {
+  market: <span class="s">"TSLA"</span>, side: <span class="s">"long"</span>, size: <span class="s">500</span>, leverage: <span class="s">2</span>,
+});
+
+<span class="k">await</span> relay.<span class="f">submit</span>(proof); <span class="c">// relayer pays gas</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="how">
+      <span class="eyebrow">How it works</span>
+      <h2>From wallet to private position in four steps.</h2>
+      <div class="steps">
+        <div class="step"><small>Step 1</small><h3>Shield</h3><p>Move USDG or stock tokens from your wallet into your private balance. This deposit is public.</p></div>
+        <div class="step"><small>Step 2</small><h3>Prove</h3><p>Pick a trade. Your browser builds a zero-knowledge proof that it follows the rules.</p></div>
+        <div class="step"><small>Step 3</small><h3>Relay</h3><p>A relayer submits the proof and pays gas, so your wallet never shows up on the trade.</p></div>
+        <div class="step"><small>Step 4</small><h3>Settle</h3><p>The contract checks the proof and updates your encrypted notes. Only you can read the result.</p></div>
+      </div>
+    </section>
+
+    <section class="sec" id="privacy">
+      <span class="eyebrow">Privacy</span>
+      <h2>Same trade. Two very different views.</h2>
+      <p class="lead">On a public chain anyone can copy your trades or hunt your liquidation price. Here they can't.</p>
+      <div class="duo">
+        <div class="card pcard"><div class="hd"><b>What everyone sees</b><span class="badge">Public chain</span></div><div id="pub-rows"></div></div>
+        <div class="card pcard"><div class="hd"><b>What you see</b><span class="badge up"><span class="d"></span>Only you</span></div><div id="priv-rows"></div></div>
+      </div>
+    </section>
+
+    <section class="sec" id="markets">
+      <div class="sec-top"><div><span class="eyebrow">Markets</span><h2>Ten stocks. One private balance.</h2></div><a class="btn btn-dark" href="#/app/markets">View all markets</a></div>
+      <div class="card tbl-wrap" style="margin-top:40px"><table class="tbl"><thead><tr><th>Market</th><th class="r">Price</th><th class="r">24h</th><th class="hide-sm">Last hour</th><th class="r hide-sm">Open interest</th><th class="r"><span class="sr">Trade</span></th></tr></thead><tbody id="land-mk"></tbody></table></div>
+    </section>
+
+    <section class="sec" id="faq">
+      <div class="faqgrid">
+        <div><span class="eyebrow">FAQ</span><h2>Questions, answered.</h2></div>
+        <div class="faq">
+          <details open><summary>Is this real money?</summary><p>No. Velum runs on Robinhood Chain testnet. Test tokens have no value, so you can learn how private trading works without risk.</p></details>
+          <details><summary>Can I go long and short?</summary><p>Yes. Perps let you go long or short on each stock with up to 5× leverage. A maker takes the other side, and you can close on your own at any time.</p></details>
+          <details><summary>Who can see my trades?</summary><p>You can. The maker on the other side sees that one position, against a one-time address. Two risk services can read what they need to liquidate. The public only sees that a position changed.</p></details>
+          <details><summary>Is it anonymous?</summary><p>No. Moving tokens in and out is public. If you want deposits harder to link, vary amounts and timing and withdraw to a fresh wallet.</p></details>
+          <details><summary>Can I lose more than my margin?</summary><p>No. Each position has its own margin and losses stop there. You can lose all of it, so start small.</p></details>
+          <details><summary>What if Velum goes offline?</summary><p>Your free balance is yours. You can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after 7 days.</p></details>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="cta">
+    <h2>Your trades are nobody's business.</h2>
+    <p>Get free test USDG from the faucet and make your first private trade in under a minute.</p>
+    <div class="ctas"><a class="btn btn-white btn-lg" href="#/app/trade">Start trading</a><a class="btn btn-dark btn-lg" href="#/app/portfolio">Open portfolio</a></div>
+  </section>
+
+  <footer class="foot"><div class="wrap foot-in">
+    <div><a href="#/" class="brand" id="foot-brand"></a><p>An independent project on Robinhood Chain, not affiliated with Robinhood. Prototype with demo data. Contracts are not audited.</p></div>
+    <div><h4>Product</h4><a href="#/app/trade">Trade</a><a href="#/app/markets">Markets</a><a href="#/app/swap">Swap</a><a href="#/app/liquidity">Earn</a></div>
+    <div><h4>Learn</h4><a href="#how">How it works</a><a href="#privacy">Privacy</a><a href="#faq">FAQ</a></div>
+    <div><h4>Developers</h4><a href="#developers">API</a><a href="#developers">SDK</a><a href="#/">Contact</a></div>
+  </div></footer>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app"><div class="appw" id="app-view"></div></div>
+
+<div class="modal-bg" id="modal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title" id="modal-box"></div></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>
+(() => {
+'use strict';
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const fmt = (n, d = 2) => Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+const usd = (n, d = 2) => (n < 0 ? '-$' : '$') + fmt(Math.abs(n), d);
+const pct = (n, d = 2) => (n >= 0 ? '+' : '') + fmt(n, d) + '%';
+const sgnUsd = n => (n >= 0 ? '+$' : '-$') + fmt(Math.abs(n));
+const rnd = (a, b) => a + Math.random() * (b - a);
+const gauss = () => { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
+const hex = n => '0x' + Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
+const shortH = h => h.slice(0, 6) + '…' + h.slice(-4);
+const sleep = ms => new Promise(r => setTimeout(r, RM ? Math.min(ms, 120) : ms));
+const uid = () => Math.random().toString(36).slice(2, 9);
+const rid = () => String(Math.floor(rnd(100000, 999999)));
+const compact = n => n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : '$' + Math.round(n / 1e3) + 'K';
+const sig4 = n => n >= 1000 ? fmt(n, 2) : Number(n.toPrecision(4)).toLocaleString('en-US', { maximumFractionDigits: 6 });
+const fmtLev = n => (Number.isInteger(n) ? n : n.toFixed(1)) + '×';
+const floorTo = (v, d) => (Math.floor(v * 10 ** d) / 10 ** d).toString();
+const rows = arr => arr.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
+const ago = t => { const s = (Date.now() - t) / 1000; if (s < 60) return 'Just now'; if (s < 3600) return Math.floor(s / 60) + ' min ago'; if (s < 86400) return Math.floor(s / 3600) + ' h ago'; return Math.floor(s / 86400) + ' d ago'; };
+const pv = v => `<span class="pv">${v}</span>`;
+const C = { up: '#3FCF8E', down: '#F25C61', acc: '#8F96FF', faint: '#5E626A', text: '#F4F5F6' };
+
+const ic = p => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const I = {
+  lock: ic('<rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
+  eye: ic('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>'),
+  eyeOff: ic('<path d="M3 3l18 18"/><path d="M10.6 5.1A10.5 10.5 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.1M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>'),
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+  search: ic('<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>'),
+  flip: ic('<path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"/>'),
+  chev: ic('<path d="M9 5l7 7-7 7"/>'),
+  copy: ic('<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'),
+  x: ic('<path d="M6 6l12 12M18 6L6 18"/>'),
+  wallet: ic('<rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1" fill="currentColor"/>'),
+  qr: ic('<rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h2v2h-2zM18 18h2v2h-2zM14 18v2M18 14h2"/>'),
+  key: ic('<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>'),
+  shieldIn: ic('<path d="M12 3l7 3v5c0 5-3.2 8.4-7 10-3.8-1.6-7-5-7-10V6l7-3Z"/><path d="M12 8v7M9 12l3 3 3-3"/>'),
+  shieldOut: ic('<path d="M12 3l7 3v5c0 5-3.2 8.4-7 10-3.8-1.6-7-5-7-10V6l7-3Z"/><path d="M12 15V8M9 11l3-3 3 3"/>'),
+  send: ic('<path d="M4 12l16-8-6 16-2.5-6.5L4 12Z"/>'),
+  trade: ic('<path d="M4 17l5-5 4 4 7-8"/><path d="M15 8h5v5"/>'),
+  swapI: ic('<path d="M8 4v16M8 4 4.5 7.5M8 4l3.5 3.5M16 20V4M16 20l-3.5-3.5M16 20l3.5-3.5"/>'),
+  drop: ic('<path d="M12 3s6.5 6.6 6.5 11.3A6.5 6.5 0 0 1 5.5 14.3C5.5 9.6 12 3 12 3Z"/>'),
+  offer: ic('<path d="M4 7h16M4 12h10M4 17h7"/>'),
+  info: ic('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
+};
+const MARK = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M2.4 12.6h19.2A9.6 9.6 0 0 1 2.4 12.6Z" fill="currentColor"/></svg>`;
+
+/* ---------------- data ---------------- */
+const MARKETS = [
+  ['TSLA', 'Tesla', 391.65, .0017, 742000, .0042],
+  ['AMZN', 'Amazon', 233.40, .0011, 518000, .0018],
+  ['PLTR', 'Palantir', 165.85, .0020, 466000, .0061],
+  ['NVDA', 'Nvidia', 186.40, .0016, 903000, .0035],
+  ['NFLX', 'Netflix', 112.30, .0013, 284000, .0027],
+  ['AMD', 'AMD', 221.60, .0018, 377000, .0049],
+  ['AAPL', 'Apple', 268.90, .0009, 655000, .0012],
+  ['META', 'Meta', 612.40, .0012, 431000, .0021],
+  ['MSFT', 'Microsoft', 508.10, .0008, 389000, .0009],
+  ['COIN', 'Coinbase', 301.70, .0024, 212000, .0068],
+].map(([sym, name, price, vol, oi, funding]) => {
+  const m = { sym, name, price, vol, oi, funding, maxLev: 5, dir: 0 };
+  m.open = price * (1 + rnd(-.034, .03));
+  m.hist = []; let p = price;
+  for (let i = 0; i < 60; i++) { m.hist.unshift(p); p = p * (1 - gauss() * vol); }
+  return m;
+});
+const isMkt = s => MARKETS.some(m => m.sym === s);
+const mk = s => MARKETS.find(m => m.sym === s) || MARKETS[0];
+const chg = m => (m.price - m.open) / m.open * 100;
+const logo = (s, c = '') => `<span class="av ${c}" aria-hidden="true">${s === 'USDG' ? '$' : s === 'ETH' ? 'Ξ' : mk(s).name[0]}</span>`;
+const tokName = t => t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? 'Gas token' : mk(t).name;
+const tokPx = t => t === 'USDG' ? 1 : t === 'ETH' ? 3420 : mk(t).price;
+const dp = t => t === 'USDG' ? 2 : 4;
+const TOKS = ['USDG', ...MARKETS.map(m => m.sym)];
+const POOLS = [['TSLA', 1.2e6, 14.2], ['NVDA', 1.5e6, 11.8], ['AMZN', 8.6e5, 9.6], ['PLTR', 6.4e5, 18.4], ['NFLX', 4.8e5, 13.1], ['AMD', 4.2e5, 12.9], ['AAPL', 9.1e5, 7.3], ['META', 5.3e5, 8.8], ['COIN', 3.1e5, 21.5]];
+const TABS = [['trade', 'Trade'], ['markets', 'Markets'], ['swap', 'Swap'], ['portfolio', 'Portfolio'], ['liquidity', 'Earn'], ['makers', 'Makers']];
+
+const S = {
+  connected: false, addr: '', paddr: '', veiled: false, q: '',
+  wallet: {}, priv: {}, positions: [], history: [], offers: [], lp: {}, lastChain: null,
+  sel: 'TSLA', mode: 'perps', side: 'long', lev: 2, size: '500',
+  spotSide: 'buy', spotAmt: '500', slip: 0.5, tf: '1h', ptab: 'pos', view: 'trade',
+  swapFrom: 'USDG', swapTo: 'TSLA', swapAmt: '1000', openChain: {}, ofExp: '24 hours', mvKind: 'shield', lpSym: 'TSLA',
+};
+const bal = (o, k) => o[k] || 0;
+const log = (title, sub, icon) => S.history.unshift({ t: Date.now(), title, sub, icon });
+const chainSaw = what => { S.lastChain = { what, commit: hex(32), block: 153118480 + Math.floor(rnd(200, 9000)) }; };
+const pnl = p => { const m = mk(p.sym); return p.side === 'long' ? p.qty * (m.price - p.entry) : p.qty * (p.entry - m.price); };
+const inPos = () => S.positions.reduce((a, p) => a + p.margin + pnl(p), 0);
+function privTotal() {
+  let t = bal(S.priv, 'USDG');
+  MARKETS.forEach(m => t += bal(S.priv, m.sym) * m.price);
+  t += inPos();
+  Object.values(S.lp).forEach(v => t += v);
+  S.offers.forEach(o => t += o.back + o.earned);
+  return t;
+}
+function seedAccount() {
+  S.connected = true; S.addr = hex(20); S.paddr = 'velum1' + hex(18).slice(2);
+  S.wallet = { USDG: 5000, ETH: 0.42, TSLA: 2 };
+  S.priv = { USDG: 12500, TSLA: 4, NVDA: 10 };
+  const now = Date.now();
+  S.history = [
+    { t: now - 3600e3 * 20, title: 'Bought 10.0000 NVDA', sub: 'Private swap through the NVDA pool', icon: 'trade' },
+    { t: now - 3600e3 * 25, title: 'Shielded 4 TSLA', sub: 'Public deposit from your wallet', icon: 'shieldIn' },
+    { t: now - 3600e3 * 26, title: 'Shielded 12,500 USDG', sub: 'Public deposit from your wallet', icon: 'shieldIn' },
+  ];
+  chainSaw('The NVDA pool changed');
+}
+function setVeil(v) { S.veiled = v; document.body.classList.toggle('veiled', v); $$('[data-act="veil"]').forEach(b => { b.setAttribute('aria-pressed', v); b.innerHTML = v ? I.eyeOff : I.eye; }); drawChart(); }
+
+/* ---------------- live values ---------------- */
+function sparkPath(arr, w, h) {
+  const mn = Math.min(...arr), mx = Math.max(...arr), r = mx - mn || 1;
+  return arr.map((v, i) => (i ? 'L' : 'M') + (i / (arr.length - 1) * w).toFixed(1) + ' ' + (3 + (1 - (v - mn) / r) * (h - 6)).toFixed(1)).join('');
+}
+function updateLive() {
+  $$('[data-px]').forEach(el => {
+    const m = mk(el.dataset.px), txt = el.dataset.fmt === 'raw' ? fmt(m.price) : usd(m.price);
+    if (el.textContent !== txt) {
+      el.textContent = txt;
+      if (!RM) { el.classList.remove('flash-up', 'flash-down'); void el.offsetWidth; el.classList.add(m.dir >= 0 ? 'flash-up' : 'flash-down'); }
+    }
+  });
+  $$('[data-chg]').forEach(el => { const c = chg(mk(el.dataset.chg)); el.textContent = pct(c); el.classList.toggle('up', c >= 0); el.classList.toggle('down', c < 0); });
+  $$('[data-spark]').forEach(svg => {
+    const m = mk(svg.dataset.spark), vb = svg.getAttribute('viewBox').split(' ').map(Number), p = svg.querySelector('path');
+    p.setAttribute('d', sparkPath(m.hist, vb[2], vb[3])); p.setAttribute('stroke', m.price >= m.hist[0] ? C.up : C.down);
+  });
+  $$('[data-pnl]').forEach(el => {
+    const p = S.positions.find(x => x.id === el.dataset.pnl); if (!p) return;
+    const v = pnl(p); el.innerHTML = pv(`<span class="${v >= 0 ? 'up' : 'down'}">${sgnUsd(v)} <small>${pct(v / p.margin * 100, 1)}</small></span>`);
+  });
+  if (S.connected) { const t = usd(privTotal()); $$('[data-total]').forEach(el => el.textContent = t); }
+  $$('[data-val]').forEach(el => { const [t, w] = el.dataset.val.split('|'), v = usd(bal(w === 'priv' ? S.priv : S.wallet, t) * tokPx(t)); el.innerHTML = w === 'priv' ? pv(v) : v; });
+  $$('[data-lp]').forEach(el => { const v = S.lp[el.dataset.lp]; if (v) el.textContent = usd(v); });
+  if (S.connected) { const a = [fmt(bal(S.priv, 'USDG')) + ' USDG', usd(inPos())]; $$('[data-acct]').forEach(el => el.textContent = a[+el.dataset.acct]); }
+  const mv = $('#markv'); if (mv) mv.textContent = fmt(mk(S.sel).price * 1.0004);
+}
+
+/* ---------------- landing ---------------- */
+const EX = { q: 13.35, E: 374.57 };
+function duoRows(priv) {
+  const m = mk('TSLA'), pl = EX.q * (m.price - EX.E);
+  const R = [['Deposit', '5,000 USDG', 1], ['Market', 'TSLA perp', 1], ['Side', '<span class="up">Long 2×</span>', 0], ['Size', `${fmt(EX.q, 2)} TSLA`, 0], ['Entry price', fmt(EX.E), 0], ['Profit and loss', `<span class="${pl >= 0 ? 'up' : 'down'}">${sgnUsd(pl)}</span>`, 0]];
+  return R.map(([k, v, pub]) => `<div class="prow"><span>${k}</span>${priv || pub ? `<b class="num">${v}</b>` : '<i class="hidden-bar" role="img" aria-label="Hidden"></i>'}</div>`).join('');
+}
+function initLanding() {
+  $('#pill-chev').innerHTML = I.chev;
+  $('#foot-brand').innerHTML = MARK + '<span>Velum</span>';
+  $('#steps-mini').innerHTML = [['Lock margin in a private note', ''], ['Generate proof in your browser', '1.8s'], ['Relayer submits and pays gas', '']].map(([t, s]) => `<div><span class="ck">${I.check}</span>${t}${s ? `<small>${s}</small>` : ''}</div>`).join('');
+  $('#pub-rows').innerHTML = duoRows(false);
+  $('#priv-rows').innerHTML = duoRows(true);
+  $('#land-mk').innerHTML = MARKETS.slice(0, 6).map(m => `<tr><td><div class="mcell">${logo(m.sym)}<div><b>${m.sym}</b><small>${m.name}</small></div></div></td><td class="r num" data-px="${m.sym}">${usd(m.price)}</td><td class="r num" data-chg="${m.sym}"></td><td class="hide-sm"><svg class="spark" data-spark="${m.sym}" viewBox="0 0 110 30" preserveAspectRatio="none" aria-hidden="true"><path/></svg></td><td class="r num hide-sm">${compact(m.oi)}</td><td class="r"><a class="btn btn-dark btn-sm" href="#/app/trade/${m.sym}?perps">Trade</a></td></tr>`).join('');
+  const rc = $('#bc-reveal'); rc.addEventListener('click', () => rc.classList.toggle('open'));
+  const fr = $('#frame');
+  if (RM || !('IntersectionObserver' in window)) fr.classList.add('in');
+  else { const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { fr.classList.add('in'); io.disconnect(); } }), { threshold: .18 }); io.observe(fr); }
+}
+
+/* ---------------- chart ---------------- */
+let candles = [], hover = null, ctick = 0;
+const TFV = { '15m': 1, '1h': 1.9, '4h': 3.6, '1D': 7 };
+const TFMS = { '15m': 9e5, '1h': 36e5, '4h': 144e5, '1D': 864e5 };
+function genCandles(m) {
+  const v = m.vol * TFV[S.tf] * 2.3; let p = m.price, drift = 0; const a = [];
+  for (let i = 0; i < 110; i++) {
+    if (i % 28 === 0) drift = rnd(-.45, .45) * v;
+    const c = p, o = c * (1 - gauss() * v - drift);
+    const h = Math.max(o, c) * (1 + Math.abs(gauss()) * v * .55), l = Math.min(o, c) * (1 - Math.abs(gauss()) * v * .55);
+    a.unshift({ o, h, l, c }); p = o;
+  }
+  return a;
+}
+function updateCandles() {
+  if (!candles.length) return;
+  const m = mk(S.sel), L = candles[candles.length - 1];
+  L.c = m.price; L.h = Math.max(L.h, m.price); L.l = Math.min(L.l, m.price);
+  if (++ctick % 10 === 0) { candles.push({ o: m.price, h: m.price, l: m.price, c: m.price }); candles.shift(); }
+}
+function rr(x, a, b, w, h, r) { x.beginPath(); x.moveTo(a + r, b); x.arcTo(a + w, b, a + w, b + h, r); x.arcTo(a + w, b + h, a, b + h, r); x.arcTo(a, b + h, a, b, r); x.arcTo(a, b, a + w, b, r); x.closePath(); }
+function drawChart() {
+  const cv = $('#chart'); if (!cv || !candles.length) return;
+  const W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const x = cv.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, W, H);
+  const AX = 70, PT = 12, PB = 12, cw = W - AX, n = candles.length;
+  let hi = -Infinity, lo = Infinity; for (const c of candles) { if (c.h > hi) hi = c.h; if (c.l < lo) lo = c.l; }
+  const pad = (hi - lo) * .08 || 1; hi += pad; lo -= pad;
+  const Y = v => PT + (hi - v) / (hi - lo) * (H - PT - PB);
+  const F = w => `${w} 11.5px Inter, system-ui, sans-serif`;
+  x.font = F(500); x.textBaseline = 'middle'; x.lineWidth = 1;
+  for (let i = 0; i <= 5; i++) {
+    const v = lo + (hi - lo) * i / 5, yy = Math.round(Y(v)) + .5;
+    x.strokeStyle = 'rgba(255,255,255,.045)'; x.beginPath(); x.moveTo(0, yy); x.lineTo(cw, yy); x.stroke();
+    x.fillStyle = C.faint; x.fillText(fmt(v), cw + 12, yy);
+  }
+  for (let i = 1; i < 6; i++) { const xx = Math.round(cw * i / 6) + .5; x.strokeStyle = 'rgba(255,255,255,.03)'; x.beginPath(); x.moveTo(xx, PT); x.lineTo(xx, H - PB); x.stroke(); }
+  const st = cw / n, bw = Math.max(1.6, st * .58);
+  candles.forEach((c, i) => {
+    const cx = i * st + st / 2, up = c.c >= c.o, col = up ? C.up : C.down;
+    x.strokeStyle = col; x.fillStyle = col;
+    x.beginPath(); x.moveTo(Math.round(cx) + .5, Y(c.h)); x.lineTo(Math.round(cx) + .5, Y(c.l)); x.stroke();
+    const t = Y(Math.max(c.o, c.c)), b = Y(Math.min(c.o, c.c));
+    x.fillRect(cx - bw / 2, t, bw, Math.max(1, b - t));
+  });
+  const used = [];
+  S.positions.filter(p => p.sym === S.sel).sort((a, b) => b.entry - a.entry).forEach(p => {
+    if (p.entry < lo || p.entry > hi) return;
+    const yy = Math.round(Y(p.entry)) + .5, col = p.side === 'long' ? C.up : C.down;
+    x.setLineDash([3, 4]); x.strokeStyle = col; x.globalAlpha = .8; x.beginPath(); x.moveTo(0, yy); x.lineTo(cw, yy); x.stroke(); x.setLineDash([]); x.globalAlpha = 1;
+    let ty = yy; while (used.some(u => Math.abs(u - ty) < 24)) ty += 24; used.push(ty);
+    const lab = `${p.side === 'long' ? 'Long' : 'Short'} entry${S.veiled ? '' : ' ' + fmt(p.entry)}`;
+    x.font = F(600); const tw = x.measureText(lab).width;
+    x.fillStyle = col; rr(x, 8, ty - 10, tw + 14, 20, 5); x.fill(); x.fillStyle = '#06110B'; x.fillText(lab, 15, ty + .5);
+  });
+  const L = candles[n - 1], ly = Math.round(Y(L.c)) + .5, up = L.c >= L.o, col = up ? C.up : C.down;
+  x.setLineDash([2, 3]); x.strokeStyle = col; x.globalAlpha = .6; x.beginPath(); x.moveTo(0, ly); x.lineTo(cw, ly); x.stroke(); x.globalAlpha = 1; x.setLineDash([]);
+  x.fillStyle = col; rr(x, cw + 4, ly - 10, AX - 6, 20, 5); x.fill();
+  x.fillStyle = up ? '#03140B' : '#fff'; x.font = F(600); x.fillText(fmt(L.c), cw + 12, ly + .5);
+  let idx = n - 1;
+  if (hover && hover.x < cw && hover.y > PT && hover.y < H - PB) {
+    idx = Math.min(n - 1, Math.max(0, Math.floor(hover.x / st)));
+    const hx = Math.round(idx * st + st / 2) + .5, hy = Math.round(hover.y) + .5;
+    x.strokeStyle = 'rgba(255,255,255,.25)'; x.setLineDash([3, 3]);
+    x.beginPath(); x.moveTo(hx, PT); x.lineTo(hx, H - PB); x.moveTo(0, hy); x.lineTo(cw, hy); x.stroke(); x.setLineDash([]);
+    const hv = hi - (hy - PT) / (H - PT - PB) * (hi - lo);
+    x.fillStyle = '#2A2D34'; rr(x, cw + 4, hy - 10, AX - 6, 20, 5); x.fill(); x.fillStyle = C.text; x.font = F(600); x.fillText(fmt(hv), cw + 12, hy + .5);
+  }
+  const c = candles[idx], o = $('#ohlc'), d = new Date(Date.now() - (n - 1 - idx) * TFMS[S.tf]);
+  if (o) o.innerHTML = `<span>${d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: S.tf === '1D' ? undefined : '2-digit', minute: S.tf === '1D' ? undefined : '2-digit' })}</span><span>O <b class="num">${fmt(c.o)}</b></span><span>H <b class="num">${fmt(c.h)}</b></span><span>L <b class="num">${fmt(c.l)}</b></span><span>C <b class="num ${c.c >= c.o ? 'up' : 'down'}">${fmt(c.c)}</b></span>`;
+}
+function bindChart() {
+  const cv = $('#chart'); if (!cv) return;
+  cv.addEventListener('pointermove', e => { const r = cv.getBoundingClientRect(); hover = { x: e.clientX - r.left, y: e.clientY - r.top }; drawChart(); });
+  cv.addEventListener('pointerleave', () => { hover = null; drawChart(); });
+}
+
+/* ---------------- modal + toast ---------------- */
+let modalLocked = false;
+const closeBtn = `<button class="xbtn" data-act="close-modal" aria-label="Close">${I.x}</button>`;
+function openModal(html, { locked = false } = {}) {
+  $('#modal-box').innerHTML = html; $('#modal').classList.add('open'); modalLocked = locked;
+  const f = $('#modal-box').querySelector('input,select,.wopt,.btn'); if (f) f.focus({ preventScroll: true });
+}
+function closeModal(force) { if (modalLocked && !force) return; modalLocked = false; $('#modal').classList.remove('open'); }
+function toast(msg, warn) {
+  const el = document.createElement('div'); el.className = 'toast';
+  el.innerHTML = (warn ? I.info.replace('<svg', '<svg style="color:var(--down)"') : I.check) + `<span>${msg}</span>`;
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 320); }, 3000);
+}
+async function runFlow({ title, steps, done }) {
+  openModal(`<div class="m-head"><h3 id="m-title">${title}</h3></div><ol class="flow">${steps.map(s => `<li><span class="ic"></span><div><div class="t">${s.t}</div><div class="d">${s.d || ''}</div>${s.proof ? '<div class="bar"><i></i></div>' : ''}</div></li>`).join('')}</ol><div id="flow-end"></div>`, { locked: true });
+  const lis = $$('#modal-box .flow li');
+  for (let i = 0; i < steps.length; i++) {
+    const li = lis[i]; li.classList.add('active');
+    if (steps[i].proof) { const b = li.querySelector('.bar i'); void b.offsetWidth; b.style.transition = `width ${RM ? 100 : steps[i].ms}ms linear`; b.style.width = '100%'; }
+    await sleep(steps[i].ms || 700);
+    li.classList.remove('active'); li.classList.add('done'); li.querySelector('.ic').innerHTML = I.check;
+  }
+  const r = done();
+  $('#flow-end').innerHTML = `<div class="receipt">${rows(r.rows)}</div><button class="btn btn-white btn-block" data-act="close-modal">Done</button>`;
+  modalLocked = false; $('#flow-end .btn').focus({ preventScroll: true });
+  toast(r.toast); render();
+}
+
+/* ---------------- connect / account ---------------- */
+function connectModal() {
+  openModal(`<div class="m-head"><h3 id="m-title">Connect wallet</h3>${closeBtn}</div>
+  <p class="m-text">Your wallet is your public address. Next, one signature opens your private account.</p>
+  <button class="wopt" data-act="wallet"><span class="ic">${I.wallet}</span><div><b>Browser wallet</b><small>An extension wallet in this browser</small></div></button>
+  <button class="wopt" data-act="wallet"><span class="ic">${I.qr}</span><div><b>WalletConnect</b><small>Scan with a wallet on your phone</small></div></button>
+  <button class="wopt" data-act="wallet"><span class="ic">${I.key}</span><div><b>Passkey account</b><small>For smart-contract and multi-party wallets</small></div></button>`);
+}
+function signModal() {
+  openModal(`<div class="m-head"><h3 id="m-title">Open your private account</h3>${closeBtn}</div>
+  <p class="m-text">Sign one message to create your private keys in this browser. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.</p>
+  <div class="boxnote warn">${I.info}<span>Only sign this message on Velum. Anyone with this signature can open your private account.</span></div>
+  <button class="btn btn-white btn-block" data-act="sign" id="sign-btn">Sign message</button>`);
+}
+async function doSign() {
+  const b = $('#sign-btn'); b.disabled = true; modalLocked = true;
+  b.textContent = 'Waiting for your signature…'; await sleep(900);
+  b.textContent = 'Creating your private keys…'; await sleep(700);
+  seedAccount(); closeModal(true); toast('Wallet connected'); render();
+}
+function accountModal() {
+  openModal(`<div class="m-head"><h3 id="m-title">Your account</h3>${closeBtn}</div>
+  <div class="receipt"><div><span>Public wallet</span><b>${shortH(S.addr)}</b></div><div><span>Private address</span><b>${pv(S.paddr.slice(0, 12) + '…' + S.paddr.slice(-6))}</b></div><div><span>Network</span><b>Robinhood Chain testnet</b></div></div>
+  <p class="m-text" style="margin-top:12px">Nothing onchain links these two addresses. Disconnecting removes your keys from this browser; signing again restores them.</p>
+  <button class="btn btn-dark btn-block" data-act="disconnect">Disconnect</button>`);
+}
+function disconnect() {
+  Object.assign(S, { connected: false, addr: '', paddr: '', wallet: {}, priv: {}, positions: [], history: [], offers: [], lp: {}, openChain: {}, lastChain: null });
+  closeModal(true); toast('Disconnected'); render();
+}
+
+/* ---------------- nav ---------------- */
+const isApp = () => document.body.classList.contains('in-app');
+function renderNav() {
+  const app = isApp();
+  const links = app
+    ? `<nav class="nlinks tabs" aria-label="App">${TABS.map(([k, l]) => `<a href="#/app/${k}" class="${S.view === k ? 'on' : ''}" ${S.view === k ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</nav>`
+    : `<nav class="nlinks land" aria-label="Main"><a href="#features">Product</a><a href="#how">How it works</a><a href="#privacy">Privacy</a><a href="#markets">Markets</a><a href="#developers">Developers</a></nav>`;
+  const eye = `<button class="iconbtn" data-act="veil" aria-pressed="${S.veiled}" aria-label="Hide balances on screen" title="Hide balances on screen">${S.veiled ? I.eyeOff : I.eye}</button>`;
+  const wal = S.connected
+    ? `<button class="walletbtn" data-act="account"><i></i><span class="hide-sm">${shortH(S.addr)}</span><span class="b num pv" data-total>${usd(privTotal())}</span></button>`
+    : app ? `<button class="btn btn-white" data-act="connect">Connect wallet</button>` : `<button class="btn btn-ghost hide-sm" data-act="connect">Connect wallet</button>`;
+  const launch = app ? '' : `<a class="btn btn-white" href="#/app/trade">Launch app</a>`;
+  $('#nav-in').innerHTML = `<a href="#/" class="brand" aria-label="Velum home">${MARK}<span>Velum</span></a>${links}<div class="nright">${app || S.connected ? eye : ''}${wal}${launch}</div>`;
+}
+function applySearch() {
+  const q = S.q.toLowerCase().trim();
+  $$('[data-row]').forEach(r => { const s = r.dataset.row; r.hidden = !!q && !(s + ' ' + mk(s).name).toLowerCase().includes(q); });
+}
+function render() {
+  const app = isApp();
+  renderNav();
+  const host = app ? $('#app-view') : $('#hero-term'), other = app ? $('#hero-term') : $('#app-view');
+  other.innerHTML = '';
+  const view = app ? S.view : 'trade';
+  host.innerHTML = VIEWS[view]();
+  if (view === 'trade') {
+    renderTicket(); renderAcct(); renderPositions();
+    if (!candles.length) candles = genCandles(mk(S.sel));
+    bindChart(); drawChart();
+    const st = host.querySelector('.strip'), on = host.querySelector('.mchip.on');
+    if (st && on) st.scrollLeft = Math.max(0, on.offsetLeft - st.clientWidth / 2 + on.clientWidth / 2);
+  }
+  if (view === 'swap') updateSwap();
+  if (view === 'makers') { updateOffer(); renderOffers(); }
+  if (view === 'markets') applySearch();
+  updateLive();
+}
+
+/* ---------------- trade ---------------- */
+function vTrade() {
+  const m = mk(S.sel);
+  return `<div class="strip" role="list" aria-label="Markets">${MARKETS.map(x => `<button class="mchip ${x.sym === S.sel ? 'on' : ''}" data-go="${x.sym}" role="listitem" aria-label="${x.name}">${logo(x.sym, 'sm')}<b>${x.sym}</b><span class="p num" data-px="${x.sym}" data-fmt="raw">${fmt(x.price)}</span><span class="num" data-chg="${x.sym}"></span></button>`).join('')}</div>
+  <div class="tr-grid"><div class="lcol">
+    <section class="card chartbox">
+      <div class="ch-top">
+        <div class="ch-id">${logo(m.sym, 'lg')}<div><b>${m.sym} <span class="faint" style="font-weight:500">/ USDG</span></b><small>${m.name} stock token</small></div></div>
+        <div class="seg" role="group" aria-label="Market type"><button data-act="mode" data-arg="spot" class="${S.mode === 'spot' ? 'on' : ''}">Spot</button><button data-act="mode" data-arg="perps" class="${S.mode === 'perps' ? 'on' : ''}">Perps</button></div>
+        <div class="seg tf" role="group" aria-label="Timeframe">${['15m', '1h', '4h', '1D'].map(t => `<button data-act="tf" data-arg="${t}" class="${t === S.tf ? 'on' : ''}">${t}</button>`).join('')}</div>
+      </div>
+      <div class="ch-stats">
+        <div><small>Price</small><b class="num big" data-px="${m.sym}" data-fmt="raw">${fmt(m.price)}</b></div>
+        <div><small>24h change</small><b class="num" data-chg="${m.sym}"></b></div>
+        <div><small>Mark</small><b class="num" id="markv"></b></div>
+        <div class="hide-sm"><small>Funding / h</small><b class="num">${fmt(m.funding, 4)}%</b></div>
+        <div class="hide-sm"><small>Open interest</small><b class="num">${compact(m.oi)}</b></div>
+      </div>
+      <div class="ohlc" id="ohlc"></div>
+      <div class="chart"><canvas id="chart" aria-label="${m.sym} price chart"></canvas></div>
+    </section>
+    <section class="card posbox"><div class="ptabs" role="tablist"><button role="tab" class="${S.ptab === 'pos' ? 'on' : ''}" data-act="ptab" data-arg="pos">Positions<span class="count num" id="pos-count">0</span></button><button role="tab" class="${S.ptab === 'hist' ? 'on' : ''}" data-act="ptab" data-arg="hist">Activity</button></div><div id="ptab-body"></div></section>
+  </div><div class="rcol"><aside class="card ticket" id="ticket" aria-label="Order ticket"></aside><aside class="card acct" id="acct"></aside></div></div>`;
+}
+function perpsCalc() {
+  const m = mk(S.sel), size = parseFloat(S.size) || 0, lev = S.lev, margin = size / lev;
+  const entry = S.side === 'long' ? m.price * 1.0005 : m.price * .9995, qty = size / entry, mm = .5 / m.maxLev;
+  const liq = S.side === 'long' ? (lev <= 1 ? null : entry * (1 - 1 / lev) / (1 - mm)) : entry * (1 + 1 / lev) / (1 + mm);
+  return { size, lev, margin, entry, qty, liq, fee: size * .0006 };
+}
+function spotCalc() {
+  const m = mk(S.sel), amt = parseFloat(S.spotAmt) || 0, fee = .003, imp = .0008;
+  if (S.spotSide === 'buy') { const out = amt * (1 - fee) / (m.price * (1 + imp)); return { amt, out, tin: 'USDG', tout: m.sym, min: out * (1 - S.slip / 100), feeAmt: amt * fee, have: bal(S.priv, 'USDG') }; }
+  const out = amt * m.price * (1 - imp) * (1 - fee);
+  return { amt, out, tin: m.sym, tout: 'USDG', min: out * (1 - S.slip / 100), feeAmt: amt * m.price * fee, have: bal(S.priv, m.sym) };
+}
+function renderTicket() {
+  const el = $('#ticket'); if (!el) return; const m = mk(S.sel);
+  if (S.mode === 'perps') {
+    el.innerHTML = `<div class="sides" role="group" aria-label="Side"><button class="long ${S.side === 'long' ? 'on' : ''}" data-act="side" data-arg="long" aria-pressed="${S.side === 'long'}">Long</button><button class="short ${S.side === 'short' ? 'on' : ''}" data-act="side" data-arg="short" aria-pressed="${S.side === 'short'}">Short</button></div>
+    <div class="fl"><label for="t-size">Size</label><span>Available <b class="num pv" id="t-free"></b></span></div>
+    <div class="inp"><input id="t-size" inputmode="decimal" value="${S.size}" autocomplete="off"><span class="unit">USDG</span></div>
+    <div class="seg full pcts" role="group" aria-label="Size presets">${[25, 50, 75, 100].map(p => `<button data-act="ppct" data-arg="${p}">${p === 100 ? 'Max' : p + '%'}</button>`).join('')}</div>
+    <div class="fl"><label for="t-lev">Leverage</label><b class="num" id="lev-out"></b></div>
+    <input type="range" id="t-lev" min="1" max="${m.maxLev}" step="0.5" value="${S.lev}">
+    <div class="ticks num">${Array.from({ length: m.maxLev }, (_, i) => `<span>${i + 1}×</span>`).join('')}</div>
+    <div class="sumbox" id="t-sum"></div>
+    <button class="btn btn-block" id="t-submit" data-act="submit"></button><p class="hint" id="t-hint"></p>
+    <p class="note">${I.lock}<span>Size, side and entry stay encrypted. If no maker fills you within 15 minutes, your margin comes back.</span></p>`;
+  } else {
+    const c = spotCalc();
+    el.innerHTML = `<div class="sides" role="group" aria-label="Buy or sell"><button class="long ${S.spotSide === 'buy' ? 'on' : ''}" data-act="spside" data-arg="buy" aria-pressed="${S.spotSide === 'buy'}">Buy</button><button class="short ${S.spotSide === 'sell' ? 'on' : ''}" data-act="spside" data-arg="sell" aria-pressed="${S.spotSide === 'sell'}">Sell</button></div>
+    <div class="fl"><label for="t-spot">You pay</label><span>Available <b class="num pv" id="t-free"></b></span></div>
+    <div class="inp"><input id="t-spot" inputmode="decimal" value="${S.spotAmt}" autocomplete="off"><span class="unit">${c.tin}</span></div>
+    <div class="seg full pcts" role="group" aria-label="Amount presets">${[25, 50, 75, 100].map(p => `<button data-act="spct" data-arg="${p}">${p === 100 ? 'Max' : p + '%'}</button>`).join('')}</div>
+    <div class="fl"><span>You get (est.)</span></div>
+    <div class="inp"><output id="t-out"></output><span class="unit">${c.tout}</span></div>
+    <div class="fl"><span>Slippage limit</span></div>
+    <div class="seg full" role="group" aria-label="Slippage">${[0.1, 0.5, 1].map(s => `<button class="${S.slip === s ? 'on' : ''}" data-act="slip" data-arg="${s}">${s}%</button>`).join('')}</div>
+    <div class="sumbox" id="t-sum"></div>
+    <button class="btn btn-block" id="t-submit" data-act="submit"></button><p class="hint" id="t-hint"></p>
+    <p class="note">${I.lock}<span>Pool reserves and your trade stay private. You own the token, so nothing can be liquidated.</span></p>`;
+  }
+  updateTicket();
+}
+function setBtn(b, label, cls, dis, act) { b.className = 'btn btn-block ' + cls; b.textContent = label; b.disabled = dis; b.dataset.act = act || 'submit'; }
+function updateTicket() {
+  const sum = $('#t-sum'), btn = $('#t-submit'), hint = $('#t-hint'); if (!sum || !btn) return;
+  const m = mk(S.sel); let h = '';
+  if (S.mode === 'perps') {
+    const c = perpsCalc(), have = bal(S.priv, 'USDG');
+    $('#t-free').textContent = S.connected ? fmt(have) + ' USDG' : '—';
+    $('#lev-out').textContent = S.lev.toFixed(1) + '×';
+    $('#t-lev').style.setProperty('--p', ((S.lev - 1) / (m.maxLev - 1) * 100) + '%');
+    sum.innerHTML = rows([['Entry price', fmt(c.entry)], ['Position', `${fmt(c.qty, 4)} ${m.sym}`], ['Margin', `${fmt(c.margin)} USDG`], ['Liquidation price', c.liq ? fmt(c.liq) : 'None'], ['Fee', `${fmt(c.fee)} USDG`], ['Funding', `${fmt(m.funding, 4)}% / h`]]);
+    if (!S.connected) setBtn(btn, 'Connect wallet', 'btn-white', false, 'connect');
+    else if (c.size <= 0) setBtn(btn, 'Enter a size', 'btn-dark', true);
+    else if (c.margin + c.fee > have) { setBtn(btn, 'Not enough private USDG', 'btn-dark', true); h = 'Shield more USDG from Portfolio, or lower the size.'; }
+    else if (c.qty > 100) { setBtn(btn, 'Above the 100-token limit', 'btn-dark', true); h = 'One position can hold up to 100 tokens.'; }
+    else setBtn(btn, `Open ${S.side} privately`, S.side === 'long' ? 'btn-up' : 'btn-down', false);
+  } else {
+    const c = spotCalc();
+    $('#t-free').textContent = S.connected ? `${fmt(c.have, dp(c.tin))} ${c.tin}` : '—';
+    $('#t-out').textContent = c.out > 0 ? fmt(c.out, dp(c.tout)) : '0.00';
+    sum.innerHTML = rows([['Price', fmt(m.price)], ['Pool fee (0.30%)', `${fmt(c.feeAmt)} USDG`], ['Minimum you get', `${fmt(c.min, dp(c.tout))} ${c.tout}`], ['Liquidation', 'None']]);
+    if (!S.connected) setBtn(btn, 'Connect wallet', 'btn-white', false, 'connect');
+    else if (c.amt <= 0) setBtn(btn, 'Enter an amount', 'btn-dark', true);
+    else if (c.amt > c.have) { setBtn(btn, `Not enough private ${c.tin}`, 'btn-dark', true); h = `You have ${fmt(c.have, dp(c.tin))} ${c.tin} available.`; }
+    else setBtn(btn, `${S.spotSide === 'buy' ? 'Buy' : 'Sell'} ${m.sym} privately`, S.spotSide === 'buy' ? 'btn-up' : 'btn-down', false);
+  }
+  hint.textContent = h;
+}
+function renderAcct() {
+  const el = $('#acct'); if (!el) return;
+  if (!S.connected) { el.innerHTML = `<h3>Private account</h3><p class="muted" style="font-size:13.5px;margin-top:8px">Connect a wallet and sign once to open a private balance. It costs no gas.</p><button class="btn btn-dark btn-sm" style="margin-top:12px" data-act="connect">Connect wallet</button>`; return; }
+  const lc = S.lastChain;
+  el.innerHTML = `<h3>Private account <span class="badge acc"><span class="d"></span>Encrypted</span></h3>
+  <div class="bigv num pv" data-total>${usd(privTotal())}</div>
+  <div class="r"><span>Free balance</span><b class="num pv" data-acct="0"></b></div><div class="r"><span>In positions</span><b class="num pv" data-acct="1"></b></div>
+  <div class="lastc">Last thing the public chain saw<b>${lc ? lc.what : 'Nothing yet'}</b>${lc ? `<code>${shortH(lc.commit)}, block ${fmt(lc.block, 0)}</code>` : ''}</div>`;
+}
+function posTable(list, wide) {
+  const cols = wide ? 9 : 6;
+  return `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th>${wide ? '<th>Side</th>' : ''}<th class="r">Size</th><th class="r">Entry</th>${wide ? '<th class="r">Mark</th>' : ''}<th class="r hide-sm">Liq. price</th>${wide ? '<th class="r hide-sm">Margin</th>' : ''}<th class="r">P&amp;L</th><th class="r"><span class="sr">Actions</span></th></tr></thead><tbody>
+  ${list.map(p => { const m = mk(p.sym), Side = p.side === 'long' ? 'Long' : 'Short', sc = p.side === 'long' ? 'up' : 'down'; return `<tr><td><div class="mcell">${logo(p.sym, 'sm')}<div><b>${p.sym}</b><small class="${wide ? '' : sc}">${wide ? fmtLev(p.lev) : Side + ' ' + fmtLev(p.lev)}</small></div></div></td>${wide ? `<td class="${sc}" style="font-weight:500">${Side}</td>` : ''}<td class="r num">${pv(fmt(p.qty, 4))}</td><td class="r num">${pv(fmt(p.entry))}</td>${wide ? `<td class="r num" data-px="${p.sym}" data-fmt="raw">${fmt(m.price)}</td>` : ''}<td class="r num hide-sm">${pv(p.liq ? fmt(p.liq) : 'None')}</td>${wide ? `<td class="r num hide-sm">${pv(fmt(p.margin))}</td>` : ''}<td class="r num" data-pnl="${p.id}"></td><td class="r"><div class="rowbtns"><button class="btn btn-ghost btn-sm hide-sm" data-act="chain" data-arg="${p.id}" aria-expanded="${!!S.openChain[p.id]}">Chain view</button><button class="btn btn-dark btn-sm" data-act="close" data-arg="${p.id}">Close</button></div></td></tr>
+  <tr class="chainrow" ${S.openChain[p.id] ? '' : 'hidden'} data-chainrow="${p.id}"><td colspan="${cols}"><div class="chainbox"><div>What the public chain sees<b>A position changed in ${p.sym}</b></div><div>Commitment<b>${shortH(p.commit)}</b></div><div>Block<b class="num">${fmt(p.block, 0)}</b></div><div>Size, side, price, owner<b>Hidden</b></div></div></td></tr>`; }).join('')}
+  </tbody></table></div>`;
+}
+const actList = (list, n) => list.length ? list.slice(0, n).map(h => `<div class="act"><span class="ic">${I[h.icon] || I.trade}</span><div><b class="pv">${h.title}</b><small>${h.sub}</small></div><small class="faint">${ago(h.t)}</small></div>`).join('') : `<div class="empty"><p>No activity yet.</p></div>`;
+function renderPositions() {
+  const b = $('#ptab-body'); if (!b) return;
+  const cnt = $('#pos-count'); if (cnt) cnt.textContent = S.positions.length;
+  if (S.ptab === 'pos') {
+    if (!S.connected) b.innerHTML = `<div class="empty"><p>Connect your wallet to see your private positions.</p><button class="btn btn-white btn-sm" data-act="connect">Connect wallet</button></div>`;
+    else if (!S.positions.length) b.innerHTML = `<div class="empty"><p>No open positions. Pick long or short in the ticket to open one.</p></div>`;
+    else b.innerHTML = posTable(S.positions);
+  } else b.innerHTML = S.connected ? actList(S.history, 10) : `<div class="empty"><p>Connect your wallet to see your activity.</p></div>`;
+}
+function openPerps() {
+  const m = mk(S.sel), c = perpsCalc(), side = S.side, lev = S.lev, Side = side === 'long' ? 'Long' : 'Short';
+  runFlow({
+    title: `Open ${side} ${m.sym}`, steps: [
+      { t: 'Locking margin in a private note', d: `${fmt(c.margin)} USDG leaves your free balance`, ms: 700 },
+      { t: 'Generating proof in your browser', d: 'Proves the trade follows the rules without revealing it', ms: 1900, proof: true },
+      { t: 'Relayer submitting proof', d: 'The relayer pays gas, so your wallet stays off the trade', ms: 800 },
+      { t: 'Matching with a maker', d: 'Waiting for a standing offer', ms: 1100 },
+    ], done: () => {
+      const entry = side === 'long' ? m.price * 1.0005 : m.price * .9995, qty = c.size / entry, mm = .5 / m.maxLev;
+      const liq = side === 'long' ? (lev <= 1 ? null : entry * (1 - 1 / lev) / (1 - mm)) : entry * (1 + 1 / lev) / (1 + mm), fee = c.size * .0006;
+      S.priv.USDG = bal(S.priv, 'USDG') - c.margin - fee;
+      const p = { id: uid(), sym: m.sym, side, lev, margin: c.margin, qty, entry, liq, cs: rnd(.0003, .0008), commit: hex(32), block: 153118480 + Math.floor(rnd(200, 9000)) };
+      S.positions.unshift(p); S.lastChain = { what: `A ${m.sym} position changed`, commit: p.commit, block: p.block };
+      log(`Opened ${side} ${m.sym} ${fmtLev(lev)}`, `${usd(c.size)} position, ${fmt(c.margin)} USDG margin`, 'trade');
+      return { rows: [['Market', `${m.sym} perp`], ['Side', `<span class="${side === 'long' ? 'up' : 'down'}">${Side} ${fmtLev(lev)}</span>`], ['Position', `${fmt(qty, 4)} ${m.sym}`], ['Entry', fmt(entry)], ['Liquidation', liq ? fmt(liq) : 'None'], ['Fee', `${fmt(fee)} USDG`], ['Visible onchain', 'A position changed'], ['Receipt', '#' + rid()]], toast: `${Side} opened on ${m.sym}` };
+    }
+  });
+}
+function spotTrade() {
+  const m = mk(S.sel), c = spotCalc(), buy = S.spotSide === 'buy';
+  runFlow({
+    title: `${buy ? 'Buy' : 'Sell'} ${m.sym}`, steps: [
+      { t: 'Locking your tokens in a private swap request', d: `${fmt(c.amt, dp(c.tin))} ${c.tin}`, ms: 650 },
+      { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
+      { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
+      { t: 'Filling against the private pool', d: `Only at or above ${fmt(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
+    ], done: () => {
+      S.priv[c.tin] = bal(S.priv, c.tin) - c.amt; S.priv[c.tout] = bal(S.priv, c.tout) + c.out;
+      chainSaw(`The ${m.sym} pool changed`);
+      log(`${buy ? 'Bought' : 'Sold'} ${fmt(buy ? c.out : c.amt, 4)} ${m.sym}`, `Private swap through the ${m.sym} pool`, 'trade');
+      return { rows: [['You paid', `${fmt(c.amt, dp(c.tin))} ${c.tin}`], ['You got', `${fmt(c.out, dp(c.tout))} ${c.tout}`], ['Pool fee', `${fmt(c.feeAmt)} USDG`], ['Visible onchain', 'The pool changed'], ['Receipt', '#' + rid()]], toast: `${buy ? 'Bought' : 'Sold'} ${m.sym}` };
+    }
+  });
+}
+function closePos(id) {
+  const p = S.positions.find(x => x.id === id); if (!p) return; const m = mk(p.sym);
+  runFlow({
+    title: `Close ${p.side} ${p.sym}`, steps: [
+      { t: 'Generating proof in your browser', d: 'Proves you own this position', ms: 1500, proof: true },
+      { t: 'Relayer submitting proof', d: 'No maker signature needed', ms: 700 },
+      { t: 'Settling at the oracle price', d: 'Minus the close spread your maker committed to', ms: 700 },
+    ], done: () => {
+      const exit = p.side === 'long' ? m.price * (1 - p.cs) : m.price * (1 + p.cs);
+      const pl = p.side === 'long' ? p.qty * (exit - p.entry) : p.qty * (p.entry - exit);
+      const fee = p.qty * exit * .0006, back = Math.max(0, p.margin + pl - fee);
+      S.priv.USDG = bal(S.priv, 'USDG') + back; S.positions = S.positions.filter(x => x.id !== id);
+      chainSaw(`A ${p.sym} position changed`);
+      log(`Closed ${p.side} ${p.sym}`, `P&L ${sgnUsd(pl)}, ${fmt(back)} USDG back to your private balance`, 'trade');
+      return { rows: [['Exit price', fmt(exit)], ['P&amp;L', `<span class="${pl >= 0 ? 'up' : 'down'}">${sgnUsd(pl)}</span>`], ['Fee', `${fmt(fee)} USDG`], ['Returned', `${fmt(back)} USDG`], ['Receipt', '#' + rid()]], toast: 'Position closed' };
+    }
+  });
+}
+function checkLiq() {
+  let hit = false;
+  S.positions.slice().forEach(p => {
+    const m = mk(p.sym), eq = p.margin + pnl(p), mm = .5 / m.maxLev;
+    if (eq < mm * p.qty * m.price) {
+      const back = Math.max(0, eq - .01 * p.qty * m.price);
+      S.priv.USDG = bal(S.priv, 'USDG') + back; S.positions = S.positions.filter(x => x !== p);
+      log(`Liquidated ${p.side} ${p.sym}`, `${fmt(back)} USDG returned after the 1% penalty`, 'trade');
+      toast(`${p.sym} ${p.side} liquidated`, true); hit = true;
+    }
+  });
+  if (hit) render();
+}
+
+/* ---------------- markets ---------------- */
+function vMarkets() {
+  const oi = MARKETS.reduce((a, m) => a + m.oi, 0);
+  return `<div class="vhead"><div><h1 class="vtitle">Markets</h1><p class="vsub">Every market settles privately. Prices are demo data on testnet.</p></div>
+  <label class="search">${I.search}<span class="sr">Search markets</span><input id="mk-q" placeholder="Search stocks" autocomplete="off" value="${S.q}"></label></div>
+  <div class="stats"><div class="card stat"><small>Markets</small><b class="num">${MARKETS.length}</b></div><div class="card stat"><small>Open interest</small><b class="num">${compact(oi)}</b></div><div class="card stat"><small>Shielded value</small><b class="num">$4.8M</b></div><div class="card stat"><small>Proofs verified today</small><b class="num">${fmt(18420 + Math.floor(Math.random() * 400), 0)}</b></div></div>
+  <div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th class="r">Price</th><th class="r">24h</th><th class="hide-md">Last hour</th><th class="r hide-md">Funding / h</th><th class="r hide-md">Open interest</th><th class="r hide-sm">Max leverage</th><th class="r"><span class="sr">Actions</span></th></tr></thead>
+  <tbody>${MARKETS.map(m => `<tr data-row="${m.sym}"><td><div class="mcell">${logo(m.sym)}<div><b>${m.sym}</b><small>${m.name}</small></div></div></td><td class="r num" data-px="${m.sym}">${usd(m.price)}</td><td class="r num" data-chg="${m.sym}"></td><td class="hide-md"><svg class="spark" data-spark="${m.sym}" viewBox="0 0 110 30" preserveAspectRatio="none" aria-hidden="true"><path/></svg></td><td class="r num hide-md">${fmt(m.funding, 4)}%</td><td class="r num hide-md">${usd(m.oi, 0)}</td><td class="r num hide-sm">${m.maxLev}×</td><td class="r"><div class="rowbtns"><a class="btn btn-ghost btn-sm" href="#/app/trade/${m.sym}?spot">Buy</a><a class="btn btn-dark btn-sm" href="#/app/trade/${m.sym}?perps">Long or short</a></div></td></tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ---------------- swap ---------------- */
+function vSwap() {
+  const opts = s => TOKS.map(t => `<option ${t === s ? 'selected' : ''}>${t}</option>`).join('');
+  return `<div class="swap-wrap"><div class="vhead"><div><h1 class="vtitle">Swap privately</h1><p class="vsub">Trade USDG and stock tokens through private pools. Stock to stock routes through USDG in one action.</p></div></div>
+  <div class="card swapcard">
+    <div class="sbox"><div class="lb"><span>You pay</span><span>Available <b class="num pv" id="sw-bal"></b></span></div>
+      <div class="srow"><input id="sw-in" inputmode="decimal" value="${S.swapAmt}" aria-label="Amount to pay" autocomplete="off"><select class="sel" id="sw-from" aria-label="Token to pay">${opts(S.swapFrom)}</select></div>
+      <div class="seg full pcts" role="group" aria-label="Amount presets">${[25, 50, 100].map(p => `<button data-act="swpct" data-arg="${p}">${p === 100 ? 'Max' : p + '%'}</button>`).join('')}</div></div>
+    <button class="flipbtn" data-act="flip" aria-label="Switch tokens">${I.flip}</button>
+    <div class="sbox"><div class="lb"><span>You get (est.)</span><span id="sw-rate" class="num"></span></div>
+      <div class="srow"><output id="sw-out">0.00</output><select class="sel" id="sw-to" aria-label="Token to receive">${opts(S.swapTo)}</select></div></div>
+    <div class="sumbox" id="sw-sum" style="border-top:0;padding:4px 4px 0"></div>
+    <button class="btn btn-block" id="sw-go" data-act="swap"></button><p class="hint" id="sw-hint"></p>
+    <p class="note">${I.lock}<span>Pool reserves are private, so nobody can work out your trade from public data.</span></p>
+  </div></div>`;
+}
+function swapCalc() {
+  const a = parseFloat(S.swapAmt) || 0, pf = tokPx(S.swapFrom), pt = tokPx(S.swapTo), hops = (S.swapFrom === 'USDG' || S.swapTo === 'USDG') ? 1 : 2;
+  const out = a * pf / pt * Math.pow(1 - .003, hops) * (1 - .0008 * hops);
+  return { a, out, hops, fee: a * pf * (1 - Math.pow(1 - .003, hops)), rate: pf / pt, min: out * (1 - S.slip / 100), have: bal(S.priv, S.swapFrom) };
+}
+function updateSwap() {
+  const btn = $('#sw-go'); if (!btn) return; const c = swapCalc(), same = S.swapFrom === S.swapTo;
+  $('#sw-out').textContent = same || c.out <= 0 ? '0.00' : sig4(c.out);
+  $('#sw-bal').textContent = S.connected ? `${fmt(c.have, dp(S.swapFrom))} ${S.swapFrom}` : '—';
+  $('#sw-rate').textContent = same ? '' : `1 ${S.swapFrom} = ${sig4(c.rate)} ${S.swapTo}`;
+  const route = c.hops === 2 ? `<span class="route">${S.swapFrom}${I.chev}USDG${I.chev}${S.swapTo}</span>` : `<span class="route">${S.swapFrom}${I.chev}${S.swapTo}</span>`;
+  $('#sw-sum').innerHTML = rows([['Route', route], [`Pool fee${c.hops === 2 ? ' (2 pools)' : ''}`, `${fmt(c.fee)} USDG`], ['Minimum you get', same ? '—' : `${sig4(c.min)} ${S.swapTo}`], ['Visible onchain', 'The pool changed']]);
+  let h = '';
+  if (!S.connected) setBtn(btn, 'Connect wallet', 'btn-white', false, 'connect');
+  else if (same) setBtn(btn, 'Choose two different tokens', 'btn-dark', true, 'swap');
+  else if (c.a <= 0) setBtn(btn, 'Enter an amount', 'btn-dark', true, 'swap');
+  else if (c.a > c.have) { setBtn(btn, `Not enough private ${S.swapFrom}`, 'btn-dark', true, 'swap'); h = `You have ${fmt(c.have, dp(S.swapFrom))} ${S.swapFrom} available.`; }
+  else setBtn(btn, 'Swap privately', 'btn-white', false, 'swap');
+  $('#sw-hint').textContent = h;
+}
+function doSwap() {
+  const c = swapCalc(), f = S.swapFrom, t = S.swapTo;
+  runFlow({
+    title: `Swap ${f} for ${t}`, steps: [
+      { t: 'Locking your tokens in a private swap request', d: `${fmt(c.a, dp(f))} ${f}`, ms: 650 },
+      { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
+      { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
+      { t: c.hops === 2 ? 'Filling both pools in one action' : 'Filling against the private pool', d: `Only at or above ${sig4(c.min)} ${t}`, ms: 800 },
+    ], done: () => {
+      S.priv[f] = bal(S.priv, f) - c.a; S.priv[t] = bal(S.priv, t) + c.out;
+      chainSaw(c.hops === 2 ? 'Two pools changed' : `The ${f === 'USDG' ? t : f} pool changed`);
+      log(`Swapped ${fmt(c.a, dp(f))} ${f} for ${sig4(c.out)} ${t}`, c.hops === 2 ? 'Routed through USDG in one action' : `Private swap through the ${f === 'USDG' ? t : f} pool`, 'swapI');
+      return { rows: [['You paid', `${fmt(c.a, dp(f))} ${f}`], ['You got', `${sig4(c.out)} ${t}`], ['Pool fees', `${fmt(c.fee)} USDG`], ['Receipt', '#' + rid()]], toast: 'Swapped' };
+    }
+  });
+}
+
+/* ---------------- liquidity ---------------- */
+function poolCard(s, size, apr) {
+  const m = mk(s), mine = S.lp[s] || 0;
+  return `<div class="card pool"><div class="pool-h"><span class="pair">${logo(s, 'sm')}${logo('USDG', 'sm')}</span><b>${s} / USDG</b><span class="badge">0.30% fee</span></div>
+  <div class="kv"><div><small>Pool size</small><b>~${compact(size)}</b></div><div><small>Est. APR</small><b class="up">${fmt(apr, 1)}%</b></div><div><small>Your liquidity</small><b class="${mine ? 'pv' : ''}" ${mine ? `data-lp="${s}"` : ''}>${mine ? usd(mine) : 'None'}</b></div><div><small>Price</small><b data-px="${s}">${usd(m.price)}</b></div></div>
+  <div class="rowbtns">${mine ? `<button class="btn btn-dark btn-sm" data-act="lprm" data-arg="${s}">Remove</button>` : ''}<button class="btn btn-white btn-sm" data-act="lpadd" data-arg="${s}">Add liquidity</button></div></div>`;
+}
+function vLiquidity() {
+  return `<div class="vhead"><div><h1 class="vtitle">Earn</h1><p class="vsub">Add to a private pool and earn 0.30% of every swap through it. Public pool sizes are rounded and published hourly.</p></div></div>
+  <div class="pools">${POOLS.map(([s, z, a]) => poolCard(s, z, a)).join('')}</div>
+  <div class="boxnote" style="max-width:760px">${I.info}<span>Hourly totals only appear when an hour has at least 10 fills from at least 2 makers, rounded to two significant figures, so no single trade stands out.</span></div>`;
+}
+function lpAddModal(sym) {
+  if (!S.connected) return connectModal();
+  S.lpSym = sym;
+  openModal(`<div class="m-head"><h3 id="m-title">Add liquidity to ${sym}</h3>${closeBtn}</div>
+  <p class="m-text">Pays from your private USDG. Half is swapped into ${sym} in the same action, so you add equal value of both.</p>
+  <div class="fl"><label for="lp-amt">Amount</label><span>Available <b class="num pv">${fmt(bal(S.priv, 'USDG'))} USDG</b></span></div><div class="inp"><input id="lp-amt" inputmode="decimal" value="1000" autocomplete="off"><span class="unit">USDG</span></div>
+  <div class="sumbox" id="lp-sum"></div>
+  <button class="btn btn-white btn-block" id="lp-go" data-act="lpgo" data-arg="${sym}">Add liquidity</button><p class="hint" id="lp-hint"></p>`);
+  updateLp();
+}
+function updateLp() {
+  const a = parseFloat($('#lp-amt')?.value) || 0, sym = S.lpSym, m = mk(sym), have = bal(S.priv, 'USDG');
+  $('#lp-sum').innerHTML = rows([['Added as USDG', `${fmt(a / 2)} USDG`], [`Added as ${sym}`, `${fmt(a / 2 / m.price, 4)} ${sym}`], ['You earn', '0.30% of swaps'], ['Visible onchain', 'The pool changed']]);
+  $('#lp-go').disabled = a <= 0 || a > have;
+  $('#lp-hint').textContent = a > have ? `You have ${fmt(have)} USDG available.` : '';
+}
+function lpGo(sym) {
+  const a = parseFloat($('#lp-amt').value) || 0;
+  runFlow({
+    title: `Add liquidity to ${sym}`, steps: [
+      { t: 'Generating proof in your browser', d: 'Shows you own the USDG you are adding', ms: 1600, proof: true },
+      { t: 'Relayer submitting proof', d: 'Your wallet stays off the deposit', ms: 700 },
+      { t: `Swapping half into ${sym} and adding both`, d: 'One action, no in-between balance', ms: 800 },
+    ], done: () => {
+      S.priv.USDG = bal(S.priv, 'USDG') - a; S.lp[sym] = (S.lp[sym] || 0) + a;
+      chainSaw(`The ${sym} pool changed`);
+      log(`Added ${fmt(a)} USDG to the ${sym} pool`, 'Your share stays private', 'drop');
+      return { rows: [['Pool', `${sym} / USDG`], ['Added', `${fmt(a)} USDG in value`], ['Receipt', '#' + rid()]], toast: 'Liquidity added' };
+    }
+  });
+}
+function lpRemove(sym) {
+  const v = S.lp[sym] || 0;
+  runFlow({
+    title: `Remove liquidity from ${sym}`, steps: [
+      { t: 'Generating proof in your browser', d: 'Proves you own this share', ms: 1400, proof: true },
+      { t: 'Relayer submitting proof', d: 'Your wallet stays off the withdrawal', ms: 700 },
+      { t: 'Returning your share as USDG', d: 'Into your private balance', ms: 700 },
+    ], done: () => {
+      S.priv.USDG = bal(S.priv, 'USDG') + v; delete S.lp[sym];
+      chainSaw(`The ${sym} pool changed`);
+      log(`Removed liquidity from the ${sym} pool`, `${fmt(v)} USDG back to your private balance`, 'drop');
+      return { rows: [['Returned', `${fmt(v)} USDG`], ['Receipt', '#' + rid()]], toast: 'Liquidity removed' };
+    }
+  });
+}
+
+/* ---------------- portfolio ---------------- */
+function assetRow(t, src, pub) {
+  const amt = bal(src, t);
+  return `<tr><td><div class="mcell">${logo(t, 'sm')}<div><b>${t}</b><small>${tokName(t)}</small></div></div></td><td class="r num">${pub ? fmt(amt, dp(t)) : pv(fmt(amt, dp(t)))}</td><td class="r num hide-sm" ${isMkt(t) ? `data-px="${t}"` : ''}>${usd(tokPx(t))}</td><td class="r num" data-val="${t}|${pub ? 'pub' : 'priv'}"></td></tr>`;
+}
+function vPortfolio() {
+  if (!S.connected) return `<div class="vhead"><div><h1 class="vtitle">Portfolio</h1></div></div><div class="card empty" style="padding:72px 20px"><p style="font-size:17px;color:var(--text);font-weight:500">Connect your wallet to open your private account.</p><p>One signature creates your private keys in this browser. It costs no gas, and the same wallet opens the same account on any device.</p><button class="btn btn-white btn-lg" data-act="connect">Connect wallet</button></div>`;
+  const priv = TOKS.filter(t => bal(S.priv, t) > 1e-7), pub = Object.keys(S.wallet).filter(t => S.wallet[t] > 1e-7);
+  const head = `<thead><tr><th>Asset</th><th class="r">Amount</th><th class="r hide-sm">Price</th><th class="r">Value</th></tr></thead>`;
+  return `<div class="vhead"><div><h1 class="vtitle">Portfolio</h1><p class="vsub">Everything below is decrypted on this device only.</p></div></div>
+  <div class="pf">
+  <section class="card pf-hero"><div><span class="muted" style="font-size:13.5px">Private balance</span><div class="pf-big num pv" data-total>${usd(privTotal())}</div>
+    <div class="pf-sub"><span class="paddr">${pv(S.paddr.slice(0, 12) + '…' + S.paddr.slice(-6))}<button class="icb" data-act="copy" aria-label="Copy private address">${I.copy}</button></span><span>Share this address to receive private transfers.</span></div></div>
+    <div class="pf-actions"><button class="btn btn-white" data-act="shield">Shield</button><button class="btn btn-dark" data-act="unshield">Unshield</button><button class="btn btn-dark" data-act="send">Send privately</button></div></section>
+  <div class="pf-grid">
+    <section class="card"><h2 class="ph">Private assets</h2><p class="ph-sub">Free balance you can trade, send or unshield.</p><div class="tbl-wrap"><table class="tbl">${head}<tbody>${priv.length ? priv.map(t => assetRow(t, S.priv)).join('') : `<tr><td colspan="4" class="empty">Nothing here yet. Shield tokens to start.</td></tr>`}</tbody></table></div></section>
+    <section class="card"><h2 class="ph">Public wallet</h2><p class="ph-sub">Anyone can see this. Shield tokens to make them private.</p><div class="tbl-wrap"><table class="tbl">${head}<tbody>${pub.map(t => assetRow(t, S.wallet, true)).join('')}</tbody></table></div></section>
+  </div>
+  <section class="card"><h2 class="ph">Open positions</h2>${S.positions.length ? `<div style="margin-top:8px">${posTable(S.positions, true)}</div>` : `<div class="empty"><p>No open positions.</p><a class="btn btn-dark btn-sm" href="#/app/trade/${S.sel}?perps">Open a position</a></div>`}</section>
+  <section class="card"><h2 class="ph">Activity</h2><div style="margin-top:8px">${actList(S.history, 12)}</div></section>
+  </div>`;
+}
+function moveModal(kind) {
+  if (!S.connected) return connectModal();
+  S.mvKind = kind;
+  const src = kind === 'shield' ? S.wallet : S.priv;
+  const toks = Object.keys(src).filter(t => t !== 'ETH' && src[t] > 1e-7);
+  const title = { shield: 'Shield tokens', unshield: 'Unshield tokens', send: 'Send privately' }[kind];
+  const text = { shield: 'Move tokens from your public wallet into your private balance.', unshield: 'Move tokens from your private balance back to a public address.', send: 'Send to another private address. The amount and both parties stay hidden.' }[kind];
+  openModal(`<div class="m-head"><h3 id="m-title">${title}</h3>${closeBtn}</div><p class="m-text">${text}</p>
+  <div class="fl"><label for="mv-tok">Token</label></div><select class="sel full" id="mv-tok">${toks.map(t => `<option>${t}</option>`).join('')}</select>
+  <div class="fl"><label for="mv-amt">Amount</label><span>${kind === 'shield' ? 'In wallet' : 'Available'} <b class="num" id="mv-have"></b></span></div><div class="inp"><input id="mv-amt" inputmode="decimal" placeholder="0.00" autocomplete="off"><button class="btn btn-ghost btn-sm" data-act="mvmax">Max</button></div>
+  ${kind === 'send' ? `<div class="fl"><label for="mv-to">Recipient's private address</label></div><div class="inp sm"><input id="mv-to" placeholder="velum1…" autocomplete="off"></div>` : ''}
+  ${kind === 'unshield' ? `<div class="fl"><label for="mv-to">To public address</label></div><div class="inp sm"><input id="mv-to" value="${S.addr}" autocomplete="off" style="font-size:13px"></div>` : ''}
+  <div class="boxnote ${kind === 'send' ? '' : 'warn'}">${I.info}<span>${kind === 'send' ? 'Nothing about this transfer is published in readable form.' : 'This step is public: anyone can see the wallet, token, amount and time. Vary amounts and wait between moves to make them harder to link.'}</span></div>
+  <button class="btn btn-white btn-block" data-act="mvgo" data-arg="${kind}" id="mv-go"></button><p class="hint" id="mv-hint"></p>`);
+  updateMove();
+}
+function updateMove() {
+  const kind = S.mvKind, t = $('#mv-tok')?.value; if (!t) return;
+  const have = bal(kind === 'shield' ? S.wallet : S.priv, t), a = parseFloat($('#mv-amt').value) || 0;
+  $('#mv-have').textContent = `${fmt(have, dp(t))} ${t}`;
+  const b = $('#mv-go'); b.textContent = `${{ shield: 'Shield', unshield: 'Unshield', send: 'Send' }[kind]} ${t}`;
+  b.disabled = a <= 0 || a > have;
+  $('#mv-hint').textContent = a > have ? `You have ${fmt(have, dp(t))} ${t} available.` : '';
+}
+function moveGo(kind) {
+  const t = $('#mv-tok').value, a = parseFloat($('#mv-amt').value) || 0, to = $('#mv-to')?.value.trim() || '';
+  if (kind === 'send' && !/^velum1[0-9a-z]{10,}$/i.test(to)) { $('#mv-hint').textContent = 'Enter a private address that starts with velum1.'; return; }
+  if (kind === 'unshield' && !/^0x[0-9a-f]{40}$/i.test(to)) { $('#mv-hint').textContent = 'Enter a public address: 0x followed by 40 characters.'; return; }
+  const F = {
+    shield: { title: `Shield ${t}`, steps: [{ t: `Approving ${t}`, d: 'Lets the Velum contract receive this token', ms: 600 }, { t: 'Sending public deposit', d: 'Visible onchain: wallet, token, amount, time', ms: 800 }, { t: 'Adding a note to your private balance', d: 'Usually within a block or two', ms: 900 }], apply: () => { S.wallet[t] -= a; S.priv[t] = bal(S.priv, t) + a; chainSaw(`Public deposit of ${fmt(a, dp(t))} ${t}`); log(`Shielded ${fmt(a, dp(t))} ${t}`, 'Public deposit from your wallet', 'shieldIn'); }, toast: `Shielded ${t}` },
+    unshield: { title: `Unshield ${t}`, steps: [{ t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true }, { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 }, { t: 'Sending tokens to the public address', d: shortH(to || '0x0000000000'), ms: 700 }], apply: () => { S.priv[t] -= a; if (to.toLowerCase() === S.addr.toLowerCase()) S.wallet[t] = bal(S.wallet, t) + a; chainSaw(`Public withdrawal of ${fmt(a, dp(t))} ${t}`); log(`Unshielded ${fmt(a, dp(t))} ${t}`, `Public transfer to ${shortH(to)}`, 'shieldOut'); }, toast: `Unshielded ${t}` },
+    send: { title: `Send ${t} privately`, steps: [{ t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true }, { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 }, { t: 'Creating an encrypted note for the recipient', d: 'Only they can read it', ms: 600 }], apply: () => { S.priv[t] -= a; chainSaw('An encrypted note was created'); log(`Sent ${fmt(a, dp(t))} ${t} privately`, `To ${to.slice(0, 12)}…`, 'send'); }, toast: `Sent ${t} privately` },
+  }[kind];
+  runFlow({ title: F.title, steps: F.steps, done: () => { F.apply(); return { rows: [['Token', t], ['Amount', fmt(a, dp(t))], ['Visible onchain', kind === 'send' ? 'Nothing readable' : 'Wallet, token, amount, time'], ['Receipt', '#' + rid()]], toast: F.toast }; } });
+}
+
+/* ---------------- makers ---------------- */
+function vMakers() {
+  return `<div class="vhead"><div><h1 class="vtitle">Maker desk</h1><p class="vsub">Back traders' positions from your private balance and earn the spread. You take the other side of every fill.</p></div></div>
+  <div class="mk-grid">
+    <section class="card form">
+      <h2>Post a standing offer</h2>
+      <div class="fl"><label for="of-mkt">Market</label></div><select class="sel full" id="of-mkt">${MARKETS.map(m => `<option ${m.sym === S.sel ? 'selected' : ''}>${m.sym}</option>`).join('')}</select>
+      <div class="fl"><label for="of-back">Backing</label><span>Available <b class="num pv" id="of-have"></b></span></div><div class="inp sm"><input id="of-back" inputmode="decimal" value="5000" autocomplete="off"><span class="unit">USDG</span></div>
+      <div class="fl"><label for="of-max">Largest single fill</label></div><div class="inp sm"><input id="of-max" inputmode="decimal" value="1000" autocomplete="off"><span class="unit">USDG</span></div>
+      <div class="row2"><div><div class="fl"><label for="of-open">Open spread</label></div><div class="inp sm"><input id="of-open" inputmode="decimal" value="8" autocomplete="off"><span class="unit">bps</span></div></div>
+      <div><div class="fl"><label for="of-close">Close spread</label></div><div class="inp sm"><input id="of-close" inputmode="decimal" value="5" autocomplete="off"><span class="unit">bps</span></div></div></div>
+      <div class="fl"><span>Offer ends in</span></div><div class="seg full" id="of-exp">${['6 hours', '24 hours', '7 days'].map(x => `<button data-act="ofexp" data-arg="${x}" class="${S.ofExp === x ? 'on' : ''}">${x}</button>`).join('')}</div>
+      <div class="sumbox" id="of-sum"></div>
+      <button class="btn btn-block" id="of-go" data-act="offer"></button><p class="hint" id="of-hint"></p>
+      <p class="note">${I.info}<span>Your close spread is a promise. Takers can close against you at any time at the oracle price minus this spread, without your signature.</span></p>
+    </section>
+    <div class="stack2">
+      <section class="card"><h2 class="ph">Your offers</h2><div id="of-list" style="margin-top:8px"></div></section>
+      <section class="card"><h2 class="ph">What others can see about you</h2><div class="tbl-wrap" style="margin-top:8px"><table class="tbl"><tbody>
+        <tr><td>Public chain</td><td class="muted">Not which maker backs a fill</td></tr>
+        <tr><td>Your takers</td><td class="muted">Not who you are</td></tr>
+        <tr><td>Coordinator</td><td class="muted">A one-time address and your offer terms</td></tr>
+        <tr><td>Risk service</td><td class="muted">A one-time address on each position</td></tr>
+      </tbody></table></div><p class="ph-sub" style="padding-bottom:16px">Your spreads and how fast you quote can still hint at who you are in quiet markets.</p></section>
+    </div>
+  </div>`;
+}
+function offerVals() { return { sym: $('#of-mkt').value, back: parseFloat($('#of-back').value) || 0, max: parseFloat($('#of-max').value) || 0, open: parseFloat($('#of-open').value) || 0, close: parseFloat($('#of-close').value) || 0 }; }
+function updateOffer() {
+  const sum = $('#of-sum'); if (!sum) return; const v = offerVals(), have = bal(S.priv, 'USDG'), b = $('#of-go');
+  $('#of-have').textContent = S.connected ? fmt(have) + ' USDG' : '—';
+  sum.innerHTML = rows([['You earn per $1,000 opened', usd(v.open / 10)], ['Takers pay to close', `${fmt(v.close, 0)} bps`], ['Backing locked', `${fmt(v.back)} USDG`], ['Most you can lose', 'Your backing']]);
+  let h = '';
+  if (!S.connected) setBtn(b, 'Connect wallet', 'btn-white', false, 'connect');
+  else if (v.back <= 0) setBtn(b, 'Enter backing', 'btn-dark', true, 'offer');
+  else if (v.back > have) { setBtn(b, 'Not enough private USDG', 'btn-dark', true, 'offer'); h = `You have ${fmt(have)} USDG available.`; }
+  else if (v.max <= 0 || v.max > v.back) { setBtn(b, 'Check your largest fill', 'btn-dark', true, 'offer'); h = 'The largest fill must be above zero and no more than your backing.'; }
+  else setBtn(b, 'Post offer', 'btn-white', false, 'offer');
+  $('#of-hint').textContent = h;
+}
+function renderOffers() {
+  const el = $('#of-list'); if (!el) return;
+  if (!S.connected) { el.innerHTML = '<div class="empty"><p>Connect your wallet to post and manage offers.</p></div>'; return; }
+  if (!S.offers.length) { el.innerHTML = '<div class="empty"><p>No offers yet. Post one to start backing trades.</p></div>'; return; }
+  el.innerHTML = `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th class="r">Backing</th><th class="r">Fills</th><th class="r">Earned</th><th class="r hide-sm">Spreads</th><th class="r hide-sm">Ends</th><th class="r"><span class="sr">Actions</span></th></tr></thead><tbody>${S.offers.map(o => `<tr><td><div class="mcell">${logo(o.sym, 'sm')}<b>${o.sym}</b></div></td><td class="r num">${pv(fmt(o.back, 0) + ' USDG')}</td><td class="r num">${o.fills}</td><td class="r num">${pv(`<span class="up">${usd(o.earned)}</span>`)}</td><td class="r num hide-sm">${o.open} / ${o.close} bps</td><td class="r hide-sm faint">in ${o.exp}</td><td class="r"><button class="btn btn-dark btn-sm" data-act="offrm" data-arg="${o.id}">Withdraw</button></td></tr>`).join('')}</tbody></table></div>`;
+}
+function postOffer() {
+  const v = offerVals(), exp = S.ofExp;
+  runFlow({
+    title: `Post ${v.sym} offer`, steps: [
+      { t: 'Locking backing in a private note', d: `${fmt(v.back)} USDG`, ms: 650 },
+      { t: 'Generating proof in your browser', d: 'Proves you hold the backing', ms: 1500, proof: true },
+      { t: 'Sending your offer to the coordinator', d: 'Against a one-time address', ms: 700 },
+    ], done: () => {
+      S.priv.USDG = bal(S.priv, 'USDG') - v.back;
+      S.offers.unshift({ id: uid(), ...v, exp, fills: 0, earned: 0 });
+      chainSaw('A private note was locked');
+      log(`Posted a ${v.sym} offer`, `${fmt(v.back)} USDG backing, ${v.open}/${v.close} bps`, 'offer');
+      return { rows: [['Market', `${v.sym} perp`], ['Backing', `${fmt(v.back)} USDG`], ['Spreads', `${v.open} / ${v.close} bps`], ['Ends in', exp], ['Receipt', '#' + rid()]], toast: 'Offer posted' };
+    }
+  });
+}
+function withdrawOffer(id) {
+  const o = S.offers.find(x => x.id === id); if (!o) return;
+  runFlow({
+    title: `Withdraw ${o.sym} offer`, steps: [
+      { t: 'Generating proof in your browser', d: 'Proves this offer is yours', ms: 1300, proof: true },
+      { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
+      { t: 'Releasing unused backing', d: 'Back to your private balance', ms: 600 },
+    ], done: () => {
+      const back = o.back + o.earned; S.priv.USDG = bal(S.priv, 'USDG') + back; S.offers = S.offers.filter(x => x !== o);
+      chainSaw('A private note was released');
+      log(`Withdrew the ${o.sym} offer`, `${fmt(back)} USDG back, including ${usd(o.earned)} earned`, 'offer');
+      return { rows: [['Returned', `${fmt(back)} USDG`], ['Earned', usd(o.earned)], ['Receipt', '#' + rid()]], toast: 'Offer withdrawn' };
+    }
+  });
+}
+
+const VIEWS = { trade: vTrade, markets: vMarkets, swap: vSwap, portfolio: vPortfolio, liquidity: vLiquidity, makers: vMakers };
+
+/* ---------------- router ---------------- */
+function parseHash() {
+  const h = location.hash || '#/';
+  if (h.startsWith('#/app')) { const [path, q] = h.slice(2).split('?'); const parts = path.split('/'); return { app: true, view: parts[1] || 'trade', arg: parts[2], q }; }
+  return { app: false, anchor: h.startsWith('#/') ? null : h.slice(1) };
+}
+function route() {
+  const r = parseHash(), wasApp = isApp();
+  document.body.classList.toggle('in-app', r.app);
+  if (r.app) {
+    if (r.view === 'trade') {
+      if (r.arg && isMkt(r.arg) && S.sel !== r.arg) { S.sel = r.arg; candles = []; hover = null; }
+      if (r.q === 'spot') S.mode = 'spot'; else if (r.q === 'perps') S.mode = 'perps';
+    }
+    const nv = VIEWS[r.view] ? r.view : 'trade';
+    if (!wasApp || nv !== S.view) window.scrollTo(0, 0);
+    S.view = nv; render();
+  } else {
+    if (wasApp || !$('#hero-term').innerHTML) render();
+    if (r.anchor) { const el = document.getElementById(r.anchor); if (el) setTimeout(() => el.scrollIntoView({ behavior: RM ? 'auto' : 'smooth' }), wasApp ? 40 : 0); }
+    else if (wasApp) window.scrollTo(0, 0);
+  }
+}
+function selectMarket(sym) {
+  if (isApp()) { location.hash = '#/app/trade/' + sym; return; }
+  if (S.sel !== sym) { S.sel = sym; candles = []; hover = null; render(); }
+}
+
+/* ---------------- events ---------------- */
+document.addEventListener('click', e => {
+  if (e.target.id === 'modal') { closeModal(); return; }
+  const go = e.target.closest('[data-go]'); if (go) { selectMarket(go.dataset.go); return; }
+  const t = e.target.closest('[data-act]'); if (!t || t.disabled) return;
+  const a = t.dataset.act, g = t.dataset.arg;
+  switch (a) {
+    case 'connect': connectModal(); break;
+    case 'wallet': signModal(); break;
+    case 'sign': doSign(); break;
+    case 'account': accountModal(); break;
+    case 'disconnect': disconnect(); break;
+    case 'veil': setVeil(!S.veiled); break;
+    case 'close-modal': closeModal(true); break;
+    case 'mode': S.mode = g; $$('[data-act="mode"]').forEach(b => b.classList.toggle('on', b.dataset.arg === g)); renderTicket(); break;
+    case 'side': S.side = g; renderTicket(); break;
+    case 'spside': S.spotSide = g; S.spotAmt = g === 'buy' ? '500' : floorTo(Math.min(1, bal(S.priv, S.sel)) || 1, 4); renderTicket(); break;
+    case 'ppct': { const have = bal(S.priv, 'USDG'), maxSize = have * S.lev / (1 + .0006 * S.lev); S.size = floorTo(maxSize * +g / 100, 2); $('#t-size').value = S.size; updateTicket(); break; }
+    case 'spct': { const c = spotCalc(); S.spotAmt = floorTo(c.have * +g / 100, dp(c.tin)); $('#t-spot').value = S.spotAmt; updateTicket(); break; }
+    case 'slip': S.slip = +g; $$('[data-act="slip"]').forEach(b => b.classList.toggle('on', b.dataset.arg === g)); updateTicket(); break;
+    case 'submit': S.mode === 'perps' ? openPerps() : spotTrade(); break;
+    case 'tf': S.tf = g; candles = genCandles(mk(S.sel)); $$('[data-act="tf"]').forEach(b => b.classList.toggle('on', b.dataset.arg === g)); drawChart(); break;
+    case 'ptab': S.ptab = g; $$('[data-act="ptab"]').forEach(b => b.classList.toggle('on', b.dataset.arg === g)); renderPositions(); updateLive(); break;
+    case 'chain': S.openChain[g] = !S.openChain[g]; $$(`[data-chainrow="${g}"]`).forEach(r => r.hidden = !S.openChain[g]); t.setAttribute('aria-expanded', S.openChain[g]); break;
+    case 'close': closePos(g); break;
+    case 'flip': [S.swapFrom, S.swapTo] = [S.swapTo, S.swapFrom]; $('#sw-from').value = S.swapFrom; $('#sw-to').value = S.swapTo; updateSwap(); break;
+    case 'swpct': S.swapAmt = floorTo(bal(S.priv, S.swapFrom) * +g / 100, dp(S.swapFrom)); $('#sw-in').value = S.swapAmt; updateSwap(); break;
+    case 'swap': doSwap(); break;
+    case 'lpadd': lpAddModal(g); break;
+    case 'lpgo': lpGo(g); break;
+    case 'lprm': lpRemove(g); break;
+    case 'shield': case 'unshield': case 'send': moveModal(a); break;
+    case 'mvmax': { const tk = $('#mv-tok').value; $('#mv-amt').value = floorTo(bal(S.mvKind === 'shield' ? S.wallet : S.priv, tk), dp(tk)); updateMove(); break; }
+    case 'mvgo': moveGo(g); break;
+    case 'ofexp': S.ofExp = g; $$('#of-exp button').forEach(b => b.classList.toggle('on', b.dataset.arg === g)); break;
+    case 'offer': postOffer(); break;
+    case 'offrm': withdrawOffer(g); break;
+    case 'copy': if (navigator.clipboard) navigator.clipboard.writeText(S.paddr).catch(() => {}); toast('Private address copied'); break;
+  }
+});
+document.addEventListener('input', e => {
+  const id = e.target.id;
+  if (id === 't-size') { S.size = e.target.value; updateTicket(); }
+  else if (id === 't-lev') { S.lev = +e.target.value; updateTicket(); }
+  else if (id === 't-spot') { S.spotAmt = e.target.value; updateTicket(); }
+  else if (id === 'sw-in') { S.swapAmt = e.target.value; updateSwap(); }
+  else if (id === 'mk-q') { S.q = e.target.value; applySearch(); }
+  else if (id === 'lp-amt') updateLp();
+  else if (id === 'mv-amt' || id === 'mv-to') updateMove();
+  else if (id && id.startsWith('of-')) updateOffer();
+});
+document.addEventListener('change', e => {
+  const id = e.target.id;
+  if (id === 'sw-from') { S.swapFrom = e.target.value; updateSwap(); }
+  else if (id === 'sw-to') { S.swapTo = e.target.value; updateSwap(); }
+  else if (id === 'mv-tok') updateMove();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Enter' && e.target.id === 'mk-q') { const q = S.q.toLowerCase().trim(); const m = MARKETS.find(x => (x.sym + ' ' + x.name).toLowerCase().includes(q)); if (q && m) { S.q = ''; location.hash = '#/app/trade/' + m.sym; } }
+});
+window.addEventListener('resize', () => drawChart());
+window.addEventListener('hashchange', route);
+
+/* ---------------- tick ---------------- */
+let tickN = 0;
+function tick() {
+  tickN++;
+  MARKETS.forEach(m => {
+    const prev = m.price; m.price = Math.max(1, m.price * (1 + gauss() * m.vol)); m.dir = m.price >= prev ? 1 : -1;
+    if (tickN % 3 === 0) { m.hist.push(m.price); if (m.hist.length > 60) m.hist.shift(); } else m.hist[m.hist.length - 1] = m.price;
+  });
+  S.offers.forEach(o => { if (Math.random() < .06) { o.fills++; o.earned += rnd(.4, 3.2); } });
+  Object.keys(S.lp).forEach(k => S.lp[k] *= 1.0000025);
+  updateCandles(); checkLiq();
+  updateLive();
+  const view = isApp() ? S.view : 'trade';
+  if (view === 'trade') { drawChart(); updateTicket(); }
+  else if (view === 'makers') renderOffers();
+  else if (view === 'swap') updateSwap();
+  if (!isApp()) $('#priv-rows').innerHTML = duoRows(true);
+}
+
+initLanding();
+route();
+setInterval(tick, 1600);
+if (document.fonts) document.fonts.ready.then(() => drawChart());
+})();
+</script>
+</body>
+</html>

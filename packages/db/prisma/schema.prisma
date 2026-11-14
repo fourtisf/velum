@@ -1,0 +1,154 @@
+// Velum — starting schema. Extend it; don't break existing columns without a migration.
+// Money is stored as Decimal (fixed precision). Never store user keys or plaintext positions.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MarketStatus {
+  live
+  coming_soon
+  close_only
+}
+
+model Market {
+  id              String       @id @default(cuid())
+  symbol          String       @unique            // TSLA
+  name            String                          // Tesla
+  tokenAddress    String?      @unique            // exact token contract
+  priceFeed       String?                         // approved oracle feed
+  status          MarketStatus @default(coming_soon)
+  maxLeverage     Int          @default(5)
+  takerFeeBps     Int          @default(6)
+  openInterestCap Decimal      @default(100000) @db.Decimal(38, 6)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  ticks           PriceTick[]
+  candles         Candle[]
+  funding         FundingEpoch[]
+  pool            Pool?
+}
+
+model PriceTick {
+  id       BigInt   @id @default(autoincrement())
+  marketId String
+  market   Market   @relation(fields: [marketId], references: [id])
+  price    Decimal  @db.Decimal(38, 12)
+  source   String                                  // oracle | relay | demo
+  at       DateTime @default(now())
+
+  @@index([marketId, at])
+}
+
+model Candle {
+  marketId String
+  market   Market   @relation(fields: [marketId], references: [id])
+  tf       String                                  // 15m | 1h | 4h | 1D
+  t        DateTime                                // bucket start
+  o        Decimal  @db.Decimal(38, 12)
+  h        Decimal  @db.Decimal(38, 12)
+  l        Decimal  @db.Decimal(38, 12)
+  c        Decimal  @db.Decimal(38, 12)
+
+  @@id([marketId, tf, t])
+}
+
+model FundingEpoch {
+  id       BigInt   @id @default(autoincrement())
+  marketId String
+  market   Market   @relation(fields: [marketId], references: [id])
+  rate     Decimal  @db.Decimal(38, 18)            // per hour
+  index    Decimal  @db.Decimal(78, 18)
+  at       DateTime
+
+  @@index([marketId, at])
+}
+
+model Pool {
+  id          String       @id @default(cuid())
+  marketId    String       @unique
+  market      Market       @relation(fields: [marketId], references: [id])
+  address     String?      @unique
+  feeBps      Int          @default(30)
+  hourly      PoolHourly[]
+}
+
+// Public, privacy-safe aggregates only (rounded, thresholded).
+model PoolHourly {
+  poolId      String
+  pool        Pool     @relation(fields: [poolId], references: [id])
+  hour        DateTime
+  sizeRounded Decimal  @db.Decimal(38, 2)
+  aprEst      Decimal  @db.Decimal(10, 4)
+  fills       Int
+  makers      Int
+  published   Boolean  @default(false)
+
+  @@id([poolId, hour])
+}
+
+// Phase 4 — indexed encrypted records (ciphertext only; clients decrypt locally).
+model NoteRecord {
+  leaf         Int      @id
+  commitment   String   @unique
+  ciphertext   Bytes
+  ephemeralKey String
+  txHash       String
+  block        BigInt
+  createdAt    DateTime @default(now())
+
+  @@index([block])
+}
+
+model Nullifier {
+  value   String   @id
+  txHash  String
+  block   BigInt
+}
+
+model ChainEvent {
+  id       BigInt   @id @default(autoincrement())
+  kind     String                                  // PositionChanged | PoolChanged | Shield | Unshield | Liquidated | FundingAdvanced
+  market   String?
+  txHash   String
+  logIndex Int
+  block    BigInt
+  data     Json
+
+  @@unique([txHash, logIndex])
+  @@index([kind, block])
+}
+
+enum RelayStatus {
+  queued
+  submitted
+  confirmed
+  failed
+}
+
+model RelayJob {
+  id           String      @id @default(cuid())
+  action       String                              // transfer | unshield | open | close | swap | ...
+  proof        Bytes
+  publicInputs Json
+  fee          Decimal     @db.Decimal(38, 6)
+  status       RelayStatus @default(queued)
+  txHash       String?
+  block        BigInt?
+  error        String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model SyncState {
+  key       String   @id                           // indexer | candles | funding
+  block     BigInt
+  updatedAt DateTime @updatedAt
+}

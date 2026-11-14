@@ -5,6 +5,7 @@ import { loadEnv } from './env';
 import { applyTick, bucketStart, candleUpsertSql, toCandle, type WadCandle } from './lib/candles';
 import { MIN_PRICE, floatToDec, gauss, genCandles, genSpark, seedOpen24h, stepPrice } from './lib/demo';
 import { buildSnapshot, markOf } from './lib/snapshot';
+import { RH_MAX_QUOTE_AGE_MS, rhMid, robinhoodSource } from './sources';
 import { demoSource } from './sources';
 
 /** Deterministic PRNG (mulberry32) so tests are repeatable. */
@@ -180,5 +181,43 @@ describe('env', () => {
     expect(loadEnv(base)).toMatchObject({ demoMode: true, pricePollMs: 2000, priceSource: 'demo', chainId: 46630, tickRetentionDays: 7 });
     expect(loadEnv({ ...base, PRICE_SOURCE: 'chainlink' }).priceSource).toBe('chainlink');
     expect(() => loadEnv({ ...base, PRICE_SOURCE: 'binance', PRICE_POLL_MS: '10', CHAIN_ID: '4663' })).toThrow(/CHAIN_ID 4663[\s\S]*PRICE_SOURCE[\s\S]*PRICE_POLL_MS/);
+  });
+});
+
+describe('robinhood quotes', () => {
+  const NOW = Date.parse('2026-11-14T14:37:00Z');
+  const tsla = {
+    tokenSymbol: 'TSLA',
+    deployments: [{ contractAddress: '0x322F0929c4625eD5bAd873c95208D54E1c003b2d', chainId: 4663 }],
+    tokenBid: '387.000000000000000000',
+    tokenAsk: '394.830000000000000000',
+    isTradingHalt: false,
+    generatedAt: '2026-11-14T14:36:57.620287657Z',
+  };
+  it('uses the bid/ask midpoint, floored to 4 decimals', () => {
+    expect(rhMid('TSLA', tsla, NOW)).toBe('390.915');
+    expect(rhMid('NVDA', { ...tsla, tokenSymbol: 'NVDA', deployments: [{ contractAddress: '0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC', chainId: 4663 }], tokenBid: '149.115498715529958655', tokenAsk: '161.174839383463757325' }, NOW)).toBe('155.1451');
+  });
+  it('rejects quotes for another contract, halted, stale, crossed or missing', () => {
+    expect(rhMid('TSLA', { ...tsla, deployments: [{ contractAddress: '0x0000000000000000000000000000000000000001', chainId: 4663 }] }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...tsla, deployments: [{ contractAddress: tsla.deployments[0]!.contractAddress, chainId: 1 }] }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...tsla, isTradingHalt: true }, NOW)).toBeNull();
+    expect(rhMid('TSLA', tsla, NOW + RH_MAX_QUOTE_AGE_MS + 5000)).toBeNull();
+    expect(rhMid('TSLA', { ...tsla, tokenBid: '400', tokenAsk: '390' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...tsla, tokenBid: '0' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', undefined, NOW)).toBeNull();
+    expect(rhMid('AMZN', tsla, NOW)).toBeNull();
+  });
+  it('reads every market through fetch and skips failures', async () => {
+    const calls: string[] = [];
+    const fake = (async (url: string) => {
+      calls.push(url);
+      if (url.endsWith('/TSLA')) return new Response(JSON.stringify({ quotes: [{ ...tsla, generatedAt: new Date().toISOString() }] }), { status: 200 });
+      return new Response('{}', { status: 500 });
+    }) as unknown as typeof fetch;
+    const silent = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Parameters<typeof robinhoodSource>[0];
+    const out = await robinhoodSource(silent, fake).read(new Map(), Date.now());
+    expect(calls).toHaveLength(10);
+    expect([...out.entries()]).toEqual([['TSLA', '390.915']]);
   });
 });

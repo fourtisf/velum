@@ -56,8 +56,8 @@ Every release after that:
 runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/deploy.sh'
 ```
 
-Switch the network (Phase 2 mainnet = real wallet and balances, simulated prices and trades,
-no contracts):
+Switch the network. Mainnet = real wallet and balances plus live official Robinhood quotes
+(`PRICE_SOURCE=robinhood`); trades stay simulated and no contracts are deployed:
 
 ```bash
 runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/set-network.sh mainnet'
@@ -84,6 +84,11 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
 
 ## What changed in Phase 2
 
+- **Real prices** (`PRICE_SOURCE=robinhood`): official quotes from api.robinhood.com/rhj/prices
+  (documented at docs.robinhood.com/chain/stock-token-apis), using the bid/ask midpoint. Each quote must name
+  the exact mainnet token address. Switching between simulated and real prices clears stored history
+  once, so charts never mix the two. On mainnet, protocol metrics (open interest, funding, pool size,
+  APR, proofs) show "—" until contracts exist.
 - **Testnet or mainnet** (`VELUM_NETWORK`). Mainnet constants in `packages/config/robinhood-mainnet.json`
   come from docs.robinhood.com and Robinhood's own asset list (api.robinhood.com/rhj/assets), and
   each was checked on-chain. On mainnet all 10 markets exist. Every sentence that says "testnet"

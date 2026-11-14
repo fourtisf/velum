@@ -15,13 +15,16 @@ export const cacheKeys = {
   heartbeat: (worker: string) => `${CACHE_PREFIX}:heartbeat:${worker}`,
   /** Unix ms when demo data was backfilled (prevents re-seeding on restart). */
   demoSeeded: () => `${CACHE_PREFIX}:demo:seeded`,
+  /** Price source the stored history was built from; a change to a real source purges demo history. */
+  priceSource: () => `${CACHE_PREFIX}:price-source`,
 } as const;
 
 export const SPARK_POINTS = 60;
 export const SPARK_INTERVAL_MS = 60_000;
 export const CANDLE_CACHE_SIZE = 300;
 
-export type PriceSource = 'demo' | 'chainlink';
+/** demo = simulated; robinhood = official quotes from api.robinhood.com/rhj/prices; chainlink = on-chain feeds. */
+export type PriceSource = 'demo' | 'robinhood' | 'chainlink';
 
 export interface MarketSnapshot {
   symbol: string;

@@ -8,6 +8,7 @@ import {
   TIMEFRAMES,
   cacheKeys,
   type MarketSnapshot,
+  type PriceSource,
 } from '@velum/config';
 import type { PrismaClient } from '@velum/db';
 import { toDecimalString } from '@velum/math';
@@ -143,4 +144,29 @@ export async function demoBackfill(
   await pipe.exec();
   if (result.snapshotsSeeded || result.candlesInserted) log.info('demo data seeded', { ...result });
   return result;
+}
+
+/**
+ * Never mix simulated and real price history. The source the stored history came from is recorded
+ * under cacheKeys.priceSource(). When the next source is of the other kind (demo vs real), candles,
+ * cached snapshots and the other kind's ticks are removed once; demo backfill then re-seeds if the
+ * new source is demo. Switching between two real sources keeps history.
+ */
+export async function resetHistoryOnSourceChange(prisma: PrismaClient, redis: Redis, source: PriceSource, log: Logger): Promise<boolean> {
+  const [prev, seeded] = await Promise.all([redis.get(cacheKeys.priceSource()), redis.get(cacheKeys.demoSeeded())]);
+  const previous = prev ?? (seeded ? 'demo' : null);
+  const isReal = (x: string) => x !== 'demo';
+  const changedKind = previous === null ? isReal(source) : isReal(previous) !== isReal(source);
+  if (!changedKind) {
+    if (prev !== source) await redis.set(cacheKeys.priceSource(), source);
+    return false;
+  }
+  await prisma.$executeRaw`DELETE FROM "Candle"`;
+  if (isReal(source)) await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" = 'demo'`;
+  else await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" <> 'demo'`;
+  const keys = [...MARKETS.flatMap((m) => [cacheKeys.price(m.symbol), ...TIMEFRAMES.map((tf) => cacheKeys.candles(m.symbol, tf))]), cacheKeys.demoSeeded()];
+  await redis.del(...keys);
+  await redis.set(cacheKeys.priceSource(), source);
+  log.info('price source changed kind; cleared stored history so real and simulated prices never mix', { source, previous: previous ?? 'none' });
+  return true;
 }

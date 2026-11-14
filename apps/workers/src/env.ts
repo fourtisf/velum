@@ -43,14 +43,14 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
   }
 
   const src = (e.PRICE_SOURCE || 'demo').trim().toLowerCase();
-  if (src !== 'demo' && src !== 'chainlink') problems.push(`PRICE_SOURCE must be "demo" or "chainlink" (got "${e.PRICE_SOURCE}").`);
+  if (src !== 'demo' && src !== 'chainlink' && src !== 'robinhood') problems.push(`PRICE_SOURCE must be "demo", "robinhood" or "chainlink" (got "${e.PRICE_SOURCE}").`);
 
   const env: WorkerEnv = {
     databaseUrl,
     redisUrl,
     demoMode: bool(e.DEMO_MODE, true),
     pricePollMs: int('PRICE_POLL_MS', e.PRICE_POLL_MS, 2000, 500, 60_000),
-    priceSource: src === 'chainlink' ? 'chainlink' : 'demo',
+    priceSource: src === 'chainlink' || src === 'robinhood' ? src : 'demo',
     rpcUrl,
     chainId,
     tickRetentionDays: int('PRICE_TICK_RETENTION_DAYS', e.PRICE_TICK_RETENTION_DAYS, 7, 1, 365),

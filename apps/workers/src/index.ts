@@ -5,7 +5,7 @@
 import { PrismaClient } from '@velum/db';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
-import { demoBackfill, loadSeries, loadSnapshots, upsertMarkets } from './bootstrap';
+import { demoBackfill, loadSeries, loadSnapshots, resetHistoryOnSourceChange, upsertMarkets } from './bootstrap';
 import { CANDLES_WORKER, PRICE_WORKER, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
 import { runCandles, writeCandleCaches } from './jobs/candles';
@@ -28,9 +28,11 @@ async function main(): Promise<void> {
   redis.on('error', (err) => log.warn('redis error', { err: err.message }));
 
   const marketIds = await upsertMarkets(prisma);
+  // Never mix simulated and real price history (see resetHistoryOnSourceChange).
+  await resetHistoryOnSourceChange(prisma, redis, env.priceSource, log);
   const snapshots = await loadSnapshots(redis);
   let series = await loadSeries(prisma, marketIds);
-  if (env.demoMode) {
+  if (env.priceSource === 'demo') {
     const seeded = await demoBackfill(prisma, redis, marketIds, snapshots, series, env.pricePollMs, log);
     if (seeded.candlesInserted) series = await loadSeries(prisma, marketIds);
   }

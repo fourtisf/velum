@@ -39,7 +39,7 @@ export async function runPriceRelay(ctx: WorkerContext, now = Date.now()): Promi
 
   const pipe = ctx.redis.pipeline();
   const ticks: Array<{ marketId: string; price: string; source: string; at: Date }> = [];
-  const tickSource = ctx.source.name === 'chainlink' ? 'oracle' : 'demo';
+  const tickSource = ctx.source.name === 'chainlink' ? 'oracle' : ctx.source.name;
   for (const [symbol, price] of prices) {
     const prev = ctx.snapshots.get(symbol);
     const open = ctx.open24h.get(symbol) ?? prev?.open24h ?? price;

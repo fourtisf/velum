@@ -1,5 +1,5 @@
-import { MARKETS, PRICE_FEEDS, PROTOCOL, type Address, type PriceSource } from '@velum/config';
-import { fromUnits, roundTo, toDecimalString } from '@velum/math';
+import { MAINNET_CHAIN_ID, MAINNET_TOKEN_ADDRESSES, MARKETS, PRICE_FEEDS, PROTOCOL, ROBINHOOD_PRICES_URL, type Address, type PriceSource } from '@velum/config';
+import { fromUnits, parseWad, roundTo, toDecimalString } from '@velum/math';
 import { createPublicClient, http, parseAbi, type PublicClient } from 'viem';
 import { floatToDec, stepPrice, type Rng } from '../lib/demo';
 import type { Logger } from '../lib/log';
@@ -71,7 +71,63 @@ export function chainlinkSource(rpcUrl: string, feeds: Record<string, Address>, 
   };
 }
 
+interface RhQuote {
+  tokenSymbol?: string;
+  deployments?: Array<{ contractAddress?: string; chainId?: number }>;
+  tokenBid?: string;
+  tokenAsk?: string;
+  isTradingHalt?: boolean;
+  generatedAt?: string;
+}
+
+/** Quotes older than this are ignored (the market keeps its last price and goes stale). */
+export const RH_MAX_QUOTE_AGE_MS = 5 * 60_000;
+
+/**
+ * Midpoint of a Robinhood quote as a decimal string, or null when unusable. tokenBid/tokenAsk are
+ * multiplier-adjusted token prices (corporate actions included). The quote must name the exact
+ * mainnet token address for the symbol, because tickers are not unique on-chain.
+ */
+export function rhMid(symbol: string, q: RhQuote | undefined, now: number): string | null {
+  if (!q || q.tokenSymbol !== symbol || q.isTradingHalt) return null;
+  const want = MAINNET_TOKEN_ADDRESSES[symbol];
+  const match = q.deployments?.some((d) => d.chainId === MAINNET_CHAIN_ID && d.contractAddress?.toLowerCase() === want);
+  if (!want || !match) return null;
+  const at = q.generatedAt ? Date.parse(q.generatedAt) : NaN;
+  if (!Number.isFinite(at) || now - at > RH_MAX_QUOTE_AGE_MS) return null;
+  const bid = q.tokenBid ? parseWad(q.tokenBid) : null;
+  const ask = q.tokenAsk ? parseWad(q.tokenAsk) : null;
+  if (!bid || !ask || bid <= 0n || ask < bid) return null;
+  return toDecimalString(roundTo((bid + ask) / 2n, 4, 'floor'));
+}
+
+/** Official Robinhood Stock Token quotes, one request per symbol (60 req/s limit; 10 per tick). */
+export function robinhoodSource(log: Logger, fetchImpl: typeof fetch = fetch): PriceReader {
+  return {
+    name: 'robinhood',
+    async read(_last, now) {
+      const out = new Map<string, string>();
+      await Promise.all(
+        MARKETS.map(async (m) => {
+          try {
+            const res = await fetchImpl(`${ROBINHOOD_PRICES_URL}/${encodeURIComponent(m.symbol)}`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(4000) });
+            if (!res.ok) return log.warn('robinhood quote failed', { symbol: m.symbol, status: res.status });
+            const body = (await res.json()) as { quotes?: RhQuote[] };
+            const mid = rhMid(m.symbol, body.quotes?.[0], now);
+            if (mid) out.set(m.symbol, mid);
+            else log.debug('robinhood quote unusable', { symbol: m.symbol });
+          } catch (err) {
+            log.warn('robinhood quote error', { symbol: m.symbol, err: err instanceof Error ? err.message : String(err) });
+          }
+        }),
+      );
+      return out;
+    },
+  };
+}
+
 export function pickSource(kind: PriceSource, rpcUrl: string, log: Logger): PriceReader {
+  if (kind === 'robinhood') return robinhoodSource(log);
   if (kind === 'chainlink') {
     if (Object.keys(PRICE_FEEDS).length === 0) {
       log.warn('PRICE_SOURCE=chainlink but packages/config has no verified price feeds; falling back to demo prices');

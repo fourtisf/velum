@@ -2,12 +2,14 @@ node_modules/
 .next/
 dist/
 out/
+generated/
 .env
 .env.*
 !.env.example
 *.log
 .DS_Store
 coverage/
+*.tsbuildinfo
 contracts/out/
 contracts/cache/
 circuits/target/

@@ -15,11 +15,13 @@ if [ -z "${VELUM_DEPLOY_PULLED:-}" ]; then
   VELUM_DEPLOY_PULLED=1 BRANCH="${BRANCH}" exec bash "$0" "$@"
 fi
 
+echo "› Installing dependencies"
+# Before loading .env: NODE_ENV=production would make pnpm skip devDependencies
+# (Prisma CLI, TypeScript, tsup) that the migrate and build steps need.
+env -u NODE_ENV pnpm install --frozen-lockfile
+
 echo "› Loading env"
 set -a; source .env; set +a
-
-echo "› Installing dependencies"
-pnpm install --frozen-lockfile
 
 echo "› Database migrations"
 pnpm --filter @velum/db exec prisma migrate deploy

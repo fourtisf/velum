@@ -6,8 +6,10 @@ export function DemoBanner() {
     <div className="demo-bar" role="note">
       {ENV.demoMode ? (
         <>
-          <span className="badge acc">Demo mode</span>
-          <span>Trades are simulated. Testnet. Test tokens have no value.</span>
+          <span className="badge acc hide-sm">Demo mode</span>
+          <span>
+            <span className="show-sm">Demo mode. </span>Trades are simulated.<span className="hide-sm"> Testnet.</span> Test tokens have no value.
+          </span>
         </>
       ) : (
         <span>Testnet. Test tokens have no value.</span>

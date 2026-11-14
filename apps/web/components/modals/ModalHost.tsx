@@ -3,12 +3,13 @@ import { CHAIN, getMarket } from '@velum/config';
 import { parseOrZero, type Wad } from '@velum/math';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRejectedRequestError } from 'viem';
-import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, type Connector } from 'wagmi';
+import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
 import { derivePrivateAddress, isPrivateAddress, isPublicAddress, SIGN_MESSAGE } from '@/lib/account';
 import { usePublicBalances } from '@/lib/balances';
 import { lpGo, moveGo, type MoveKind } from '@/lib/demo';
 import { dp, floorTo, fmt, shortH } from '@/lib/format';
 import { mk } from '@/lib/markets';
+import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
 import { bal, emptyLedger, forgetSession, loadLedger, rememberSession, seedLedger, useApp, type FlowSpec, type ModalState } from '@/lib/store';
 import { I } from '../icons';
 import { Pv } from '../ui';
@@ -45,7 +46,7 @@ function ConnectModal({ error }: { error?: string }) {
 
   const pick = async (kind: 'browser' | 'walletconnect' | 'passkey') => {
     setErr('');
-    let c: Connector | undefined;
+    let c: Connector | CreateConnectorFn | undefined;
     if (kind === 'browser') {
       c = connectors.find((x) => x.type === 'injected' && x.id !== 'injected') ?? connectors.find((x) => x.id === 'injected');
       if (typeof window !== 'undefined' && !(window as { ethereum?: unknown }).ethereum && !connectors.some((x) => x.type === 'injected' && x.id !== 'injected')) {
@@ -53,12 +54,12 @@ function ConnectModal({ error }: { error?: string }) {
         return;
       }
     } else if (kind === 'walletconnect') {
-      c = connectors.find((x) => x.id === 'walletConnect');
+      c = connectors.find((x) => x.id === 'walletConnect') ?? walletConnectConnector() ?? undefined;
       if (!c) {
         setErr('WalletConnect is not set up on this site yet. Use a browser wallet for now.');
         return;
       }
-    } else c = connectors.find((x) => x.id === 'coinbaseWalletSDK');
+    } else c = connectors.find((x) => x.id === 'coinbaseWalletSDK') ?? coinbaseConnector();
     if (!c) return;
     try {
       const res = await connectAsync({ connector: c, chainId: CHAIN.id });

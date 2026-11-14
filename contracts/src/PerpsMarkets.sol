@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.28;
+
+import {IVelumVault} from "./interfaces/IVelumVault.sol";
+import {IOracleAdapter} from "./interfaces/IOracleAdapter.sol";
+import {IMakerBook} from "./interfaces/IMakerBook.sol";
+import {FixedMath} from "./libraries/FixedMath.sol";
+import {PerpsBase} from "./perps/PerpsBase.sol";
+import {PerpsLiquidation} from "./perps/PerpsLiquidation.sol";
+import {PerpsForcedExit} from "./perps/PerpsForcedExit.sol";
+
+/// @title PerpsMarkets
+/// @notice Isolated-margin long/short positions on stock tokens, filled against makers' standing
+///         offers (MakerBook). Phase 3: public, no privacy layer yet.
+///
+/// Opening (taker, size S USDG, leverage L in 0.5 steps from 1x to 5x):
+///   entry       = oracle price ± the offer's open spread (worse for the taker)
+///   takerMargin = S / L (>= initial margin 1/maxL)      fee = 0.06% of S, to insurance
+///   makerMargin = S / maxL, taken from the offer's backing
+///   qty         = S / entry, at most 100 tokens; per-market open-interest cap per side
+/// Closing (taker, any time, no maker signature):
+///   exit = oracle ∓ the maker's committed close spread; fee = 0.06% of exit notional;
+///   taker gets max(0, margin + pnl - funding - fee) capped by the pool; the maker gets the rest.
+contract PerpsMarkets is PerpsLiquidation, PerpsForcedExit {
+    using FixedMath for uint256;
+
+    event Setup(address[] markets, uint256[] oiCaps);
+
+    constructor(IVelumVault vault_, IOracleAdapter oracle_, IMakerBook book_, address usdg_, uint8 usdgDecimals)
+        PerpsBase(vault_, oracle_, book_, usdg_, usdgDecimals)
+    {}
+
+    /// @notice One-time market list with per-side open-interest caps (qty, 1e18 = one token).
+    function setup(address[] calldata markets_, uint256[] calldata oiCaps) external {
+        if (msg.sender != deployer) revert NotDeployer();
+        if (locked) revert AlreadySetUp();
+        if (markets_.length != oiCaps.length) revert LengthMismatch();
+        locked = true;
+        for (uint256 i; i < markets_.length; ++i) {
+            if (markets_[i] == address(0)) revert ZeroAddress();
+            Market storage m = markets[markets_[i]];
+            m.enabled = true;
+            m.oiCap = oiCaps[i];
+            // forge-lint: disable-next-line(unsafe-typecast)
+            m.lastFundingUpdate = uint64(block.timestamp);
+            marketList.push(markets_[i]);
+        }
+        emit Setup(markets_, oiCaps);
+    }
+
+    /// @notice Open a position against maker offer `offerId`.
+    /// @param size Position size in USDG base units (notional at entry).
+    /// @param leverageHalf Leverage times two: 2 = 1x ... 10 = 5x.
+    /// @param priceLimit Worst acceptable entry (max for longs, min for shorts); 0 = no limit.
+    function open(uint256 offerId, address market, bool isLong, uint256 size, uint8 leverageHalf, uint256 priceLimit)
+        external
+        nonReentrant
+        returns (uint256 id)
+    {
+        if (!markets[market].enabled) revert UnknownMarket(market);
+        if (size == 0) revert ZeroAmount();
+        if (leverageHalf < 2 || leverageHalf > 2 * MAX_LEVERAGE) revert BadLeverage(leverageHalf);
+        uint256 price = _accrue(market);
+
+        id = nextPositionId++;
+        Position storage p = _positions[id];
+        p.taker = msg.sender;
+        p.market = market;
+        p.isLong = isLong;
+        p.open = true;
+        p.leverageHalf = leverageHalf;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        p.openedAt = uint64(block.timestamp);
+        p.fundingIndexAtOpen = markets[market].fundingIndex;
+        _match(p, offerId, size, price, priceLimit);
+        _collectMargin(p, size);
+        _setRate(market);
+        _emitChange(id, p, Action.Open, price);
+    }
+
+    /// @dev Fill against the offer: maker margin, entry with the open spread, qty and OI checks.
+    function _match(Position storage p, uint256 offerId, uint256 size, uint256 price, uint256 priceLimit) internal {
+        uint256 makerMargin = size.mulDivUp(IM_BPS, BPS);
+        (address maker, uint16 openBps, uint16 closeBps) = book.allocate(offerId, p.market, size, makerMargin);
+        if (maker == msg.sender) revert SelfTrade();
+        uint256 entry = p.isLong ? price.mulDivUp(BPS + openBps, BPS) : price.mulDivDown(BPS - openBps, BPS);
+        if (priceLimit != 0 && (p.isLong ? entry > priceLimit : entry < priceLimit)) revert PriceLimit(entry, priceLimit);
+        uint256 qty = size.mulDivDown(valueScale, entry);
+        if (qty == 0 || qty > MAX_POSITION_QTY) revert BadQuantity(qty);
+        Market storage m = markets[p.market];
+        if (p.isLong) {
+            m.longOI += qty;
+            if (m.longOI > m.oiCap) revert OpenInterestCap(p.market);
+        } else {
+            m.shortOI += qty;
+            if (m.shortOI > m.oiCap) revert OpenInterestCap(p.market);
+        }
+        p.maker = maker;
+        p.closeSpreadBps = closeBps;
+        p.entry = entry;
+        p.qty = qty;
+        p.makerMargin = makerMargin;
+    }
+
+    /// @dev Taker pays margin (size / leverage) plus the 0.06% fee, which goes to insurance.
+    function _collectMargin(Position storage p, uint256 size) internal {
+        uint256 takerMargin = size.mulDivUp(2, p.leverageHalf);
+        uint256 fee = size.mulDivUp(TAKER_FEE_BPS, BPS);
+        vault.transferInternal(usdg, msg.sender, address(this), takerMargin + fee);
+        insurance += fee;
+        totalMargin += takerMargin + p.makerMargin;
+        p.takerMargin = takerMargin;
+    }
+
+    /// @notice Close at the oracle price minus the maker's committed close spread.
+    /// @param priceLimit Worst acceptable exit (min for longs, max for shorts); 0 = no limit.
+    function close(uint256 id, uint256 priceLimit) external nonReentrant returns (uint256 takerOut) {
+        Position storage p = _position(id);
+        if (msg.sender != p.taker) revert NotTaker();
+        uint256 price = _accrue(p.market);
+        uint256 exit = p.isLong
+            ? price.mulDivDown(BPS - p.closeSpreadBps, BPS)
+            : price.mulDivUp(BPS + p.closeSpreadBps, BPS);
+        if (priceLimit != 0 && (p.isLong ? exit < priceLimit : exit > priceLimit)) revert PriceLimit(exit, priceLimit);
+
+        int256 pnl = _takerPnl(p, exit);
+        int256 funding = _takerFunding(p, markets[p.market]);
+        uint256 pool = p.takerMargin + p.makerMargin;
+        uint256 fee = p.qty.mulDivUp(exit * TAKER_FEE_BPS, valueScale * BPS);
+        uint256 feePaid;
+        uint256 makerOut;
+        (takerOut, makerOut, feePaid) = _split(FixedMath.toInt(p.takerMargin) + pnl - funding, pool, fee);
+        insurance += feePaid;
+        _emitChange(id, p, Action.Close, price);
+        emit PositionSettled(id, exit, pnl, funding, feePaid, takerOut, makerOut);
+        _settle(p, takerOut, makerOut);
+    }
+
+    /// @notice Add USDG margin to your side (taker or maker) of a position.
+    function addMargin(uint256 id, uint256 amount) external nonReentrant {
+        Position storage p = _position(id);
+        if (amount == 0) revert ZeroAmount();
+        if (msg.sender == p.taker) p.takerMargin += amount;
+        else if (msg.sender == p.maker) p.makerMargin += amount;
+        else revert NotParty();
+        totalMargin += amount;
+        vault.transferInternal(usdg, msg.sender, address(this), amount);
+        _emitChange(id, p, Action.AddMargin, 0);
+    }
+
+    /// @notice Take USDG margin back as the taker, keeping the claim at or above initial margin.
+    function removeMargin(uint256 id, uint256 amount) external nonReentrant {
+        Position storage p = _position(id);
+        if (msg.sender != p.taker) revert NotTaker();
+        if (amount == 0 || amount > p.takerMargin) revert ZeroAmount();
+        uint256 price = _accrue(p.market);
+        int256 claimAfter = _takerClaim(p, markets[p.market], price) - FixedMath.toInt(amount);
+        uint256 required = _notionalUp(p.qty, price).mulDivUp(IM_BPS, BPS);
+        if (claimAfter < FixedMath.toInt(required)) revert BelowInitialMargin(claimAfter, required);
+        p.takerMargin -= amount;
+        totalMargin -= amount;
+        _pay(p.taker, amount);
+        _setRate(p.market);
+        _emitChange(id, p, Action.RemoveMargin, price);
+    }
+
+    /// @notice Add USDG to the insurance fund (anyone, e.g. to bootstrap testnet).
+    function fundInsurance(uint256 amount) external nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        insurance += amount;
+        vault.transferInternal(usdg, msg.sender, address(this), amount);
+        emit InsuranceFunded(msg.sender, amount);
+    }
+
+    /// @dev Split a pool between taker, maker and fee. Always conserves: takerOut + makerOut + feePaid == pool.
+    function _split(int256 takerGross, uint256 pool, uint256 fee)
+        internal
+        pure
+        returns (uint256 takerOut, uint256 makerOut, uint256 feePaid)
+    {
+        if (takerGross <= 0) return (0, pool, 0);
+        uint256 g = FixedMath.toUint(takerGross);
+        feePaid = FixedMath.min(FixedMath.min(fee, g), pool);
+        takerOut = FixedMath.min(g - feePaid, pool - feePaid);
+        makerOut = pool - feePaid - takerOut;
+    }
+}

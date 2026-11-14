@@ -20,6 +20,8 @@ export interface MarketView {
   spark: string[];
   /** True when no fresh price exists (missing snapshot or older than the oracle max age). */
   stale: boolean;
+  /** Where the price came from: "demo" (simulated) or "chainlink". null before the first tick. */
+  source: string | null;
   updatedAt: number | null;
 }
 
@@ -56,6 +58,7 @@ export function marketView(seed: MarketSeed, snap: MarketSnapshot | undefined, n
     maintenanceMargin: MM,
     spark: snap?.spark?.length ? snap.spark : [priceStr],
     stale: !isFresh(snap, now),
+    source: snap?.source ?? null,
     updatedAt: snap?.updatedAt ?? null,
   };
 }

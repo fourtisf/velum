@@ -83,6 +83,16 @@ reloads PM2 with zero downtime and waits for `/v1/health` and the web root to an
 
 `NEXT_PUBLIC_*` values are compiled into the web build, so run a release after changing them.
 
+### Network: testnet or mainnet
+```bash
+runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/set-network.sh mainnet'   # or testnet
+```
+Sets `VELUM_NETWORK`, `NEXT_PUBLIC_VELUM_NETWORK`, `CHAIN_ID`, `NEXT_PUBLIC_CHAIN_ID`, `RPC_URL`,
+`NEXT_PUBLIC_RPC_URL` and `NEXT_PUBLIC_EXPLORER_URL` together (backs up `.env` first), then runs a
+release. Mainnet is read-only in Phase 2: real wallet and balances, simulated prices and trades, and
+the copy says so. No Velum contract is deployed on mainnet before the Phase 5 audit. The public
+mainnet RPC rate-limits; set a provider URL in `RPC_URL` / `NEXT_PUBLIC_RPC_URL` for real traffic.
+
 ### 6. Operations
 - Logs: `pm2 logs velum-api --lines 200`; rotate with `pm2 install pm2-logrotate`.
 - Health: `curl https://$DOMAIN/api/v1/health`.

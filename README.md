@@ -56,6 +56,13 @@ Every release after that:
 runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/deploy.sh'
 ```
 
+Switch the network (Phase 2 mainnet = real wallet and balances, simulated prices and trades,
+no contracts):
+
+```bash
+runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/set-network.sh mainnet'
+```
+
 `deploy.sh` pulls the branch the checkout is on (`BRANCH=` to override), installs with the frozen
 lockfile, migrates, builds, reloads PM2 with zero downtime and checks health. See
 `docs/05-deploy-vps.md` for the manual steps and operations.
@@ -77,6 +84,10 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
 
 ## What changed in Phase 2
 
+- **Testnet or mainnet** (`VELUM_NETWORK`). Mainnet constants in `packages/config/robinhood-mainnet.json`
+  come from docs.robinhood.com and Robinhood's own asset list (api.robinhood.com/rhj/assets), and
+  each was checked on-chain. On mainnet all 10 markets exist. Every sentence that says "testnet"
+  switches to wording that is true there, and receipts add "Simulated, nothing was sent onchain".
 - **Verified chain constants** (`packages/config/robinhood-testnet.json`). Chain ID 46630, RPC and
   explorer match docs.robinhood.com and the RPC itself. All six token contracts were checked on-chain:
   USDG has 6 decimals, stock tokens have 18. Multicall3 is deployed. Chainlink feed addresses are not verified yet, so
@@ -84,7 +95,8 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
 - **Web**: every prototype route ported with its CSS verbatim, giving the same layout at 1440, 1024 and 390 px. The only
   visible additions are the demo banner and "Coming soon" on NVDA, AAPL, META, MSFT and COIN, which have
   no testnet token. Lighthouse: performance 91–92, accessibility 96, best practices 100, SEO 100.
-- **Wallet**: injected wallets, plus WalletConnect when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set,
+- **Wallet**: every installed wallet listed by name and icon (EIP-6963: MetaMask, Rabby, Phantom, …),
+  plus WalletConnect when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set,
   plus the Coinbase/passkey connector. Wrong networks prompt a switch. Public balances come from the chain
   through Multicall3. Third-party wallet SDKs load only when chosen and with telemetry off, so a session
   talks only to our API and the testnet RPC.

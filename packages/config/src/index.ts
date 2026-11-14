@@ -1,8 +1,14 @@
 /**
  * Single source of truth for chain constants, tokens, markets and protocol numbers.
- * Values in robinhood-testnet.json were verified on 2026-11-14 (see its _verification block).
- * Numbers here mirror CLAUDE.md section 5. Change them only with sign-off.
+ * robinhood-testnet.json and robinhood-mainnet.json were verified on 2026-11-14 (see their
+ * _verification blocks). Numbers here mirror CLAUDE.md section 5. Change them only with sign-off.
+ *
+ * The network is chosen by NEXT_PUBLIC_VELUM_NETWORK (web, inlined at build) or VELUM_NETWORK
+ * (api/workers): "testnet" (default) or "mainnet". Mainnet is read-only in Phase 2: wallet
+ * connect and public balances are real, trades are simulated, and no Velum contract may be
+ * deployed there before the Phase 5 external audit.
  */
+import mainnetJson from '../robinhood-mainnet.json';
 import chain from '../robinhood-testnet.json';
 
 export type Address = `0x${string}`;
@@ -38,21 +44,45 @@ export interface PoolSeed {
   aprEst: string;
 }
 
+export type NetworkName = 'testnet' | 'mainnet';
+const rawNetwork = (process.env.NEXT_PUBLIC_VELUM_NETWORK || process.env.VELUM_NETWORK || 'testnet').trim().toLowerCase();
+export const NETWORK: NetworkName = rawNetwork === 'mainnet' ? 'mainnet' : 'testnet';
+export const IS_MAINNET = NETWORK === 'mainnet';
+export const TESTNET_CHAIN_ID = chain.network.chainId;
+export const MAINNET_CHAIN_ID = mainnetJson.network.chainId;
+
+interface NetworkJson {
+  network: {
+    name: string;
+    chainId: number;
+    nativeCurrency: { name: string; symbol: string; decimals: number };
+    rpcUrl: string;
+    explorer: string;
+    explorerApi: string;
+    multicall3: string;
+    faucets: { ethAndStockTokens?: string; usdg?: string };
+  };
+  tokens: Record<string, { address: string; decimals: number; name: string }>;
+  priceFeeds: Record<string, string>;
+}
+const net: NetworkJson = IS_MAINNET ? mainnetJson : chain;
+
 export const CHAIN = {
-  id: chain.network.chainId,
-  name: chain.network.name,
-  nativeCurrency: chain.network.nativeCurrency,
-  rpcUrl: chain.network.rpcUrl,
-  explorer: chain.network.explorer,
-  explorerApi: chain.network.explorerApi,
-  multicall3: chain.network.multicall3 as Address,
-  faucets: chain.network.faucets,
+  id: net.network.chainId,
+  name: net.network.name,
+  /** Short label for copy, e.g. "Robinhood Chain testnet". */
+  label: IS_MAINNET ? 'Robinhood Chain' : 'Robinhood Chain testnet',
+  nativeCurrency: net.network.nativeCurrency,
+  rpcUrl: net.network.rpcUrl,
+  explorer: net.network.explorer,
+  explorerApi: net.network.explorerApi,
+  multicall3: net.network.multicall3 as Address,
+  faucets: net.network.faucets,
+  testnet: !IS_MAINNET,
 } as const;
 
-export const MAINNET_CHAIN_ID = chain.mainnetReference.chainId;
-
 type TokenJson = { address: string; decimals: number; name: string };
-const tokenJson = chain.tokens as Record<string, TokenJson>;
+const tokenJson = net.tokens as Record<string, TokenJson>;
 
 export const TOKENS: Record<string, TokenInfo> = Object.fromEntries(
   Object.entries(tokenJson).map(([symbol, t]) => [
@@ -66,7 +96,7 @@ export const USDG: TokenInfo = TOKENS[QUOTE_SYMBOL]!;
 
 /** Chainlink AggregatorV3 proxies by symbol. Empty until verified against Chainlink's official list. */
 export const PRICE_FEEDS: Record<string, Address> = Object.fromEntries(
-  Object.entries(chain.priceFeeds as Record<string, string>)
+  Object.entries(net.priceFeeds)
     .filter(([k, v]) => !k.startsWith('_') && /^0x[0-9a-fA-F]{40}$/.test(v))
     .map(([k, v]) => [k, v as Address]),
 );

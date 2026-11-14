@@ -15,20 +15,24 @@ if [ -z "${VELUM_DEPLOY_PULLED:-}" ]; then
   VELUM_DEPLOY_PULLED=1 BRANCH="${BRANCH}" exec bash "$0" "$@"
 fi
 
-echo "› Installing dependencies"
+# The repo's pinned pnpm, run through npx so a shared server's global pnpm is never touched.
+PNPM_VERSION="$(node -p "require('./package.json').packageManager.split('@')[1]")"
+pnpm_() { npx -y "pnpm@${PNPM_VERSION}" "$@"; }
+
+echo "› Installing dependencies (pnpm ${PNPM_VERSION})"
 # Before loading .env: NODE_ENV=production would make pnpm skip devDependencies
 # (Prisma CLI, TypeScript, tsup) that the migrate and build steps need.
-env -u NODE_ENV pnpm install --frozen-lockfile
+env -u NODE_ENV npx -y "pnpm@${PNPM_VERSION}" install --frozen-lockfile
 
 echo "› Loading env"
 set -a; source .env; set +a
 
 echo "› Database migrations"
-pnpm --filter @velum/db exec prisma migrate deploy
-pnpm --filter @velum/db exec prisma generate
+pnpm_ --filter @velum/db exec prisma migrate deploy
+pnpm_ --filter @velum/db exec prisma generate
 
 echo "› Building"
-NEXT_TELEMETRY_DISABLED=1 pnpm build
+NEXT_TELEMETRY_DISABLED=1 pnpm_ -r build
 
 echo "› Reloading processes"
 if pm2 describe velum-api >/dev/null 2>&1; then

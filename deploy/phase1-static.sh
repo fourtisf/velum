@@ -10,9 +10,9 @@ WWW="${WWW:-auto}"
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo." >&2; exit 1; }
 cd "$(dirname "$0")/.."
 
-echo "› Installing Nginx, Certbot and the firewall"
+echo "› Installing Nginx and Certbot"
 apt-get update -y
-apt-get install -y nginx certbot python3-certbot-nginx ufw dnsutils
+apt-get install -y nginx certbot python3-certbot-nginx dnsutils
 
 # Something else (often Apache on VPS images) may already own port 80.
 if ss -ltnp 'sport = :80' | grep -v -q -e nginx -e '^State'; then
@@ -46,16 +46,17 @@ fi
 echo "› Configuring Nginx"
 sed "s/velum.example/${DOMAIN}/g" deploy/nginx/velum-static.conf > /etc/nginx/sites-available/velum.conf
 ln -sf /etc/nginx/sites-available/velum.conf /etc/nginx/sites-enabled/velum.conf
-rm -f /etc/nginx/sites-enabled/default
+# Other sites (and the default site) are left alone; this server block only answers for DOMAIN.
 nginx -t
 systemctl enable --now nginx
 systemctl reload nginx
 
-echo "› Firewall (keeps your SSH port open)"
-for port in $(ss -ltnp | awk '/sshd/ {n=split($4,a,":"); print a[n]}' | sort -u); do ufw allow "${port}/tcp" || true; done
-ufw allow OpenSSH || true
-ufw allow 'Nginx Full' || true
-ufw --force enable || true
+# Firewall: only add rules if ufw is already on. Never switch it on here: on a shared server
+# that could cut off ports other apps rely on.
+if ufw status 2>/dev/null | grep -q "Status: active"; then
+  echo "› Firewall is on: allowing HTTP/HTTPS"
+  ufw allow 'Nginx Full' || true
+fi
 
 echo "› Issuing the certificate"
 certbot --nginx "${DOMAINS[@]}" -m "${EMAIL}" --agree-tos --redirect -n

@@ -47,6 +47,7 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
   const view = path.split('/')[2] ?? 'trade';
   const account = useApp((s) => s.account);
   const openModal = useApp((s) => s.openModal);
+  const sel = useApp((s) => s.sel);
   const connected = !!account;
 
   return (
@@ -56,7 +57,7 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
         {app ? (
           <nav className="nlinks tabs" aria-label="App">
             {TABS.map(([k, l]) => (
-              <Link key={k} href={k === 'trade' ? '/app/trade/TSLA' : `/app/${k}`} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined}>
+              <Link key={k} href={k === 'trade' ? `/app/trade/${sel}` : `/app/${k}`} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined}>
                 {l}
               </Link>
             ))}

@@ -358,20 +358,20 @@ export default function Landing() {
             <p>An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet with simulated trading. Test tokens have no value.</p>
           </div>
           <div>
-            <h4>Product</h4>
+            <h3>Product</h3>
             <Link href="/app/trade/TSLA">Trade</Link>
             <Link href="/app/markets">Markets</Link>
             <Link href="/app/swap">Swap</Link>
             <Link href="/app/liquidity">Earn</Link>
           </div>
           <div>
-            <h4>Learn</h4>
+            <h3>Learn</h3>
             <a href="#how">How it works</a>
             <a href="#privacy">Privacy</a>
             <a href="#faq">FAQ</a>
           </div>
           <div>
-            <h4>Developers</h4>
+            <h3>Developers</h3>
             <a href="#developers">API</a>
             <a href="#developers">SDK</a>
             <Link href="/">Contact</Link>

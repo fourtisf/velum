@@ -204,7 +204,7 @@ body.veiled .pv,.veil .pv,.pvd{filter:blur(6px);user-select:none}
 .foot{border-top:1px solid var(--line);padding:44px 0 56px}
 .foot-in{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:30px}
 .foot p{color:var(--faint);font-size:13.5px;margin-top:12px;max-width:40ch}
-.foot h4{font-size:13.5px;font-weight:500;margin-bottom:12px}
+.foot h3,.foot h4{font-size:13.5px;font-weight:500;margin-bottom:12px}
 .foot a{display:block;color:var(--muted);font-size:14px;padding:3px 0}
 .foot a:hover{color:var(--text)}
 
@@ -265,7 +265,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .ptabs button.on{background:var(--bg3);color:var(--text)}
 .count{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;border-radius:5px;background:rgba(255,255,255,.07);font-size:11px;margin-left:6px}
 .acct{padding:16px}
-.acct h3{font-size:13.5px;font-weight:500;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+.acct h2,.acct h3{font-size:13.5px;font-weight:500;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
 .acct .bigv{font-family:var(--display);font-size:28px;font-weight:600;letter-spacing:-.03em;margin:6px 0 8px}
 .acct .r{display:flex;justify-content:space-between;font-size:13px;color:var(--muted);padding:6px 0;border-top:1px solid var(--line)}
 .acct .r b{color:var(--text);font-weight:500}

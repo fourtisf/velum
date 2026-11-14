@@ -29,9 +29,10 @@ function Strip({ sym, embedded }: { sym: string; embedded?: boolean }) {
   return (
     <nav className="strip" aria-label="Markets" ref={ref}>
       {order.map((s) => (
-        <button key={s} className={`mchip ${s === sym ? 'on' : ''}`} aria-label={bySym[s]!.name} aria-current={s === sym ? 'true' : undefined} onClick={() => go(s)}>
+        <button key={s} className={`mchip ${s === sym ? 'on' : ''}`} aria-current={s === sym ? 'true' : undefined} onClick={() => go(s)}>
           <Av sym={s} size="sm" />
           <b>{s}</b>
+          <span className="sr">{bySym[s]!.name}</span>
           <Px sym={s} raw className="p num" />
           <Chg sym={s} className="num" />
         </button>

@@ -10,7 +10,7 @@ export function AccountCard() {
   if (!s.account)
     return (
       <aside className="card acct">
-        <h3>Private account</h3>
+        <h2>Private account</h2>
         <p className="muted" style={{ fontSize: 13.5, marginTop: 8 }}>
           Connect a wallet and sign once to open a private balance. It costs no gas.
         </p>
@@ -22,13 +22,13 @@ export function AccountCard() {
   const lc = s.ledger.lastChain;
   return (
     <aside className="card acct">
-      <h3>
+      <h2>
         Private account{' '}
         <span className="badge acc">
           <span className="d" />
           Encrypted
         </span>
-      </h3>
+      </h2>
       <div className="bigv num pv">{usd(privTotal(s.ledger))}</div>
       <div className="r">
         <span>Free balance</span>

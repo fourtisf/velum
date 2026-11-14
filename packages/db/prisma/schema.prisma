@@ -3,6 +3,8 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Generated inside this package so every app resolves the same client (pnpm isolates node_modules).
+  output   = "../generated/client"
 }
 
 datasource db {

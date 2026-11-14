@@ -36,24 +36,24 @@ port), and issues HTTPS. `www.` is included only if its DNS points at the server
 ## Phase 2: full stack
 
 ```
-apps/web      Next.js 14   127.0.0.1:3000   (PM2 cluster ×2)
+apps/web      Next.js 14   127.0.0.1:3000   (PM2 cluster ×2; next free port if taken)
 apps/api      Fastify      127.0.0.1:4000   (PM2 cluster ×2, Nginx /api/ → :4000/)
 apps/workers  BullMQ       no port          (PM2 fork ×1)
 PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password)
 ```
 
-First time on the server (installs everything, writes `.env` with generated passwords, switches
-Nginx to the full stack, issues HTTPS, runs the first release, enables PM2 on boot):
+First time on the server (installs what's missing, writes `.env` with generated passwords, adds
+the Nginx site, issues HTTPS, runs the first release, enables PM2 on boot). Safe on a VPS that
+already runs other sites: own `velum` user and PM2, free ports, existing Redis left untouched.
 
 ```bash
-cd /opt/velum
-sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
+cd /opt/velum && DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
 ```
 
 Every release after that:
 
 ```bash
-cd /opt/velum && bash deploy/deploy.sh
+runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/deploy.sh'
 ```
 
 `deploy.sh` pulls the branch the checkout is on (`BRANCH=` to override), installs with the frozen

@@ -16,11 +16,19 @@ clear message if another program (often Apache) holds port 80.
 ## Phase 2: one command
 
 ```bash
-sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
+cd /opt/velum && DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
 ```
-Runs steps 1–4 below idempotently, writes `.env` with generated Postgres/Redis passwords
-(kept on re-runs, file mode 600), switches Nginx to `velum.conf`, issues HTTPS, runs the first
-`deploy/deploy.sh` as the user who ran sudo, and enables PM2 on boot. The manual steps follow.
+Runs steps 1–4 below idempotently and is safe on a VPS that already hosts other sites:
+- runs Velum as its own `velum` system user with its own PM2 daemon (`pm2-velum` on boot);
+- picks free ports (3000/4000, or the next free ones) and binds both apps to 127.0.0.1;
+- reuses an existing Redis as-is (its password, if any) on a separate DB number (`REDIS_DB`, default 5),
+  and only sets a Redis password when it installed Redis itself;
+- creates its own Postgres role and database;
+- never upgrades Node or global tools, never enables ufw, never removes other Nginx sites.
+
+It writes `.env` (mode 600, kept on re-runs), adds `velum.conf` to Nginx, issues HTTPS,
+runs the first release and enables PM2 on boot. Check it with
+`runuser -u velum -- pm2 status`. The manual steps follow (for a fresh, dedicated server).
 
 ## Phase 2+: full stack
 
@@ -67,8 +75,9 @@ sudo certbot --nginx -d $DOMAIN -d www.$DOMAIN -m $EMAIL --agree-tos --redirect 
 
 ### 5. Releases
 ```bash
-cd /opt/velum && bash deploy/deploy.sh
+runuser -u velum -- bash -lc 'cd /opt/velum && bash deploy/deploy.sh'
 ```
+(Or `cd /opt/velum && bash deploy/deploy.sh` if you set the server up manually as your own user.)
 Pulls the branch the checkout is on (`BRANCH=name` to override), installs, migrates, builds,
 reloads PM2 with zero downtime and waits for `/v1/health` and the web root to answer.
 

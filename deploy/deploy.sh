@@ -4,6 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+# No build-time telemetry (Prisma CLI, Next.js).
+export CHECKPOINT_DISABLE=1 NEXT_TELEMETRY_DISABLED=1
 
 [ -f .env ] || { echo "Missing .env. Copy .env.example to .env and fill it (or run deploy/server-setup.sh)." >&2; exit 1; }
 

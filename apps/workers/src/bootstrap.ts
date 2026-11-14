@@ -147,26 +147,24 @@ export async function demoBackfill(
 }
 
 /**
- * Never mix simulated and real price history. The source the stored history came from is recorded
- * under cacheKeys.priceSource(). When the next source is of the other kind (demo vs real), candles,
- * cached snapshots and the other kind's ticks are removed once; demo backfill then re-seeds if the
- * new source is demo. Switching between two real sources keeps history.
+ * Never mix simulated and real price history. The decision rests on evidence in Postgres, not on a
+ * cache key: every PriceTick is tagged with its source. If the new source is real and demo ticks
+ * exist (or the reverse), candles, cached snapshots and the other kind's ticks are removed once;
+ * demo backfill then re-seeds if the new source is demo. With no contrary evidence nothing is
+ * deleted. Switching between two real sources keeps history.
  */
 export async function resetHistoryOnSourceChange(prisma: PrismaClient, redis: Redis, source: PriceSource, log: Logger): Promise<boolean> {
-  const [prev, seeded] = await Promise.all([redis.get(cacheKeys.priceSource()), redis.get(cacheKeys.demoSeeded())]);
-  const previous = prev ?? (seeded ? 'demo' : null);
-  const isReal = (x: string) => x !== 'demo';
-  const changedKind = previous === null ? isReal(source) : isReal(previous) !== isReal(source);
-  if (!changedKind) {
-    if (prev !== source) await redis.set(cacheKeys.priceSource(), source);
-    return false;
-  }
+  const real = source !== 'demo';
+  const rows = real
+    ? await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" = 'demo') AS found`
+    : await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" <> 'demo') AS found`;
+  await redis.set(cacheKeys.priceSource(), source).catch(() => undefined);
+  if (!rows[0]?.found) return false;
   await prisma.$executeRaw`DELETE FROM "Candle"`;
-  if (isReal(source)) await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" = 'demo'`;
+  if (real) await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" = 'demo'`;
   else await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" <> 'demo'`;
   const keys = [...MARKETS.flatMap((m) => [cacheKeys.price(m.symbol), ...TIMEFRAMES.map((tf) => cacheKeys.candles(m.symbol, tf))]), cacheKeys.demoSeeded()];
   await redis.del(...keys);
-  await redis.set(cacheKeys.priceSource(), source);
-  log.info('price source changed kind; cleared stored history so real and simulated prices never mix', { source, previous: previous ?? 'none' });
+  log.info('price source changed kind; cleared stored history so real and simulated prices never mix', { source });
   return true;
 }

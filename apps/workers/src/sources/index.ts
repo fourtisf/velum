@@ -62,7 +62,7 @@ export function chainlinkSource(rpcUrl: string, feeds: Record<string, Address>, 
             if (age > PROTOCOL.oracleMaxAgeSeconds) return log.debug('feed stale', { symbol, age });
             out.set(symbol, toDecimalString(roundTo(fromUnits(answer, d), 4, 'floor')));
           } catch (err) {
-            log.warn('feed read failed', { symbol, err: err instanceof Error ? err.message : String(err) });
+            log.warn('feed read failed', { symbol, err: redactUrls(err instanceof Error ? err.message : String(err)) });
           }
         }),
       );
@@ -80,8 +80,27 @@ interface RhQuote {
   generatedAt?: string;
 }
 
-/** Quotes older than this are ignored (the market keeps its last price and goes stale). */
-export const RH_MAX_QUOTE_AGE_MS = 5 * 60_000;
+/** Quotes older than the API's freshness window are ignored (the market keeps its last price and goes stale). */
+export const RH_MAX_QUOTE_AGE_MS = PROTOCOL.oracleMaxAgeSeconds * 1000;
+/** A quote dated further ahead than this is rejected. */
+export const RH_MAX_FUTURE_MS = 30_000;
+/** Widest bid/ask spread accepted, as a share of the midpoint (overnight spreads reach ~8%). */
+export const RH_MAX_SPREAD_BPS = 2000n;
+/** Prices outside (0, 1e9) USDG are rejected outright. */
+export const RH_MAX_PRICE = 10n ** 27n;
+/** A move larger than this against the last accepted price needs confirming ticks. */
+export const RH_JUMP_BPS = 2500n;
+export const RH_JUMP_CONFIRMATIONS = 3;
+const STRICT_DECIMAL = /^\d{1,12}(\.\d{1,18})?$/;
+
+/** Removes URLs (which can carry provider API keys) from error text before it is logged. */
+export const redactUrls = (msg: string): string => msg.replace(/https?:\/\/[^\s"')]+/g, (u) => {
+  try {
+    return new URL(u).origin + '/…';
+  } catch {
+    return '[url]';
+  }
+});
 
 /**
  * Midpoint of a Robinhood quote as a decimal string, or null when unusable. tokenBid/tokenAsk are
@@ -94,18 +113,48 @@ export function rhMid(symbol: string, q: RhQuote | undefined, now: number): stri
   const match = q.deployments?.some((d) => d.chainId === MAINNET_CHAIN_ID && d.contractAddress?.toLowerCase() === want);
   if (!want || !match) return null;
   const at = q.generatedAt ? Date.parse(q.generatedAt) : NaN;
-  if (!Number.isFinite(at) || now - at > RH_MAX_QUOTE_AGE_MS) return null;
-  const bid = q.tokenBid ? parseWad(q.tokenBid) : null;
-  const ask = q.tokenAsk ? parseWad(q.tokenAsk) : null;
-  if (!bid || !ask || bid <= 0n || ask < bid) return null;
-  return toDecimalString(roundTo((bid + ask) / 2n, 4, 'floor'));
+  if (!Number.isFinite(at) || now - at > RH_MAX_QUOTE_AGE_MS || at - now > RH_MAX_FUTURE_MS) return null;
+  if (!q.tokenBid || !q.tokenAsk || !STRICT_DECIMAL.test(q.tokenBid) || !STRICT_DECIMAL.test(q.tokenAsk)) return null;
+  const bid = parseWad(q.tokenBid);
+  const ask = parseWad(q.tokenAsk);
+  if (bid === null || ask === null || bid <= 0n || ask < bid || ask >= RH_MAX_PRICE) return null;
+  const mid = (bid + ask) / 2n;
+  if (((ask - bid) * 10_000n) / mid > RH_MAX_SPREAD_BPS) return null;
+  return toDecimalString(roundTo(mid, 4, 'floor'));
+}
+
+/**
+ * Guards against a single glitched quote: a move of more than RH_JUMP_BPS from the last accepted
+ * price is held back until RH_JUMP_CONFIRMATIONS consecutive quotes agree (within 1%).
+ */
+export function jumpGuard() {
+  const pending = new Map<string, { price: bigint; count: number }>();
+  return (symbol: string, next: string, last: string | undefined): boolean => {
+    const n = parseWad(next);
+    const l = last ? parseWad(last) : null;
+    if (n === null) return false;
+    if (l === null || l <= 0n || ((n > l ? n - l : l - n) * 10_000n) / l <= RH_JUMP_BPS) {
+      pending.delete(symbol);
+      return true;
+    }
+    const p = pending.get(symbol);
+    const same = p && ((n > p.price ? n - p.price : p.price - n) * 10_000n) / p.price <= 100n;
+    const count = same ? p.count + 1 : 1;
+    if (count >= RH_JUMP_CONFIRMATIONS) {
+      pending.delete(symbol);
+      return true;
+    }
+    pending.set(symbol, { price: n, count });
+    return false;
+  };
 }
 
 /** Official Robinhood Stock Token quotes, one request per symbol (60 req/s limit; 10 per tick). */
 export function robinhoodSource(log: Logger, fetchImpl: typeof fetch = fetch): PriceReader {
+  const accept = jumpGuard();
   return {
     name: 'robinhood',
-    async read(_last, now) {
+    async read(last, now) {
       const out = new Map<string, string>();
       await Promise.all(
         MARKETS.map(async (m) => {
@@ -114,10 +163,11 @@ export function robinhoodSource(log: Logger, fetchImpl: typeof fetch = fetch): P
             if (!res.ok) return log.warn('robinhood quote failed', { symbol: m.symbol, status: res.status });
             const body = (await res.json()) as { quotes?: RhQuote[] };
             const mid = rhMid(m.symbol, body.quotes?.[0], now);
-            if (mid) out.set(m.symbol, mid);
-            else log.debug('robinhood quote unusable', { symbol: m.symbol });
+            if (!mid) return log.debug('robinhood quote unusable', { symbol: m.symbol });
+            if (accept(m.symbol, mid, last.get(m.symbol))) out.set(m.symbol, mid);
+            else log.warn('robinhood quote held: large jump awaiting confirmation', { symbol: m.symbol, price: mid, last: last.get(m.symbol) });
           } catch (err) {
-            log.warn('robinhood quote error', { symbol: m.symbol, err: err instanceof Error ? err.message : String(err) });
+            log.warn('robinhood quote error', { symbol: m.symbol, err: redactUrls(err instanceof Error ? err.message : String(err)) });
           }
         }),
       );
@@ -130,8 +180,8 @@ export function pickSource(kind: PriceSource, rpcUrl: string, log: Logger): Pric
   if (kind === 'robinhood') return robinhoodSource(log);
   if (kind === 'chainlink') {
     if (Object.keys(PRICE_FEEDS).length === 0) {
-      log.warn('PRICE_SOURCE=chainlink but packages/config has no verified price feeds; falling back to demo prices');
-      return demoSource();
+      // Fail loudly rather than run simulated prices under a "real" label.
+      throw new Error('PRICE_SOURCE=chainlink but packages/config has no verified price feeds. Use PRICE_SOURCE=robinhood or demo.');
     }
     return chainlinkSource(rpcUrl, PRICE_FEEDS, log);
   }

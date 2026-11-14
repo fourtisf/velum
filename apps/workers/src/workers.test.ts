@@ -5,7 +5,7 @@ import { loadEnv } from './env';
 import { applyTick, bucketStart, candleUpsertSql, toCandle, type WadCandle } from './lib/candles';
 import { MIN_PRICE, floatToDec, gauss, genCandles, genSpark, seedOpen24h, stepPrice } from './lib/demo';
 import { buildSnapshot, markOf } from './lib/snapshot';
-import { RH_MAX_QUOTE_AGE_MS, rhMid, robinhoodSource } from './sources';
+import { RH_JUMP_CONFIRMATIONS, RH_MAX_QUOTE_AGE_MS, jumpGuard, pickSource, redactUrls, rhMid, robinhoodSource } from './sources';
 import { demoSource } from './sources';
 
 /** Deterministic PRNG (mulberry32) so tests are repeatable. */
@@ -219,5 +219,42 @@ describe('robinhood quotes', () => {
     const out = await robinhoodSource(silent, fake).read(new Map(), Date.now());
     expect(calls).toHaveLength(10);
     expect([...out.entries()]).toEqual([['TSLA', '390.915']]);
+  });
+});
+
+describe('robinhood quote hardening (audit M1, L1, L7)', () => {
+  const NOW = Date.parse('2026-11-14T14:37:00Z');
+  const base = {
+    tokenSymbol: 'TSLA',
+    deployments: [{ contractAddress: '0x322F0929c4625eD5bAd873c95208D54E1c003b2d', chainId: 4663 }],
+    tokenBid: '387',
+    tokenAsk: '394.83',
+    isTradingHalt: false,
+    generatedAt: '2026-11-14T14:36:57Z',
+  };
+  it('rejects absurd spreads, overflow, loose number formats and future or old stamps', () => {
+    expect(rhMid('TSLA', base, NOW)).toBe('390.915');
+    expect(rhMid('TSLA', { ...base, tokenBid: '0.01', tokenAsk: '10000' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...base, tokenBid: '1e30', tokenAsk: '1e30' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...base, tokenBid: '999999999999', tokenAsk: '999999999999' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...base, tokenBid: '1,234.50', tokenAsk: '1,240.00' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', { ...base, generatedAt: '2026-11-15T14:37:00Z' }, NOW)).toBeNull();
+    expect(rhMid('TSLA', base, NOW + RH_MAX_QUOTE_AGE_MS + 1000)).toBeNull();
+  });
+  it('holds a large jump until consecutive quotes confirm it', () => {
+    const accept = jumpGuard();
+    expect(accept('TSLA', '391', undefined)).toBe(true);
+    expect(accept('TSLA', '395', '391')).toBe(true);
+    for (let i = 1; i < RH_JUMP_CONFIRMATIONS; i++) expect(accept('TSLA', '5000', '391')).toBe(false);
+    expect(accept('TSLA', '5000', '391')).toBe(true);
+    expect(accept('TSLA', '9000', '391')).toBe(false);
+    expect(accept('TSLA', '392', '391')).toBe(true);
+  });
+  it('removes URLs from logged errors', () => {
+    expect(redactUrls('HTTP request failed. URL: https://robinhood-mainnet.g.alchemy.com/v2/SECRETKEY123 Details')).toBe('HTTP request failed. URL: https://robinhood-mainnet.g.alchemy.com/… Details');
+  });
+  it('refuses PRICE_SOURCE=chainlink without verified feeds instead of faking real prices', () => {
+    const silent = { debug() {}, info() {}, warn() {}, error() {} } as unknown as Parameters<typeof pickSource>[2];
+    expect(() => pickSource('chainlink', 'https://rpc.example', silent)).toThrow(/no verified price feeds/);
   });
 });

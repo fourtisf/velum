@@ -1,0 +1,28 @@
+{
+  "name": "@velum/workers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BullMQ workers: price-relay and candles (Phase 2). Indexer, funding, risk come later.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@velum/config": "workspace:*",
+    "@velum/db": "workspace:*",
+    "@velum/math": "workspace:*",
+    "bullmq": "5.81.5",
+    "ioredis": "5.11.1",
+    "viem": "2.57.19"
+  },
+  "devDependencies": {
+    "tsup": "8.5.1",
+    "tsx": "4.23.15",
+    "vitest": "3.2.7"
+  }
+}

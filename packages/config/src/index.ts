@@ -97,6 +97,8 @@ export const PROTOCOL = {
 export const DEMO = {
   makerOpenSpreadBps: 5,
   priceImpactBps: 8,
+  /** Mark price premium over the index price shown in the chart stats. */
+  markPremiumBps: 4,
   /** Close spread a demo maker commits to, sampled per position in this range. */
   closeSpreadBpsRange: [3, 8] as const,
   shieldedValue: '4800000',
@@ -164,3 +166,5 @@ export function explorerAddressUrl(address: string): string {
 export function explorerTxUrl(hash: string): string {
   return `${CHAIN.explorer}/tx/${hash}`;
 }
+
+export * from './cache';

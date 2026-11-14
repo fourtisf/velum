@@ -1,0 +1,30 @@
+{
+  "name": "@velum/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fastify read API: health, markets, candles, pools, stats, quote.",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "build": "tsup",
+    "start": "node dist/server.js",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cors": "11.4.3",
+    "@fastify/rate-limit": "11.2.2",
+    "@velum/config": "workspace:*",
+    "@velum/db": "workspace:*",
+    "@velum/math": "workspace:*",
+    "fastify": "5.12.8",
+    "ioredis": "5.11.1",
+    "viem": "2.57.19"
+  },
+  "devDependencies": {
+    "tsup": "8.5.1",
+    "tsx": "4.23.15",
+    "vitest": "3.2.7"
+  }
+}

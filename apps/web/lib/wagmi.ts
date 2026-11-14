@@ -1,8 +1,9 @@
 import { CHAIN } from '@velum/config';
-import { http, createConfig, type CreateConnectorFn } from 'wagmi';
+import { createConfig, type CreateConnectorFn } from 'wagmi';
 import { coinbaseWallet, injected, walletConnect } from 'wagmi/connectors';
 import { robinhoodChain } from './chain';
 import { ENV } from './env';
+import { readTransport } from './rpc';
 
 /**
  * Privacy: third-party wallet SDKs (Coinbase, WalletConnect) phone home when they initialise,
@@ -48,7 +49,7 @@ function initialConnectors(): CreateConnectorFn[] {
 export const wagmiConfig = createConfig({
   chains: [robinhoodChain],
   connectors: initialConnectors(),
-  transports: { [robinhoodChain.id]: http(ENV.rpcUrl, { batch: true }) },
+  transports: { [robinhoodChain.id]: readTransport() },
   ssr: true,
 });
 

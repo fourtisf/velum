@@ -1,19 +1,14 @@
 'use client';
 import { MARKETS, isLive } from '@velum/config';
-import { parseOrZero } from '@velum/math';
 import { useState } from 'react';
+import { amountHint, amountInputProps, amountOrZero, bpsOrNull } from '@/lib/amount';
 import { earnPer1000, postOffer, withdrawOffer } from '@/lib/demo';
 import { fmt, usd } from '@/lib/format';
-import { bal, useApp } from '@/lib/store';
+import { OFFER_EXPIRIES as EXPIRIES, bal, useApp } from '@/lib/store';
 import { I } from '../icons';
 import { Av, Pv } from '../ui';
 
-const EXPIRIES = ['6 hours', '24 hours', '7 days'];
-/** Spreads in bps: finite, 0–1,000 (anything else is invalid; audit web L3). */
-const bpsOf = (s: string): number | null => {
-  const n = Number(s.trim());
-  return s.trim() !== '' && Number.isFinite(n) && n >= 0 && n <= 1000 ? n : null;
-};
+const HINT_ID = 'of-hint';
 
 function Offers() {
   const s = useApp();
@@ -87,13 +82,17 @@ export function MakersView() {
   const [max, setMax] = useState('1000');
   const [open, setOpen] = useState('8');
   const [close, setClose] = useState('5');
-  const openBps = bpsOf(open);
-  const closeBps = bpsOf(close);
-  const v = { sym, back: parseOrZero(back), max: parseOrZero(max), open: openBps ?? 0, close: closeBps ?? 0 };
+  // Spreads: plain decimals from 0 to 1,000 bps (audit web L3, L11).
+  const openBps = bpsOrNull(open);
+  const closeBps = bpsOrNull(close);
+  const v = { sym, back: amountOrZero(back), max: amountOrZero(max), open: openBps ?? 0, close: closeBps ?? 0 };
   const have = bal(s.ledger.priv, 'USDG');
-  let hint = '';
+  const badBack = amountHint(back);
+  const badMax = amountHint(max);
+  let hint = badBack || badMax;
   let b: { label: string; cls: string; disabled: boolean; onClick?: () => void };
   if (!s.account) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
+  else if (badBack) b = { label: 'Check your backing', cls: 'btn-dark', disabled: true };
   else if (v.back <= 0n) b = { label: 'Enter backing', cls: 'btn-dark', disabled: true };
   else if (v.back > have) {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
@@ -101,7 +100,8 @@ export function MakersView() {
   } else if (openBps === null || closeBps === null) {
     b = { label: 'Check your spreads', cls: 'btn-dark', disabled: true };
     hint = 'Spreads must be numbers from 0 to 1,000 bps.';
-  } else if (v.max <= 0n || v.max > v.back) {
+  } else if (badMax) b = { label: 'Check your largest fill', cls: 'btn-dark', disabled: true };
+  else if (v.max <= 0n || v.max > v.back) {
     b = { label: 'Check your largest fill', cls: 'btn-dark', disabled: true };
     hint = 'The largest fill must be above zero and no more than your backing.';
   } else b = { label: 'Post offer', cls: 'btn-white', disabled: false, onClick: () => postOffer(v) };
@@ -134,14 +134,14 @@ export function MakersView() {
             </span>
           </div>
           <div className="inp sm">
-            <input id="of-back" inputMode="decimal" value={back} autoComplete="off" onChange={(e) => setBack(e.target.value)} />
+            <input id="of-back" {...amountInputProps(back, HINT_ID)} value={back} onChange={(e) => setBack(e.target.value)} />
             <span className="unit">USDG</span>
           </div>
           <div className="fl">
             <label htmlFor="of-max">Largest single fill</label>
           </div>
           <div className="inp sm">
-            <input id="of-max" inputMode="decimal" value={max} autoComplete="off" onChange={(e) => setMax(e.target.value)} />
+            <input id="of-max" {...amountInputProps(max, HINT_ID)} value={max} onChange={(e) => setMax(e.target.value)} />
             <span className="unit">USDG</span>
           </div>
           <div className="row2">
@@ -150,7 +150,7 @@ export function MakersView() {
                 <label htmlFor="of-open">Open spread</label>
               </div>
               <div className="inp sm">
-                <input id="of-open" inputMode="decimal" value={open} autoComplete="off" onChange={(e) => setOpen(e.target.value)} />
+                <input id="of-open" {...amountInputProps(open, HINT_ID)} aria-invalid={openBps === null || undefined} maxLength={12} value={open} onChange={(e) => setOpen(e.target.value)} />
                 <span className="unit">bps</span>
               </div>
             </div>
@@ -159,7 +159,7 @@ export function MakersView() {
                 <label htmlFor="of-close">Close spread</label>
               </div>
               <div className="inp sm">
-                <input id="of-close" inputMode="decimal" value={close} autoComplete="off" onChange={(e) => setClose(e.target.value)} />
+                <input id="of-close" {...amountInputProps(close, HINT_ID)} aria-invalid={closeBps === null || undefined} maxLength={12} value={close} onChange={(e) => setClose(e.target.value)} />
                 <span className="unit">bps</span>
               </div>
             </div>
@@ -195,7 +195,9 @@ export function MakersView() {
           <button className={`btn btn-block ${b.cls}`} disabled={b.disabled} onClick={b.onClick}>
             {b.label}
           </button>
-          <p className="hint">{hint}</p>
+          <p className="hint" id={HINT_ID}>
+            {hint}
+          </p>
           <p className="note">
             <I.info />
             <span>Your close spread is a promise. Takers can close against you at any time at the oracle price minus this spread, without your signature.</span>

@@ -10,6 +10,9 @@ import type { ReactNode } from 'react';
 import { create } from 'zustand';
 import type { IconName } from '@/components/icons';
 import { randomHex } from './format';
+import { decodeLedger, encodeLedger } from './ledger-codec';
+
+export { OFFER_EXPIRIES } from './ledger-codec';
 
 export interface Position {
   id: string;
@@ -213,17 +216,23 @@ export function seedLedger(): Ledger {
 /* ---------- persistence (per wallet, browser only) ---------- */
 // Keys include the chain so a testnet ledger or session never carries over to mainnet (audit web M1).
 const LEDGER_KEY = (addr: string) => `velum:demo:v2:${CHAIN.id}:${addr.toLowerCase()}`;
-const SESSION_KEY = `velum:session:v2:${CHAIN.id}`;
+// v3: private addresses come from the SIWE-shaped message and a domain-separated hash (audit web L8),
+// so v2 sessions (old message) are not reused; the wallet signs once more and the ledger carries over.
+const SESSION_KEY = `velum:session:v3:${CHAIN.id}`;
+const SIGNER_KEY = `velum:signer:v1:${CHAIN.id}`;
+const WALLET_RE = /^0x[0-9a-f]{40}$/;
 
-const replacer = (_k: string, v: unknown) => (typeof v === 'bigint' ? `${v.toString()}n` : v);
-const reviver = (_k: string, v: unknown) => (typeof v === 'string' && /^-?\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v);
+/** A Velum private address (velum1…). Lives here, not in lib/account.ts, so pages don't bundle the signing code. */
+export const isPrivateAddress = (s: string) => /^velum1[0-9a-z]{10,}$/i.test(s);
 
+/** Stored ledgers are validated field by field; anything malformed is dropped, never trusted (audit web L6). */
 export function loadLedger(addr: string): Ledger | null {
   try {
     const raw = localStorage.getItem(LEDGER_KEY(addr));
     if (!raw) return null;
-    const l = JSON.parse(raw, reviver) as Partial<Ledger>;
-    return { ...emptyLedger(), ...l };
+    const l = decodeLedger(raw);
+    if (!l) localStorage.removeItem(LEDGER_KEY(addr));
+    return l;
   } catch {
     return null;
   }
@@ -231,17 +240,31 @@ export function loadLedger(addr: string): Ledger | null {
 
 export function saveLedger(addr: string, l: Ledger) {
   try {
-    localStorage.setItem(LEDGER_KEY(addr), JSON.stringify(l, replacer));
+    localStorage.setItem(LEDGER_KEY(addr), encodeLedger(l));
   } catch {
     /* storage unavailable: demo continues in memory */
   }
 }
 
-function readSessions(): Record<string, string> {
+/** wallet (lowercase 0x address) -> value, keeping only entries that pass `ok`. */
+function readMap(key: string, ok: (v: unknown) => boolean): Record<string, string> {
   try {
-    return JSON.parse(localStorage.getItem(SESSION_KEY) || '{}') as Record<string, string>;
+    const v: unknown = JSON.parse(localStorage.getItem(key) || '{}');
+    if (typeof v !== 'object' || v === null || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v).filter(([k, x]) => WALLET_RE.test(k) && ok(x))) as Record<string, string>;
   } catch {
     return {};
+  }
+}
+
+const readSessions = () => readMap(SESSION_KEY, (x) => typeof x === 'string' && isPrivateAddress(x));
+
+/** v2 sessions hold private addresses from the old message; nothing reads them, so don't keep the wallet link around. */
+export function dropLegacySessions() {
+  try {
+    localStorage.removeItem(`velum:session:v2:${CHAIN.id}`);
+  } catch {
+    /* ignore */
   }
 }
 
@@ -265,6 +288,22 @@ export function forgetSession(addr: string) {
     localStorage.setItem(SESSION_KEY, JSON.stringify(s));
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Wallets already shown to sign deterministically in this browser (two identical signatures),
+ * so later openings need one signature. Stores only a flag, never a signature or key.
+ */
+export function signerVerified(addr: string): boolean {
+  return readMap(SIGNER_KEY, (x) => x === '1')[addr.toLowerCase()] === '1';
+}
+
+export function markSignerVerified(addr: string) {
+  try {
+    localStorage.setItem(SIGNER_KEY, JSON.stringify({ ...readMap(SIGNER_KEY, (x) => x === '1'), [addr.toLowerCase()]: '1' }));
+  } catch {
+    /* ignore: the check simply runs again next time */
   }
 }
 

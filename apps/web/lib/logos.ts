@@ -1,9 +1,21 @@
 /**
- * Stock logos for the avatars. Glyphs are from Simple Icons v16.37.0 (CC0-1.0, simpleicons.org),
- * drawn on a disc in the brand colour. The logos are trademarks of their owners and identify each
- * company's stock token; Velum is not affiliated with them. Amazon and Microsoft are not in Simple
- * Icons, so they get a monogram in their brand colour rather than a redrawn mark.
- * Very dark brand colours (Apple, Palantir) sit on a light disc so they stay visible on the dark UI.
+ * Stock logos for the avatars (audit web L14).
+ *
+ * Spec deviation, on purpose: docs/01-product-spec.md section 5 says "neutral circle with the company
+ * initial (no third-party logos)". The owner asked for real logos (commit 2240dd1), so they stay;
+ * update the spec if this becomes permanent. USDG, ETH and unknown tokens keep the neutral initial.
+ *
+ * Attribution: the glyph paths are copied unchanged from Simple Icons v16.37.0 (simpleicons.org,
+ * icons/<slug>.svg; checked path-for-path against the npm tarball). The Simple Icons project is
+ * released under CC0-1.0, but per its DISCLAIMER.md that does not make the logos themselves CC0:
+ * none of these eight has license data there, and each logo is a trademark of its owner, subject to
+ * the owner's brand guidelines (Simple Icons lists guidelines for Meta and Netflix). They are used
+ * only to identify each company's stock token; Velum is not affiliated with or endorsed by any of
+ * them. Amazon and Microsoft are not in Simple Icons, so they get a monogram in their brand colour
+ * rather than a redrawn mark. Robinhood's logo is never used (CLAUDE.md brand rules).
+ *
+ * Discs use the Simple Icons brand hex, except very dark ones (Apple #000000, Palantir #101113),
+ * which sit on a light disc with a near-black glyph so they stay visible on the dark UI.
  */
 export interface StockLogo {
   /** Disc colour. */

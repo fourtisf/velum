@@ -6,7 +6,7 @@
 import { DEMO, isLive } from '@velum/config';
 import { WAD, bps, fromNumber, isLiquidatable, liquidationReturn, perpsClose, perpsOpen, wmul, type Wad } from '@velum/math';
 import { DEMO_PARAMS, PARAMS, perpsCalc, spotCalc, swapCalc } from './calc';
-import { dp, fmt, fmtLev, randomHex, receiptId, sgnUsd, shortH, sig4, uid, usd } from './format';
+import { dp, fmt, fmtFloor, fmtLev, randomHex, receiptId, sgnUsd, shortH, sig4, uid, usd } from './format';
 import { mk } from './markets';
 import { BLOCK_BASE, addBal, bal, chainSaw, logAct, useApp, type Ledger, type Offer } from './store';
 
@@ -72,7 +72,7 @@ export function spotTrade() {
       { t: 'Locking your tokens in a private swap request', d: `${fmt(c.amt, dp(c.tin))} ${c.tin}`, ms: 650 },
       { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
       { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
-      { t: 'Filling against the private pool', d: `Only at or above ${fmt(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
+      { t: 'Filling against the private pool', d: `Only at or above ${fmtFloor(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
     ],
     done: () => {
       app().setLedger((l) =>
@@ -180,7 +180,7 @@ export function doSwap() {
       { t: 'Locking your tokens in a private swap request', d: `${fmt(c.a, dp(f))} ${f}`, ms: 650 },
       { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
       { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
-      { t: c.hops === 2 ? 'Filling both pools in one action' : 'Filling against the private pool', d: `Only at or above ${sig4(c.min)} ${t}`, ms: 800 },
+      { t: c.hops === 2 ? 'Filling both pools in one action' : 'Filling against the private pool', d: `Only at or above ${sig4(c.min, 'floor')} ${t}`, ms: 800 },
     ],
     done: () => {
       app().setLedger((l) =>
@@ -222,7 +222,6 @@ export function lpGo(sym: string, a: Wad) {
 }
 
 export function lpRemove(sym: string) {
-  const v = bal(app().ledger.lp, sym);
   app().runFlow({
     title: `Remove liquidity from ${sym}`,
     steps: [
@@ -231,6 +230,9 @@ export function lpRemove(sym: string) {
       { t: 'Returning your share as USDG', d: 'Into your private balance', ms: 700 },
     ],
     done: () => {
+      // Credit the share as it stands when the withdrawal completes, fees earned meanwhile included (audit web I9).
+      const v = bal(app().ledger.lp, sym);
+      if (v <= 0n) return { rows: [['Status', 'Already removed']], toast: 'Liquidity already removed' };
       app().setLedger((l) => {
         const lp = { ...l.lp };
         delete lp[sym];

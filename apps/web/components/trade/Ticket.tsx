@@ -1,15 +1,19 @@
 'use client';
 import { PROTOCOL, isLive } from '@velum/config';
 import { parseWad } from '@velum/math';
-import { maxSize, perpsCalc, spotCalc } from '@/lib/calc';
+import { amountHint, amountInputProps } from '@/lib/amount';
+import { perpsCalc, presetSize, spotCalc } from '@/lib/calc';
 import { openPerps, spotTrade } from '@/lib/demo';
-import { dp, floorTo, fmt } from '@/lib/format';
+import { dp, floorTo, fmt, fmtFloor } from '@/lib/format';
 import { useMarket, useMarkets } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 import { COPY, METRICS } from '@/lib/copy';
 import { I } from '../icons';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
+
+/** Hint paragraph ids, so each input can point at its hint (aria-describedby). */
+const HINT = { perps: 't-size-hint', spot: 't-spot-hint' };
 
 function SubmitButton({ b }: { b: Btn }) {
   return (
@@ -27,13 +31,15 @@ function PerpsTicket({ sym }: { sym: string }) {
   const have = bal(s.ledger.priv, 'USDG');
   const c = perpsCalc({ sel: sym, side: s.side, lev: s.lev, size: s.size }, have);
   const live = isLive(sym);
-  let hint = '';
+  const bad = amountHint(s.size);
+  let hint = bad;
   let b: Btn;
   if (!connected) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
   } else if (m.noData) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
+  else if (bad) b = { label: 'Enter a valid size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'no_size') b = { label: 'Enter a size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'insufficient') {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
@@ -44,10 +50,7 @@ function PerpsTicket({ sym }: { sym: string }) {
   } else b = { label: `Open ${s.side} privately`, cls: s.side === 'long' ? 'btn-up' : 'btn-down', disabled: false, onClick: openPerps };
 
   const maxLev = Math.min(m.maxLev || PROTOCOL.maxLeverage, PROTOCOL.maxLeverage);
-  const preset = (p: number) => {
-    const size = floorTo((maxSize(have, s.lev) * BigInt(p)) / 100n, 2);
-    s.set({ size });
-  };
+  const preset = (p: number) => s.set({ size: floorTo(presetSize(have, s.lev, c.entry, p), 2) });
   return (
     <>
       <div className="sides" role="group" aria-label="Side">
@@ -65,7 +68,7 @@ function PerpsTicket({ sym }: { sym: string }) {
         </span>
       </div>
       <div className="inp">
-        <input id="t-size" inputMode="decimal" value={s.size} autoComplete="off" onChange={(e) => s.set({ size: e.target.value })} />
+        <input id="t-size" {...amountInputProps(s.size, HINT.perps)} value={s.size} onChange={(e) => s.set({ size: e.target.value })} />
         <span className="unit">USDG</span>
       </div>
       <div className="seg full pcts" role="group" aria-label="Size presets">
@@ -123,7 +126,9 @@ function PerpsTicket({ sym }: { sym: string }) {
         </div>
       </div>
       <SubmitButton b={b} />
-      <p className="hint">{hint}</p>
+      <p className="hint" id={HINT.perps}>
+        {hint}
+      </p>
       <p className="note">
         <I.lock />
         <span>Size, side and entry stay encrypted. If no maker fills you within {PROTOCOL.makerFillWindowMinutes} minutes, your margin comes back.</span>
@@ -139,13 +144,15 @@ function SpotTicket({ sym }: { sym: string }) {
   const connected = !!s.account;
   const c = spotCalc({ sel: sym, spotSide: s.spotSide, spotAmt: s.spotAmt, slip: s.slip }, s.ledger.priv);
   const live = isLive(sym);
-  let hint = '';
+  const bad = amountHint(s.spotAmt);
+  let hint = bad;
   let b: Btn;
   if (!connected) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
   } else if (m.noData) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
+  else if (bad) b = { label: 'Enter a valid amount', cls: 'btn-dark', disabled: true };
   else if (c.amt <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.amt > c.have) {
     b = { label: `Not enough private ${c.tin}`, cls: 'btn-dark', disabled: true };
@@ -174,7 +181,7 @@ function SpotTicket({ sym }: { sym: string }) {
         </span>
       </div>
       <div className="inp">
-        <input id="t-spot" inputMode="decimal" value={s.spotAmt} autoComplete="off" onChange={(e) => s.set({ spotAmt: e.target.value })} />
+        <input id="t-spot" {...amountInputProps(s.spotAmt, HINT.spot)} value={s.spotAmt} onChange={(e) => s.set({ spotAmt: e.target.value })} />
         <span className="unit">{c.tin}</span>
       </div>
       <div className="seg full pcts" role="group" aria-label="Amount presets">
@@ -213,7 +220,7 @@ function SpotTicket({ sym }: { sym: string }) {
         <div>
           <span>Minimum you get</span>
           <b>
-            {fmt(c.min, dp(c.tout))} {c.tout}
+            {fmtFloor(c.min, dp(c.tout))} {c.tout}
           </b>
         </div>
         <div>
@@ -222,7 +229,9 @@ function SpotTicket({ sym }: { sym: string }) {
         </div>
       </div>
       <SubmitButton b={b} />
-      <p className="hint">{hint}</p>
+      <p className="hint" id={HINT.spot}>
+        {hint}
+      </p>
       <p className="note">
         <I.lock />
         <span>Pool reserves and your trade stay private. You own the token, so nothing can be liquidated.</span>

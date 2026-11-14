@@ -1,3 +1,21 @@
+/**
+ * Security headers as defence in depth (audit web L9). Nginx sends these too (and owns CSP and HSTS);
+ * keep the values compatible. The app needs no inline event handlers and talks only to its own /api,
+ * the configured network's RPC, and WalletConnect / Coinbase hosts when the user picks those wallets.
+ */
+const SECURITY_HEADERS = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  // Cross-origin requests (RPC, wallet SDKs) see the origin only, never the path (e.g. which market).
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'X-Frame-Options', value: 'DENY' },
+  // Powerful features the app never uses. Clipboard and WebAuthn keep their same-origin defaults.
+  {
+    key: 'Permissions-Policy',
+    value:
+      'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), midi=(), magnetometer=(), gyroscope=(), accelerometer=(), display-capture=(), browsing-topics=()',
+  },
+];
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -10,6 +28,9 @@ const nextConfig = {
   async rewrites() {
     const target = process.env.API_PROXY_TARGET;
     return target ? [{ source: '/api/:path*', destination: `${target.replace(/\/$/, '')}/:path*` }] : [];
+  },
+  async headers() {
+    return [{ source: '/:path*', headers: SECURITY_HEADERS }];
   },
   async redirects() {
     return [

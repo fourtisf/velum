@@ -1,9 +1,11 @@
 /** Prototype calc functions (perpsCalc, spotCalc, swapCalc, privTotal) on top of @velum/math. */
 import { DEMO, MARKETS, PROTOCOL } from '@velum/config';
 import {
+  WAD,
+  bps,
   checkPerps,
+  fromNumber,
   maxPerpsSize,
-  parseOrZero,
   pctToWad,
   perpsOpen,
   pnl,
@@ -16,6 +18,7 @@ import {
   type ProtocolParams,
   type Wad,
 } from '@velum/math';
+import { amountOrZero } from './amount';
 import { mk, tokPx } from './markets';
 import { bal, type Ledger, type Position } from './store';
 
@@ -41,7 +44,7 @@ export interface TicketInputs {
 
 export function perpsCalc(s: Pick<TicketInputs, 'sel' | 'side' | 'lev' | 'size'>, free: Wad) {
   const m = mk(s.sel);
-  const q = perpsOpen({ price: m.price, size: parseOrZero(s.size), leverage: s.lev, side: s.side }, PARAMS, DEMO_PARAMS);
+  const q = perpsOpen({ price: m.price, size: amountOrZero(s.size), leverage: s.lev, side: s.side }, PARAMS, DEMO_PARAMS);
   const check: PerpsCheck = checkPerps(q, free, PARAMS);
   return { ...q, check, funding: m.funding };
 }
@@ -50,9 +53,23 @@ export function maxSize(free: Wad, lev: number): Wad {
   return maxPerpsSize(free, lev, PARAMS);
 }
 
+/** Headroom under the token cap for presets, so a small price move right after can't tip it over. */
+const CAP_HEADROOM = bps(50);
+
+/**
+ * Size for a 25/50/75/Max preset: `pct` of what the free balance allows, but never more than
+ * the 100-token position cap at the current entry price, less 0.5% headroom (audit web I6).
+ */
+export function presetSize(free: Wad, lev: number, entry: Wad, pct: number): Wad {
+  const byBalance = (maxSize(free, lev) * BigInt(pct)) / 100n;
+  if (entry <= 0n) return byBalance;
+  const byCap = wmul(wmul(fromNumber(PARAMS.maxTokensPerPosition), entry, 'floor'), WAD - CAP_HEADROOM, 'floor');
+  return byBalance < byCap ? byBalance : byCap;
+}
+
 export function spotCalc(s: Pick<TicketInputs, 'sel' | 'spotSide' | 'spotAmt' | 'slip'>, priv: Record<string, Wad>) {
   const m = mk(s.sel);
-  const amt = parseOrZero(s.spotAmt);
+  const amt = amountOrZero(s.spotAmt);
   const buy = s.spotSide === 'buy';
   const q = spotQuote(s.spotSide, amt, m.price, pctToWad(s.slip), PARAMS, DEMO_PARAMS);
   const tin = buy ? 'USDG' : m.sym;
@@ -61,7 +78,7 @@ export function spotCalc(s: Pick<TicketInputs, 'sel' | 'spotSide' | 'spotAmt' | 
 }
 
 export function swapCalc(from: string, to: string, amount: string, slip: number, priv: Record<string, Wad>) {
-  const a = parseOrZero(amount);
+  const a = amountOrZero(amount);
   const hops = swapHops(from, to);
   const q = swapQuote(a, tokPx(from), tokPx(to), hops, pctToWad(slip), PARAMS, DEMO_PARAMS);
   return { a, out: q.out, hops, fee: q.fee, rate: q.rate, min: q.min, have: bal(priv, from) };

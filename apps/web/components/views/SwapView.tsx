@@ -1,5 +1,6 @@
 'use client';
 import { MARKETS, isLive } from '@velum/config';
+import { amountHint, amountInputProps } from '@/lib/amount';
 import { swapCalc } from '@/lib/calc';
 import { doSwap } from '@/lib/demo';
 import { dp, floorTo, fmt, sig4 } from '@/lib/format';
@@ -31,10 +32,12 @@ export function SwapView() {
   const { swapFrom: f, swapTo: t } = s;
   const c = swapCalc(f, t, s.swapAmt, s.slip, s.ledger.priv);
   const same = f === t;
-  let hint = '';
+  const bad = amountHint(s.swapAmt);
+  let hint = bad;
   let btn: { label: string; cls: string; disabled: boolean; onClick?: () => void };
   if (!connected) btn = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
   else if (same) btn = { label: 'Choose two different tokens', cls: 'btn-dark', disabled: true };
+  else if (bad) btn = { label: 'Enter a valid amount', cls: 'btn-dark', disabled: true };
   else if (c.a <= 0n) btn = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.a > c.have) {
     btn = { label: `Not enough private ${f}`, cls: 'btn-dark', disabled: true };
@@ -58,7 +61,7 @@ export function SwapView() {
             </span>
           </div>
           <div className="srow">
-            <input id="sw-in" inputMode="decimal" value={s.swapAmt} aria-label="Amount to pay" autoComplete="off" onChange={(e) => s.set({ swapAmt: e.target.value })} />
+            <input id="sw-in" {...amountInputProps(s.swapAmt, 'sw-hint')} value={s.swapAmt} aria-label="Amount to pay" onChange={(e) => s.set({ swapAmt: e.target.value })} />
             <TokenSelect id="sw-from" label="Token to pay" value={f} onChange={(v) => s.set({ swapFrom: v })} />
           </div>
           <div className="seg full pcts" role="group" aria-label="Amount presets">
@@ -105,7 +108,7 @@ export function SwapView() {
           </div>
           <div>
             <span>Minimum you get</span>
-            <b>{same ? '—' : `${sig4(c.min)} ${t}`}</b>
+            <b>{same ? '—' : `${sig4(c.min, 'floor')} ${t}`}</b>
           </div>
           <div>
             <span>Visible onchain</span>
@@ -115,7 +118,9 @@ export function SwapView() {
         <button className={`btn btn-block ${btn.cls}`} disabled={btn.disabled} onClick={btn.onClick}>
           {btn.label}
         </button>
-        <p className="hint">{hint}</p>
+        <p className="hint" id="sw-hint">
+          {hint}
+        </p>
         <p className="note">
           <I.lock />
           <span>Pool reserves are private, so nobody can work out your trade from public data.</span>

@@ -3,7 +3,7 @@
  * Money arrives as Wad (bigint, 1e18) and is formatted exactly via Intl with a decimal string.
  * Plain numbers are accepted for chart/axis labels and percentages.
  */
-import { roundSig, sigDecimals, toDecimalString, wabs, type Wad } from '@velum/math';
+import { roundSig, roundTo, sigDecimals, toDecimalString, wabs, type Wad } from '@velum/math';
 
 type Num = Wad | number;
 
@@ -26,6 +26,11 @@ export function fmt(n: Num, d = 2): string {
   return nf(d).format(Number.isFinite(n) ? n : 0);
 }
 
+/** Like fmt, but rounds down: for guaranteed minimums, which must never be overstated (audit web I5). */
+export function fmtFloor(n: Wad, d = 2): string {
+  return formatDecimal(nf(d), toDecimalString(roundTo(n, d, 'floor'), d));
+}
+
 const isNeg = (n: Num) => (typeof n === 'bigint' ? n < 0n : n < 0);
 const abs = (n: Num): Num => (typeof n === 'bigint' ? wabs(n) : Math.abs(n));
 
@@ -37,12 +42,15 @@ export function compact(n: number): string {
   return n >= 1e6 ? '$' + (n / 1e6).toFixed(1) + 'M' : '$' + Math.round(n / 1e3) + 'K';
 }
 
-/** Four significant figures below 1,000, otherwise 2 decimals (prototype's sig4). */
-export function sig4(n: Wad): string {
-  if (wabs(n) >= 1000n * 10n ** 18n) return fmt(n, 2);
+/**
+ * Four significant figures below 1,000, otherwise 2 decimals (prototype's sig4).
+ * 'floor' never rounds up at any step, for minimums (audit web I5).
+ */
+export function sig4(n: Wad, mode: 'half' | 'floor' = 'half'): string {
+  if (wabs(n) >= 1000n * 10n ** 18n) return mode === 'floor' ? fmtFloor(n, 2) : fmt(n, 2);
   const r = roundSig(n, 4, 'floor');
   const d = Math.min(6, sigDecimals(r, 4));
-  return formatDecimal(nf(0, d), toDecimalString(r, d));
+  return formatDecimal(nf(0, d), toDecimalString(mode === 'floor' ? roundTo(r, d, 'floor') : r, d));
 }
 
 export const fmtLev = (n: number): string => (Number.isInteger(n) ? String(n) : n.toFixed(1)) + '×';

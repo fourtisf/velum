@@ -1,17 +1,20 @@
 'use client';
 import { CHAIN, IS_MAINNET, getMarket } from '@velum/config';
-import { parseOrZero, type Wad } from '@velum/math';
+import type { Wad } from '@velum/math';
+import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { UserRejectedRequestError } from 'viem';
-import { useAccount, useConnect, useDisconnect, useSignMessage, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
-import { derivePrivateAddress, isPrivateAddress, isPublicAddress, SIGN_MESSAGE } from '@/lib/account';
+import { UserRejectedRequestError, type Hex } from 'viem';
+import { useAccount, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
+import { signMessage } from 'wagmi/actions';
+import { buildSignMessage, checkPublicAddress, derivePrivateAddress, isPrivateAddress } from '@/lib/account';
+import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { usePublicBalances } from '@/lib/balances';
 import { lpGo, moveGo, type MoveKind } from '@/lib/demo';
 import { dp, floorTo, fmt, shortH } from '@/lib/format';
 import { COPY } from '@/lib/copy';
 import { mk } from '@/lib/markets';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
-import { bal, emptyLedger, forgetSession, loadLedger, rememberSession, seedLedger, useApp, type FlowSpec, type ModalState } from '@/lib/store';
+import { bal, emptyLedger, forgetSession, loadLedger, markSignerVerified, rememberSession, seedLedger, signerVerified, useApp, type FlowSpec, type ModalState } from '@/lib/store';
 import { I } from '../icons';
 import { Pv } from '../ui';
 
@@ -182,47 +185,95 @@ function NetworkModal() {
 }
 
 /* ---------- sign ---------- */
+type SignStage = 'idle' | 'first' | 'second' | 'deriving';
+const SIGN_LABEL: Record<SignStage, string> = {
+  idle: 'Sign message',
+  first: 'Waiting for your signature…',
+  second: 'Sign once more to check your wallet…',
+  deriving: 'Creating your private keys…',
+};
+
 function SignModal() {
   const { address } = useAccount();
-  const { signMessageAsync } = useSignMessage();
+  const config = useConfig();
+  const { disconnectAsync } = useDisconnect();
   const s = useApp();
-  const [label, setLabel] = useState('Sign message');
-  const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState<SignStage>('idle');
   const [err, setErr] = useState('');
+  const [unstable, setUnstable] = useState(false);
+  const busy = stage !== 'idle';
   const sign = async () => {
     if (!address) {
       s.openModal({ kind: 'connect' });
       return;
     }
     setErr('');
-    setBusy(true);
+    setStage('first');
     s.set({ modalLocked: true });
-    setLabel('Waiting for your signature…');
     try {
-      const sig = await signMessageAsync({ message: SIGN_MESSAGE, account: address });
-      setLabel('Creating your private keys…');
+      // wagmi's core action, not the useSignMessage hook: the signature never enters the TanStack
+      // mutation cache, and lives only in this function until it is hashed (audit web L8).
+      const message = buildSignMessage(address);
+      let sig: Hex | null = await signMessage(config, { message, account: address });
+      if (!signerVerified(address)) {
+        // First time in this browser: sign again and compare. A wallet whose signatures differ
+        // (passkey and many smart-contract wallets) would silently open a new account every time.
+        setStage('second');
+        const again = await signMessage(config, { message, account: address });
+        if (again.toLowerCase() !== sig.toLowerCase()) {
+          sig = null;
+          setUnstable(true);
+          setStage('idle');
+          s.set({ modalLocked: false });
+          return;
+        }
+        markSignerVerified(address);
+      }
+      setStage('deriving');
       const paddr = derivePrivateAddress(sig);
+      sig = null;
       await sleep(700);
       rememberSession(address, paddr);
       s.set({ account: { addr: address, paddr }, ledger: loadLedger(address) ?? seedLedger(), modal: null, modalLocked: false });
       s.toast('Wallet connected');
     } catch (e) {
       setErr(errText(e));
-      setLabel('Sign message');
-      setBusy(false);
+      setStage('idle');
       s.set({ modalLocked: false });
     }
   };
+  const switchWallet = async () => {
+    await disconnectAsync().catch(() => undefined);
+    s.openModal({ kind: 'connect' });
+  };
+  if (unstable)
+    return (
+      <>
+        <Head title="Open your private account" />
+        <p className="m-text">This wallet signed the same message two different ways, so it would open a different private account every time. It can&apos;t open a private account yet.</p>
+        <div className="boxnote warn">
+          <I.info />
+          <span>Passkey and smart-contract wallets often sign this way. Support for them is planned for a later release. For now, use a wallet with a regular key, such as a browser extension.</span>
+        </div>
+        <button className="btn btn-white btn-block" onClick={switchWallet}>
+          Use another wallet
+        </button>
+      </>
+    );
   return (
     <>
       <Head title="Open your private account" closable={!busy} />
-      <p className="m-text">Sign one message to create your private keys in this browser. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.</p>
+      <p className="m-text" aria-live="polite">
+        {stage === 'second'
+          ? 'Sign the same message once more. This checks that your wallet always gives the same signature, so it always opens the same account. You only do this once in this browser.'
+          : 'Sign one message to create your private keys in this browser. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.'}
+      </p>
       <div className="boxnote warn">
         <I.info />
         <span>Only sign this message on Velum. Anyone with this signature can open your private account.</span>
       </div>
       <button className="btn btn-white btn-block" disabled={busy} onClick={sign}>
-        {label}
+        {SIGN_LABEL[stage]}
       </button>
       <p className="hint" role="alert">
         {err}
@@ -280,6 +331,12 @@ function AccountModal() {
 }
 
 /* ---------- shield / unshield / send ---------- */
+const ADDRESS_HINT = {
+  format: 'Enter a public address: 0x followed by 40 characters.',
+  checksum: 'This address fails its checksum, so it may have a typo. Copy it again from your wallet.',
+  zero: 'This is the zero address. Tokens sent there are lost for good.',
+} as const;
+
 function MoveModal({ kind }: { kind: MoveKind }) {
   const s = useApp();
   const pub = usePublicBalances(s.account?.addr);
@@ -300,7 +357,8 @@ function MoveModal({ kind }: { kind: MoveKind }) {
     if (!tok && toks[0]) setTok(toks[0]);
   }, [tok, toks]);
   const have = t ? (kind === 'shield' ? shieldable(t) : bal(s.ledger.priv, t)) : 0n;
-  const a = parseOrZero(amt);
+  const a = amountOrZero(amt);
+  const bad = amountHint(amt);
   const over = a > have;
   const title = { shield: 'Shield tokens', unshield: 'Unshield tokens', send: 'Send privately' }[kind];
   const text = {
@@ -311,7 +369,10 @@ function MoveModal({ kind }: { kind: MoveKind }) {
   const go = () => {
     const dest = to.trim();
     if (kind === 'send' && !isPrivateAddress(dest)) return setHint('Enter a private address that starts with velum1.');
-    if (kind === 'unshield' && !isPublicAddress(dest)) return setHint('Enter a public address: 0x followed by 40 characters.');
+    if (kind === 'unshield') {
+      const check = checkPublicAddress(dest);
+      if (check !== 'ok') return setHint(ADDRESS_HINT[check]);
+    }
     moveGo(kind, t, a, dest);
   };
   const emptyShield = kind === 'shield' && !toks.length;
@@ -357,9 +418,8 @@ function MoveModal({ kind }: { kind: MoveKind }) {
       <div className="inp">
         <input
           id="mv-amt"
-          inputMode="decimal"
+          {...amountInputProps(amt, 'mv-hint')}
           placeholder="0.00"
-          autoComplete="off"
           value={amt}
           onChange={(e) => {
             setAmt(e.target.value);
@@ -376,7 +436,7 @@ function MoveModal({ kind }: { kind: MoveKind }) {
             <label htmlFor="mv-to">Recipient&apos;s private address</label>
           </div>
           <div className="inp sm">
-            <input id="mv-to" placeholder="velum1…" autoComplete="off" value={to} onChange={(e) => (setTo(e.target.value), setHint(''))} />
+            <input id="mv-to" placeholder="velum1…" autoComplete="off" spellCheck={false} maxLength={80} aria-describedby="mv-hint" value={to} onChange={(e) => (setTo(e.target.value), setHint(''))} />
           </div>
         </>
       ) : null}
@@ -386,7 +446,7 @@ function MoveModal({ kind }: { kind: MoveKind }) {
             <label htmlFor="mv-to">To public address</label>
           </div>
           <div className="inp sm">
-            <input id="mv-to" autoComplete="off" style={{ fontSize: 13 }} value={to} onChange={(e) => (setTo(e.target.value), setHint(''))} />
+            <input id="mv-to" autoComplete="off" spellCheck={false} maxLength={42} aria-describedby="mv-hint" style={{ fontSize: 13 }} value={to} onChange={(e) => (setTo(e.target.value), setHint(''))} />
           </div>
         </>
       ) : null}
@@ -398,10 +458,12 @@ function MoveModal({ kind }: { kind: MoveKind }) {
             : 'This step is public: anyone can see the wallet, token, amount and time. Vary amounts and wait between moves to make them harder to link.'}
         </span>
       </div>
-      <button className="btn btn-white btn-block" disabled={!t || a <= 0n || over} onClick={go}>
+      <button className="btn btn-white btn-block" disabled={!t || !!bad || a <= 0n || over} onClick={go}>
         {{ shield: 'Shield', unshield: 'Unshield', send: 'Send' }[kind]} {t}
       </button>
-      <p className="hint">{hint || (over ? `You have ${fmt(have, dp(t))} ${t} available.` : '')}</p>
+      <p className="hint" id="mv-hint">
+        {hint || bad || (over ? `You have ${fmt(have, dp(t))} ${t} available.` : '')}
+      </p>
     </>
   );
 }
@@ -410,7 +472,8 @@ function MoveModal({ kind }: { kind: MoveKind }) {
 function LpAddModal({ sym }: { sym: string }) {
   const s = useApp();
   const [amt, setAmt] = useState('1000');
-  const a = parseOrZero(amt);
+  const a = amountOrZero(amt);
+  const bad = amountHint(amt);
   const have = bal(s.ledger.priv, 'USDG');
   const price = mk(sym).price;
   const half = a / 2n;
@@ -425,7 +488,7 @@ function LpAddModal({ sym }: { sym: string }) {
         </span>
       </div>
       <div className="inp">
-        <input id="lp-amt" inputMode="decimal" value={amt} autoComplete="off" onChange={(e) => setAmt(e.target.value)} />
+        <input id="lp-amt" {...amountInputProps(amt, 'lp-hint')} value={amt} onChange={(e) => setAmt(e.target.value)} />
         <span className="unit">USDG</span>
       </div>
       <div className="sumbox">
@@ -448,10 +511,12 @@ function LpAddModal({ sym }: { sym: string }) {
           <b>The pool changed</b>
         </div>
       </div>
-      <button className="btn btn-white btn-block" disabled={a <= 0n || a > have || !getMarket(sym)} onClick={() => lpGo(sym, a)}>
+      <button className="btn btn-white btn-block" disabled={!!bad || a <= 0n || a > have || !getMarket(sym)} onClick={() => lpGo(sym, a)}>
         Add liquidity
       </button>
-      <p className="hint">{a > have ? `You have ${fmt(have)} USDG available.` : ''}</p>
+      <p className="hint" id="lp-hint">
+        {bad || (a > have ? `You have ${fmt(have)} USDG available.` : '')}
+      </p>
     </>
   );
 }
@@ -572,45 +637,139 @@ function Content({ m }: { m: ModalState }) {
   }
 }
 
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+const focusables = (root: HTMLElement) => Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => el.getClientRects().length > 0);
+
+/** Where focus goes back to on close: the trigger, or the nearest part of the page that still exists. */
+interface Restore {
+  el: HTMLElement | null;
+  trail: HTMLElement[];
+}
+
+function captureRestore(): Restore {
+  const a = document.activeElement;
+  if (!(a instanceof HTMLElement) || a === document.body) return { el: null, trail: [] };
+  const trail: HTMLElement[] = [];
+  for (let p = a.parentElement; p && p !== document.body; p = p.parentElement) trail.push(p);
+  return { el: a, trail };
+}
+
+function restoreFocus(r: Restore) {
+  if (r.el?.isConnected) {
+    r.el.focus({ preventScroll: true });
+    return;
+  }
+  // The trigger is gone (a closed position's row, a withdrawn offer): focus the nearest surviving
+  // ancestor, temporarily focusable, so keyboard and screen reader users keep their place.
+  const anc = r.trail.find((el) => el.isConnected);
+  if (!anc) return;
+  if (!anc.hasAttribute('tabindex')) {
+    anc.setAttribute('tabindex', '-1');
+    anc.addEventListener('blur', () => anc.removeAttribute('tabindex'), { once: true });
+  }
+  anc.focus({ preventScroll: true });
+}
+
+/**
+ * Modal dialog host (audit web L4): while open, everything rendered before it is inert (no focus,
+ * clicks or screen reader access), Tab cycles inside the dialog, the dialog itself holds focus
+ * when it has nothing focusable (a running flow), and focus returns to the trigger on close.
+ * Only the page's own elements are made inert, not third-party overlays such as WalletConnect's
+ * QR modal, which are appended after this host and must stay usable on top of it.
+ */
 export function ModalHost() {
   const modal = useApp((s) => s.modal);
   const close = useApp((s) => s.closeModal);
+  const bg = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
-  const restore = useRef<HTMLElement | null>(null);
+  const open = modal !== null;
   const key = modal ? (modal.kind === 'flow' ? `flow-${modal.id}` : modal.kind) : '';
 
-  useEffect(() => {
-    if (!modal) {
-      restore.current?.focus?.({ preventScroll: true });
-      restore.current = null;
-      return;
+  const inerted = useRef(new Set<Element>());
+  const path = usePathname();
+  const inertPage = () => {
+    for (let el = bg.current?.previousElementSibling; el; el = el.previousElementSibling) {
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.hasAttribute('inert')) continue;
+      el.setAttribute('inert', '');
+      inerted.current.add(el);
     }
-    if (!restore.current) restore.current = document.activeElement as HTMLElement | null;
-    const f = box.current?.querySelector<HTMLElement>('input,select,.wopt,.btn');
-    f?.focus({ preventScroll: true });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const restore = captureRestore();
+    const made = inerted.current;
+    inertPage();
+    return () => {
+      made.forEach((el) => el.removeAttribute('inert'));
+      made.clear();
+      restoreFocus(restore);
+    };
+  }, [open]);
+
+  // A navigation while a modal is open (browser back) renders a new page: keep it inert too.
+  useEffect(() => {
+    if (open) inertPage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const first = el.querySelector<HTMLElement>('input,select,.wopt,.btn');
+    (first && !first.matches(':disabled') ? first : el).focus({ preventScroll: true });
   }, [key]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
+      const el = box.current;
+      if (!el) return;
+      const active = document.activeElement;
+      // Focus is in a third-party overlay on top of ours (e.g. WalletConnect's QR modal): leave it alone.
+      if (active && active !== document.body && !el.contains(active)) return;
+      if (e.key === 'Escape') {
+        close();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const items = focusables(el);
+      e.preventDefault();
+      if (!items.length) {
+        el.focus({ preventScroll: true });
+        return;
+      }
+      const i = active instanceof HTMLElement ? items.indexOf(active) : -1;
+      const next = e.shiftKey ? (i <= 0 ? items.length - 1 : i - 1) : i === -1 || i === items.length - 1 ? 0 : i + 1;
+      items[next]!.focus();
+    };
+    // If the focused control disappears or is disabled mid-step, keep focus on the dialog, not the page.
+    const onFocusOut = (e: FocusEvent) => {
+      const el = box.current;
+      if (!el || e.relatedTarget) return;
+      setTimeout(() => {
+        if (box.current === el && (document.activeElement === document.body || document.activeElement === null)) el.focus({ preventScroll: true });
+      }, 0);
     };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    document.addEventListener('focusout', onFocusOut);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('focusout', onFocusOut);
+    };
   }, [close]);
 
   if (!modal) return null;
   return (
     <div
       className="modal-bg open"
+      ref={bg}
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
       }}
     >
-      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="m-title" ref={box} key={key}>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="m-title" tabIndex={-1} ref={box} key={key}>
         <Content m={modal} />
       </div>
     </div>
   );
 }
-

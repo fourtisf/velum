@@ -3,7 +3,7 @@ import { HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@
 import { Av } from '@/components/ui';
 import { I, Mark } from '@/components/icons';
 import { Nav } from '@/components/Nav';
-import { COPY, METRICS } from '@/lib/copy';
+import { COPY, LANDING, METRICS } from '@/lib/copy';
 
 const STEPS_MINI: Array<[string, string]> = [
   ['Lock margin in a private note', ''],
@@ -26,7 +26,7 @@ export default function Landing() {
               </span>
             </Link>
             <h1>Trade stocks onchain, privately.</h1>
-            <p className="lead">Velum is a private exchange for tokenized stocks. Spot and perps, with your balance, positions and P&amp;L encrypted end to end.</p>
+            <p className="lead">{LANDING.lead}</p>
             <div className="ctas">
               <Link className="btn btn-white btn-lg" href="/app/trade/TSLA">
                 Start trading
@@ -44,7 +44,7 @@ export default function Landing() {
           <div className="stats4">
             <div>
               <b className="num">10</b>
-              <small>Stock markets, spot and perps</small>
+              <small>{LANDING.statMarkets}</small>
             </div>
             <div>
               <b className="num">5×</b>
@@ -52,11 +52,11 @@ export default function Landing() {
             </div>
             <div>
               <b className="num">0</b>
-              <small>Admin keys that can touch funds</small>
+              <small>{LANDING.statAdmin}</small>
             </div>
             <div>
               <b className="num">~2s</b>
-              <small>To prove a trade in your browser</small>
+              <small>{LANDING.statProof}</small>
             </div>
           </div>
 
@@ -67,7 +67,7 @@ export default function Landing() {
               <RevealCard>
                 <span className="badge hinttag">Hover to reveal</span>
                 <h3>Private by default</h3>
-                <p>Your balance, positions and profit live in encrypted notes that only your device can read. Everyone else sees a commitment.</p>
+                <p>{LANDING.privateText}</p>
                 <div className="vis">
                   <div className="mini">
                     <div className="mini-h">
@@ -104,7 +104,7 @@ export default function Landing() {
               </RevealCard>
               <div className="bc">
                 <h3>Long or short, up to 5×</h3>
-                <p>Post margin, pick a side, and a maker&apos;s standing offer fills you. Close on your own at any time.</p>
+                <p>{LANDING.longShortText}</p>
                 <div className="vis">
                   <div className="mini">
                     <div className="sides" style={{ pointerEvents: 'none' }} aria-hidden="true">
@@ -133,7 +133,7 @@ export default function Landing() {
               </div>
               <div className="bc">
                 <h3>Proofs made on your device</h3>
-                <p>Your browser proves each trade follows the rules. The chain checks the math, never the trade.</p>
+                <p>{LANDING.proofsText}</p>
                 <div className="vis">
                   <div className="steps-mini">
                     {STEPS_MINI.map(([t, s]) => (
@@ -149,8 +149,8 @@ export default function Landing() {
                 </div>
               </div>
               <div className="bc">
-                <h3>Nobody can freeze your funds</h3>
-                <p>No admin key, no pause on balances. If services go quiet, a forced exit settles your position.</p>
+                <h3>{LANDING.freezeTitle}</h3>
+                <p>{LANDING.freezeText}</p>
                 <div className="vis">
                   <div style={{ display: 'flex', gap: 28 }}>
                     <div>
@@ -166,7 +166,7 @@ export default function Landing() {
               </div>
               <div className="bc">
                 <h3>Earn from every swap</h3>
-                <p>Add to a pool and keep 0.30% of each trade through it. Your share stays private.</p>
+                <p>{LANDING.earnText}</p>
                 <div className="vis">
                   <div className="mini">
                     <div className="mini-h">
@@ -181,7 +181,7 @@ export default function Landing() {
                 <div className="devgrid">
                   <div>
                     <h3>Built for builders</h3>
-                    <p>Read markets with a plain HTTP API. Make proofs on the client with the SDK. The relayer submits them and never holds a key.</p>
+                    <p>{LANDING.buildersText}</p>
                     <div style={{ marginTop: 22 }}>
                       <div className="ep">
                         <code>GET /v1/markets</code>
@@ -197,7 +197,7 @@ export default function Landing() {
                       </div>
                       <div className="ep">
                         <code>POST /v1/relay</code>
-                        <span>Submit a proof you already made</span>
+                        <span>{LANDING.relayEndpoint}</span>
                       </div>
                     </div>
                   </div>
@@ -226,22 +226,22 @@ export default function Landing() {
               <div className="step">
                 <small>Step 1</small>
                 <h3>Shield</h3>
-                <p>Move USDG or stock tokens from your wallet into your private balance. This deposit is public.</p>
+                <p>{LANDING.stepShield}</p>
               </div>
               <div className="step">
                 <small>Step 2</small>
                 <h3>Prove</h3>
-                <p>Pick a trade. Your browser builds a zero-knowledge proof that it follows the rules.</p>
+                <p>{LANDING.stepProve}</p>
               </div>
               <div className="step">
                 <small>Step 3</small>
                 <h3>Relay</h3>
-                <p>A relayer submits the proof and pays gas, so your wallet never shows up on the trade.</p>
+                <p>{LANDING.stepRelay}</p>
               </div>
               <div className="step">
                 <small>Step 4</small>
                 <h3>Settle</h3>
-                <p>The contract checks the proof and updates your encrypted notes. Only you can read the result.</p>
+                <p>{LANDING.stepSettle}</p>
               </div>
             </div>
           </section>
@@ -249,7 +249,7 @@ export default function Landing() {
           <section className="sec" id="privacy">
             <span className="eyebrow">Privacy</span>
             <h2>Same trade. Two very different views.</h2>
-            <p className="lead">On a public chain anyone can copy your trades or hunt your liquidation price. Here they can&apos;t.</p>
+            <p className="lead">{LANDING.privacyLead}</p>
             <div className="duo">
               <div className="card pcard">
                 <div className="hd">
@@ -313,23 +313,23 @@ export default function Landing() {
                 </details>
                 <details>
                   <summary>Can I go long and short?</summary>
-                  <p>Yes. Perps let you go long or short on each stock with up to 5× leverage. A maker takes the other side, and you can close on your own at any time.</p>
+                  <p>{LANDING.faqLongShort}</p>
                 </details>
                 <details>
                   <summary>Who can see my trades?</summary>
-                  <p>You can. The maker on the other side sees that one position, against a one-time address. Two risk services can read what they need to liquidate. The public only sees that a position changed.</p>
+                  <p>{LANDING.faqWho}</p>
                 </details>
                 <details>
                   <summary>Is it anonymous?</summary>
-                  <p>No. Moving tokens in and out is public. If you want deposits harder to link, vary amounts and timing and withdraw to a fresh wallet.</p>
+                  <p>{LANDING.faqAnon}</p>
                 </details>
                 <details>
                   <summary>Can I lose more than my margin?</summary>
-                  <p>No. Each position has its own margin and losses stop there. You can lose all of it, so start small.</p>
+                  <p>{LANDING.faqLoss}</p>
                 </details>
                 <details>
                   <summary>What if Velum goes offline?</summary>
-                  <p>Your free balance is yours. You can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after 7 days.</p>
+                  <p>{LANDING.faqOffline}</p>
                 </details>
               </div>
             </div>

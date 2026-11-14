@@ -443,3 +443,11 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .chart-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:13px;pointer-events:none}
 .av.logo{border-color:rgba(255,255,255,.1);font-family:var(--display);font-weight:600}
 .av.logo svg{width:56%;height:56%;display:block}
+/* Swap amount: same focus ring as .inp (audit web I4); the prototype's input had outline:0 and no ring. */
+.sbox:has(.srow input:focus){border-color:color-mix(in srgb,var(--acc) 60%,transparent);box-shadow:0 0 0 3px var(--acc-bg)}
+.sbox{transition:border-color .15s,box-shadow .15s}
+/* The dialog itself takes focus while a flow runs (audit web L4); its children show the ring, not the box. */
+.modal:focus{outline:none}
+/* The chips' visually hidden names (.sr, position:absolute) must be clipped by the scrolling strip;
+   without a positioned strip they widened the trade page to ~2,000 px on phones (not in the prototype). */
+.strip{position:relative}

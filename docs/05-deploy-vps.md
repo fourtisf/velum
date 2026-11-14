@@ -9,7 +9,18 @@ on the box). Domain A record → VPS IP.
 sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/phase1-static.sh
 ```
 Installs Nginx + Certbot, copies `prototype/index.html` to `/var/www/velum/`, enables
-`deploy/nginx/velum-static.conf`, issues HTTPS.
+`deploy/nginx/velum-static.conf`, opens the firewall (keeps your SSH port), issues HTTPS.
+`www.` is added only when its A record points at the server (`WWW=yes` to force). It stops with a
+clear message if another program (often Apache) holds port 80.
+
+## Phase 2: one command
+
+```bash
+sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
+```
+Runs steps 1–4 below idempotently, writes `.env` with generated Postgres/Redis passwords
+(kept on re-runs, file mode 600), switches Nginx to `velum.conf`, issues HTTPS, runs the first
+`deploy/deploy.sh` as the user who ran sudo, and enables PM2 on boot. The manual steps follow.
 
 ## Phase 2+: full stack
 
@@ -58,7 +69,10 @@ sudo certbot --nginx -d $DOMAIN -d www.$DOMAIN -m $EMAIL --agree-tos --redirect 
 ```bash
 cd /opt/velum && bash deploy/deploy.sh
 ```
-Pulls, installs, migrates, builds, reloads PM2 with zero downtime.
+Pulls the branch the checkout is on (`BRANCH=name` to override), installs, migrates, builds,
+reloads PM2 with zero downtime and waits for `/v1/health` and the web root to answer.
+
+`NEXT_PUBLIC_*` values are compiled into the web build, so run a release after changing them.
 
 ### 6. Operations
 - Logs: `pm2 logs velum-api --lines 200`; rotate with `pm2 install pm2-logrotate`.

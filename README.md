@@ -2,50 +2,111 @@
 
 Private spot and perps for tokenized stocks on Robinhood Chain (testnet).
 
-> Status: approved UI prototype + full build brief. Production build happens in phases.
+> Status: **Phase 2**, a production frontend with demo trading. Wallet connect, public balances,
+> prices and candles are real. Trades are simulated in the browser behind a visible "Demo mode" banner.
 > Claude Code: start with `CLAUDE.md`.
 
 ## What's in this repo
 
 | Path | What it is |
 |---|---|
-| `CLAUDE.md` | Master brief for Claude Code: rules, stack, routes, phases |
-| `prototype/index.html` | Approved UI. Open it in a browser, it runs offline with demo data |
-| `design/tokens.css` | Colors, type, radii, spacing pulled from the prototype |
+| `CLAUDE.md` | Master brief: rules, stack, routes, phases |
+| `prototype/index.html` | Approved UI (Phase 1 serves it as-is). Visual source of truth |
+| `apps/web` | Next.js 14 port of the prototype: landing + `/app/*` (wagmi v2 + viem) |
+| `apps/api` | Fastify read API: health, markets, candles, pools, stats, quote |
+| `apps/workers` | BullMQ workers: price relay + candles |
+| `packages/config` | Verified chain constants, tokens, markets, protocol numbers, Redis contract |
+| `packages/math` | 1e18 fixed-point money math and every formula in docs/01 §6 |
+| `packages/db` | Prisma schema, migrations, generated client |
+| `deploy/` | Nginx, PM2, Phase 1 script, Phase 2 server setup and release scripts |
 | `docs/` | Product spec, architecture, API, contracts + privacy, deploy, roadmap |
-| `packages/db/prisma/schema.prisma` | Starting database schema |
-| `packages/config/robinhood-testnet.json` | Chain ID, explorer, faucets, token addresses |
-| `deploy/` | Nginx, PM2, deploy scripts |
-| `.env.example` | Every environment variable the apps read |
 
-## Quick start: put the prototype live (Phase 1)
+## Phase 1: the prototype live (static)
 
-On a fresh Hostinger VPS (Ubuntu 22.04+), with your domain's A record pointing at it:
+On a fresh Hostinger VPS (Ubuntu 22.04+) with your domain's A record pointing at it:
 
 ```bash
 git clone <this-repo> /opt/velum && cd /opt/velum
 sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/phase1-static.sh
 ```
 
-That installs Nginx, copies the prototype to `/var/www/velum`, and issues an SSL cert.
+This installs Nginx, copies the prototype to `/var/www/velum`, opens the firewall (keeping your SSH
+port), and issues HTTPS. `www.` is included only if its DNS points at the server (`WWW=yes` to force).
 
-## Full stack (Phase 2+)
+## Phase 2: full stack
 
 ```
-apps/web      Next.js 14   :3000
-apps/api      Fastify      :4000
-apps/workers  BullMQ jobs  (no port)
-PostgreSQL    :5432
-Redis         :6379
+apps/web      Next.js 14   127.0.0.1:3000   (PM2 cluster ×2)
+apps/api      Fastify      127.0.0.1:4000   (PM2 cluster ×2, Nginx /api/ → :4000/)
+apps/workers  BullMQ       no port          (PM2 fork ×1)
+PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password)
 ```
 
-See `docs/05-deploy-vps.md` for the complete server setup and `deploy/deploy.sh` for releases.
+First time on the server (installs everything, writes `.env` with generated passwords, switches
+Nginx to the full stack, issues HTTPS, runs the first release, enables PM2 on boot):
+
+```bash
+cd /opt/velum
+sudo DOMAIN=velum.example EMAIL=you@example.com bash deploy/server-setup.sh
+```
+
+Every release after that:
+
+```bash
+cd /opt/velum && bash deploy/deploy.sh
+```
+
+`deploy.sh` pulls the branch the checkout is on (`BRANCH=` to override), installs with the frozen
+lockfile, migrates, builds, reloads PM2 with zero downtime and checks health. See
+`docs/05-deploy-vps.md` for the manual steps and operations.
+
+## Local development
+
+Needs Node 20+, pnpm 9, PostgreSQL 16 and Redis 7.
+
+```bash
+pnpm install
+cp .env.example .env        # set DATABASE_URL, REDIS_URL, CORS_ORIGIN=http://localhost:3000
+pnpm db:migrate
+pnpm --filter @velum/workers dev   # prices + candles
+pnpm --filter @velum/api dev       # http://127.0.0.1:4000/v1/health
+API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://localhost:3000
+```
+
+Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
+
+## What changed in Phase 2
+
+- **Verified chain constants** (`packages/config/robinhood-testnet.json`). Chain ID 46630, RPC and
+  explorer match docs.robinhood.com and the RPC itself. All six token contracts were checked on-chain:
+  USDG has 6 decimals, stock tokens have 18. Multicall3 is deployed. Chainlink feed addresses are not verified yet, so
+  `PRICE_SOURCE=demo` stays the default.
+- **Web**: every prototype route ported with its CSS verbatim, giving the same layout at 1440, 1024 and 390 px. The only
+  visible additions are the demo banner and "Coming soon" on NVDA, AAPL, META, MSFT and COIN, which have
+  no testnet token. Lighthouse: performance 91–92, accessibility 96, best practices 100, SEO 100.
+- **Wallet**: injected wallets, plus WalletConnect when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set,
+  plus the Coinbase/passkey connector. Wrong networks prompt a switch. Public balances come from the chain
+  through Multicall3. Third-party wallet SDKs load only when chosen and with telemetry off, so a session
+  talks only to our API and the testnet RPC.
+- **Private account (demo)**: one signature is hashed in the browser into a `velum1…` address. The
+  signature is never stored or sent. Private balances, positions, offers and LP are a demo ledger kept
+  per wallet in `localStorage`, using the prototype's flows, receipts and toasts and the fixed-point
+  formulas in `@velum/math`. New wallets start with 12,500 USDG, 4 TSLA and 10 AMZN (AMZN replaces the
+  prototype's NVDA, which is not on testnet).
+- **API**: per docs/03-api.md. Money is returned as strings, quotes are rounded down to 4 significant
+  figures, rate limits live in Redis, there is one error format, and the API holds no per-user state or keys.
+- **Workers**: demo or Chainlink price source, Redis snapshots with a last-hour sparkline,
+  PriceTick rows, 15m/1h/4h/1D candles, demo backfill and tick pruning.
+- **Deploy**: Nginx security headers now survive per-location `add_header`. Cross-origin isolation
+  is deferred to Phase 4 because it breaks wallet popups. Server setup is now one script, and the release script
+  re-runs itself after pulling.
 
 ## Stack
 
-Next.js 14 · Fastify · Prisma · PostgreSQL · Redis · wagmi/viem · Foundry · Noir · PM2 · Nginx
+Next.js 14 · Fastify · Prisma · PostgreSQL · Redis · BullMQ · wagmi/viem · PM2 · Nginx
+(Foundry and Noir arrive in Phases 3–4.)
 
 ## Disclaimer
 
 An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet only.
-Test tokens have no value. Contracts are not audited.
+Test tokens have no value. Trades are simulated in Phase 2. Contracts are not audited.

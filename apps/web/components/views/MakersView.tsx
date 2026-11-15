@@ -5,7 +5,9 @@ import { amountHint, amountInputProps, amountOrZero, bpsOrNull } from '@/lib/amo
 import { earnPer1000, postOffer, withdrawOffer } from '@/lib/demo';
 import { fmt, fmtBal, usd, usdBal } from '@/lib/format';
 import { UI } from '@/lib/copy';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { OFFER_EXPIRIES as EXPIRIES, bal, useApp } from '@/lib/store';
+import { OcMakersView } from '../onchain/lazy';
 import { I } from '../icons';
 import { Av, Pv } from '../ui';
 
@@ -77,6 +79,11 @@ function Offers() {
 }
 
 export function MakersView() {
+  const oc = useOnchain();
+  return oc ? <OcMakersView oc={oc} /> : <DemoMakersView />;
+}
+
+function DemoMakersView() {
   const s = useApp();
   const [sym, setSym] = useState(isLive(s.sel) ? s.sel : 'TSLA');
   const [back, setBack] = useState('5000');

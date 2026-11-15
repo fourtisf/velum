@@ -8,8 +8,8 @@ import { OFFICIAL_RPC, readTransport } from './rpc';
  * official public RPC, never a custom provider URL that may carry an API key (audit web L12).
  */
 export const robinhoodChain = defineChain({
-  id: CHAIN.id,
-  name: CHAIN.name,
+  id: ENV.chainId,
+  name: ENV.localRpc ? 'Local test chain' : CHAIN.name,
   nativeCurrency: CHAIN.nativeCurrency,
   rpcUrls: { default: { http: [OFFICIAL_RPC] } },
   blockExplorers: { default: { name: 'Blockscout', url: ENV.explorerUrl, apiUrl: CHAIN.explorerApi } },

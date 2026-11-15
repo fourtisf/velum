@@ -365,6 +365,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .flow .ic svg{width:11px;height:11px}
 .flow li.active .ic{border-color:var(--acc);border-top-color:transparent;animation:spin .8s linear infinite}
 .flow li.done .ic{background:var(--up);border-color:var(--up);color:#03140B}
+.flow li.fail .ic{background:var(--down);border-color:var(--down);color:#fff}
 .flow .t{font-weight:500;font-size:14px}
 .flow li:not(.active):not(.done) .t{color:var(--faint)}
 .flow .d{color:var(--faint);font-size:12.5px}

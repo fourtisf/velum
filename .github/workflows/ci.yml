@@ -93,12 +93,14 @@ jobs:
             # user input and is not part of the web bundle or the API's request path. The fix is
             # deepmerge-ts 8 (a major version Prisma 6 does not support).
             GHSA-ggr8-5vv4-36mx
-            # zod 3.22.4 / 3.25.76 (high, memory exhaustion validating oversized constrained collections),
-            # via wagmi's connectors: @reown/appkit-wallet 1.7.8 (WalletConnect's embedded-wallet frame)
-            # and @coinbase/cdp-sdk (Base Account). Neither code path is used: the web builds contain no
-            # zod code at all (tree-shaken; checked in .next/static on both networks), the API and workers
-            # do not depend on zod 3, and no user input could reach it anyway. The fix is zod 4, a major
-            # version these packages do not support; revisit with the wagmi 3 upgrade before Phase 3.
+            # zod 3.22.4 (high, memory exhaustion validating oversized constrained collections), via
+            # @reown/appkit-wallet 1.7.8 (WalletConnect's embedded-wallet frame, part of the Apache-2.0
+            # WalletConnect line the owner chose: ethereum-provider 2.21.x with AppKit 1.7.x), also linked
+            # as abitype's optional zod peer under viem. Since the wagmi 3 upgrade Base Account (and with
+            # it @coinbase/cdp-sdk and zod 3.25.76) is no longer installed. Not used: the web builds
+            # contain no zod code at all (tree-shaken; checked in .next/static on both networks), the API
+            # and workers do not depend on zod 3, and no user input could reach it anyway. The fix is zod
+            # 4, which AppKit 1.7.x does not support; AppKit versions that do are not Apache-2.0.
             GHSA-mrhx-c7xc-m3w5
           )
           out="$RUNNER_TEMP/audit.json"

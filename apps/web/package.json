@@ -15,14 +15,16 @@
     "notices:check": "node scripts/third-party-notices.mjs --check"
   },
   "dependencies": {
+    "@coinbase/wallet-sdk": "4.3.6",
     "@tanstack/react-query": "5.107.1",
     "@velum/config": "workspace:*",
     "@velum/math": "workspace:*",
+    "@walletconnect/ethereum-provider": "2.21.1",
     "next": "15.5.29",
     "react": "19.2.9",
     "react-dom": "19.2.9",
     "viem": "2.57.19",
-    "wagmi": "2.19.5",
+    "wagmi": "3.7.11",
     "zustand": "5.1.0"
   },
   "devDependencies": {

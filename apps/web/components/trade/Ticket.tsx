@@ -10,7 +10,9 @@ import { bal, useApp } from '@/lib/store';
 import { CLOSED, COPY, METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { DemoTag } from '../ui';
+import { OnchainTicket } from '../onchain/lazy';
 import { useTradeMode } from './mode';
+import { useOnchain } from '@/lib/onchain/deployment';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
 
@@ -253,6 +255,9 @@ function SpotTicket({ sym }: { sym: string }) {
 
 export function Ticket({ sym }: { sym: string }) {
   const mode = useTradeMode();
+  // Real transactions once a deployment is live (lib/onchain/deployment.ts); otherwise the simulated ticket.
+  const oc = useOnchain();
+  if (oc) return <OnchainTicket sym={sym} mode={mode} oc={oc} />;
   return (
     <aside className="card ticket" aria-label="Order ticket">
       {mode === 'perps' ? <PerpsTicket sym={sym} /> : <SpotTicket sym={sym} />}

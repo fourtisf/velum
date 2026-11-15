@@ -6,7 +6,9 @@ import { privTotal, valueOf } from '@/lib/calc';
 import { dp, fmtBal, usdBal, usdOrDash } from '@/lib/format';
 import { usePublicBalances } from '@/lib/balances';
 import { tokPx, usePriceTick } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
+import { OcPortfolio } from '../onchain/lazy';
 import { COPY, SIM, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { ActList, PosTable } from '../trade/Positions';
@@ -85,6 +87,12 @@ const head = (
 );
 
 export function PortfolioView() {
+  const oc = useOnchain();
+  const signedIn = useApp((s) => !!s.account);
+  return oc && signedIn ? <OcPortfolio oc={oc} /> : <DemoPortfolioView />;
+}
+
+function DemoPortfolioView() {
   usePriceTick();
   const s = useApp();
   const pub = usePublicBalances(s.account?.addr);

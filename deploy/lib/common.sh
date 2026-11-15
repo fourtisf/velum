@@ -223,9 +223,9 @@ official_rpc() {
 #    https://rpc.wallet.coinbase.com. keys.coinbase.com opens as a popup window, not a frame, and the
 #    web turns telemetry off (no cca-lite/as.coinbase.com).
 CSP_COINBASE_CONNECT='https://www.walletlink.org wss://www.walletlink.org https://rpc.wallet.coinbase.com'
-#  - WalletConnect 2.26.0 (@walletconnect/ethereum-provider, pinned by the root package.json override;
+#  - WalletConnect 2.21.1 (@walletconnect/ethereum-provider, Apache-2.0, a direct pinned web dependency;
 #    @walletconnect/core: relay, Verify API iframe + attestation fetch; its own telemetry is off in
-#    lib/wagmi.ts) and Reown AppKit 1.8.19, the QR modal (appkit-common ConstantsUtil: blockchain API
+#    lib/wagmi.ts) and Reown AppKit 1.7.8 (Apache-2.0), the QR modal (appkit-common ConstantsUtil: blockchain API
 #    rpc.walletconnect.org, api.web3modal.org wallet list and images fetched as blobs,
 #    secure.walletconnect.org W3mFrame; appkit-ui ThemeUtil loads its font from fonts.reown.com).
 #    Added only with a project ID.

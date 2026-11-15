@@ -21,7 +21,7 @@ colors, copy and interactions. Do not redesign.
    - DB: **PostgreSQL** via **Prisma**
    - Cache/queues: **Redis** (BullMQ for jobs)
    - Hosting: **Hostinger VPS** (Ubuntu), **PM2** process manager, **Nginx** reverse proxy, Certbot SSL
-   - Wallet: **wagmi v2 + viem**
+   - Wallet: **wagmi v3 + viem**
    - Contracts: **Foundry** (Solidity ^0.8.28)
    - ZK circuits: **Noir** + **Barretenberg** (UltraHonk verifier generated to Solidity)
 3. **Ship in phases** (section 4). Each phase must be deployable and demo-able on its own.

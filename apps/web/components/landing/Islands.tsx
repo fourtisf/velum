@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { fromNumber, pnl } from '@velum/math';
-import { COPY, METRICS } from '@/lib/copy';
+import { COPY, METRICS, ONCHAIN } from '@/lib/copy';
 import { compact, fmt, sgnUsd } from '@/lib/format';
 import { useLivePrice, useMarkets, usePriceOrigin } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp } from '@/lib/store';
 import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
 import { Terminal } from '../trade/Terminal';
@@ -52,7 +53,13 @@ export function HeroFrame() {
 export function FrameCap() {
   const origin = usePriceOrigin();
   const connected = useApp((s) => s.account !== null);
-  return <p className="frame-cap">{COPY.frameCap(origin, connected)}</p>;
+  const oc = useOnchain();
+  return <p className="frame-cap">{oc ? ONCHAIN.frameCap(origin) : COPY.frameCap(origin, connected)}</p>;
+}
+
+/** A line that says trading is simulated, replaced once real transactions are on (lib/onchain/deployment.ts). */
+export function OcText({ sim, real }: { sim: string; real: string }) {
+  return <>{useOnchain() ? real : sim}</>;
 }
 
 export function RevealCard({ children }: { children: ReactNode }) {

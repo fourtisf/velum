@@ -22,6 +22,14 @@ touching mainnet. The owner's approvals so far:
   - Contracts: a **taker forced exit pays the committed close spread and fee**, like a normal close.
   - Contracts: positions **below half the maintenance margin may be liquidated during the sequencer
     grace period** (the other checks wait for the grace period to end).
+  - **wagmi v3** (CLAUDE.md §1 named wagmi v2), upgraded before the Phase 3 wiring: `wagmi` 3.7.11, keeping
+    viem. In v3 the connector SDKs are optional peer dependencies, so the web installs only what it uses:
+    injected / EIP-6963 (built in), WalletConnect and the Coinbase SDK (the "Passkey account" option).
+    **WalletConnect stays on the Apache-2.0 provider line**: `@walletconnect/ethereum-provider` 2.21.x with
+    Reown AppKit 1.7.x (2.21.1 / 1.7.8, as audited; 2.21.9 and later, and AppKit 1.8, are under the Reown
+    Community License and are not used). The MetaMask SDK (ConsenSys licence, non-commercial) and the other
+    optional SDKs (Base Account, Safe, Tempo) are no longer installed; MetaMask still connects as an injected
+    EIP-6963 wallet. Each connector is imported from its own `wagmi/connectors/<name>` path.
 
 ## Phase 1 — Live today (static)
 **Build:** nothing; serve `prototype/index.html`.
@@ -33,7 +41,7 @@ mobile layout correct; Lighthouse ≥ 90.
 - pnpm monorepo (`apps/web`, `apps/api`, `apps/workers`, `packages/db`, `packages/config`).
 - Next.js port (14, then 15 after the 2026-11-15 decision) of every route in the prototype, component by component, using
   `design/tokens.css`. Fonts: Inter + Inter Tight via `next/font`.
-- wagmi v2 + viem with a custom chain for Robinhood Chain testnet (`packages/config`).
+- wagmi (v2, then v3 after the 2026-11-15 decision) + viem with a custom chain for Robinhood Chain testnet (`packages/config`).
   Connect: injected, WalletConnect, Coinbase/passkey connector.
 - Real public balances (USDG + Stock Tokens) in Portfolio "Public wallet".
 - `apps/api`: `/v1/health`, `/v1/markets`, `/v1/markets/:sym/candles`, `/v1/pools`,

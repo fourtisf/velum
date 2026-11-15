@@ -4,8 +4,8 @@ import { WAD, type Wad } from '@velum/math';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRejectedRequestError, type Address, type Hex } from 'viem';
-import { ConnectorAlreadyConnectedError, useAccount, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
-import { getAccount, signMessage } from 'wagmi/actions';
+import { ConnectorAlreadyConnectedError, useConfig, useConnect, useConnection, useConnectors, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
+import { getConnection, signMessage } from 'wagmi/actions';
 import { accountFingerprint, buildSignMessage, checkPublicAddress, checkSignature, derivePrivateAddress, isPrivateAddress } from '@/lib/account';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { usePublicBalances } from '@/lib/balances';
@@ -13,7 +13,10 @@ import { lpGo, moveGo, receiptRows, type MoveKind } from '@/lib/demo';
 import { dp, floorTo, fmt, fmtBal, shortH } from '@/lib/format';
 import { CLOSED, COPY, P, SIM, UI } from '@/lib/copy';
 import { mk, useLivePrice } from '@/lib/markets';
+import { ENV } from '@/lib/env';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
+import { ManageModal, OcLpAddModal, OcMoveModal, TxFlowModal } from '../onchain/lazy';
 import {
   bal,
   emptyLedger,
@@ -61,7 +64,8 @@ function Head({ title, closable = true }: { title: string; closable?: boolean })
 const alreadyConnected = (e: unknown) => e instanceof ConnectorAlreadyConnectedError || (e as { name?: string })?.name === 'ConnectorAlreadyConnectedError';
 
 function ConnectModal({ error }: { error?: string }) {
-  const { connectors, connectAsync, isPending } = useConnect();
+  const { mutateAsync: connectAsync, isPending } = useConnect();
+  const connectors = useConnectors();
   const config = useConfig();
   const openModal = useApp((s) => s.openModal);
   const [err, setErr] = useState(error ?? '');
@@ -70,26 +74,26 @@ function ConnectModal({ error }: { error?: string }) {
   const detected = connectors.filter((x, i, all) => x.type === 'injected' && x.id !== 'injected' && all.findIndex((y) => y.name === x.name) === i);
   const generic = connectors.find((x) => x.id === 'injected');
 
-  const next = (chainId: number | undefined) => openModal(chainId === CHAIN.id ? { kind: 'sign' } : { kind: 'network' });
+  const next = (chainId: number | undefined) => openModal(chainId === ENV.chainId ? { kind: 'sign' } : { kind: 'network' });
   /**
    * The wallet is already connected through this connector (the sign dialog was closed after
    * connecting, or wagmi reconnected it on reload): connecting again would fail with "Connector
    * already connected" (final audit W-04), so go straight to the sign or network step.
    */
   const connectedThrough = (c: Connector | CreateConnectorFn): boolean => {
-    const a = getAccount(config);
+    const a = getConnection(config);
     return a.status === 'connected' && typeof c !== 'function' && a.connector?.uid === c.uid;
   };
 
   const connect = async (c: Connector | CreateConnectorFn, key: string) => {
     setErr('');
-    if (connectedThrough(c)) return next(getAccount(config).chainId);
+    if (connectedThrough(c)) return next(getConnection(config).chainId);
     setBusy(key);
     try {
-      const res = await connectAsync({ connector: c, chainId: CHAIN.id });
+      const res = await connectAsync({ connector: c, chainId: ENV.chainId });
       next(res.chainId);
     } catch (e) {
-      if (alreadyConnected(e) && getAccount(config).status === 'connected') return next(getAccount(config).chainId);
+      if (alreadyConnected(e) && getConnection(config).status === 'connected') return next(getConnection(config).chainId);
       const rejected = e instanceof UserRejectedRequestError || (e as { code?: number })?.code === 4001;
       if (rejected) {
         setErr(errText(e));
@@ -101,7 +105,7 @@ function ConnectModal({ error }: { error?: string }) {
         const res = await connectAsync({ connector: c });
         next(res.chainId);
       } catch (e2) {
-        if (alreadyConnected(e2) && getAccount(config).status === 'connected') return next(getAccount(config).chainId);
+        if (alreadyConnected(e2) && getConnection(config).status === 'connected') return next(getConnection(config).chainId);
         setErr(errText(e));
       }
     } finally {
@@ -187,7 +191,7 @@ function ConnectModal({ error }: { error?: string }) {
 
 /* ---------- wrong network ---------- */
 function NetworkModal() {
-  const { switchChainAsync, isPending } = useSwitchChain();
+  const { mutateAsync: switchChainAsync, isPending } = useSwitchChain();
   const account = useApp((s) => s.account);
   const openModal = useApp((s) => s.openModal);
   const close = useApp((s) => s.closeModal);
@@ -195,7 +199,7 @@ function NetworkModal() {
   const go = async () => {
     setErr('');
     try {
-      await switchChainAsync({ chainId: CHAIN.id });
+      await switchChainAsync({ chainId: ENV.chainId });
       if (account) close(true);
       else openModal({ kind: 'sign' });
     } catch (e) {
@@ -206,7 +210,7 @@ function NetworkModal() {
     <>
       <Head title="Switch network" />
       <p className="m-text">
-        Velum runs on {COPY.chainLabel} (chain ID {CHAIN.id}). Switch your wallet to this network to continue.{COPY.networkNotice}
+        Velum runs on {COPY.chainLabel} (chain ID {ENV.chainId}). Switch your wallet to this network to continue.{COPY.networkNotice}
       </p>
       <button className="btn btn-white btn-block" disabled={isPending} onClick={go}>
         {isPending ? 'Waiting for your wallet…' : COPY.switchTo}
@@ -238,9 +242,9 @@ const REFUSAL: Record<Refusal, string> = {
 };
 
 function SignModal() {
-  const { address } = useAccount();
+  const { address } = useConnection();
   const config = useConfig();
-  const { disconnectAsync } = useDisconnect();
+  const { mutateAsync: disconnectAsync } = useDisconnect();
   const s = useApp();
   const [stage, setStage] = useState<SignStage>('idle');
   const [err, setErr] = useState('');
@@ -267,7 +271,7 @@ function SignModal() {
 
   /** The wallet is still connected to this account (checked after every await: it can switch account meanwhile). */
   const stillOn = (wallet: Address) => {
-    const a = getAccount(config);
+    const a = getConnection(config);
     return a.status === 'connected' && a.address?.toLowerCase() === wallet.toLowerCase();
   };
   const walletChanged = () => {
@@ -419,11 +423,11 @@ function SignModal() {
 /* ---------- account ---------- */
 function AccountModal() {
   const s = useApp();
-  const { chainId } = useAccount();
-  const { disconnectAsync } = useDisconnect();
+  const { chainId } = useConnection();
+  const { mutateAsync: disconnectAsync } = useDisconnect();
   if (!s.account) return null;
   const { addr, paddr } = s.account;
-  const wrong = chainId !== undefined && chainId !== CHAIN.id;
+  const wrong = chainId !== undefined && chainId !== ENV.chainId;
   const disconnect = async () => {
     forgetSession(addr);
     s.set({ account: null, ledger: emptyLedger(), openChain: {}, modal: null, modalLocked: false });
@@ -744,6 +748,7 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
 }
 
 function Content({ m }: { m: ModalState }) {
+  const oc = useOnchain();
   switch (m.kind) {
     case 'connect':
       return <ConnectModal error={m.error} />;
@@ -754,11 +759,15 @@ function Content({ m }: { m: ModalState }) {
     case 'account':
       return <AccountModal />;
     case 'move':
-      return <MoveModal kind={m.move} />;
+      return oc ? <OcMoveModal oc={oc} kind={m.move} /> : <MoveModal kind={m.move} />;
     case 'lpadd':
-      return <LpAddModal sym={m.sym} />;
+      return oc ? <OcLpAddModal oc={oc} sym={m.sym} /> : <LpAddModal sym={m.sym} />;
     case 'flow':
       return <FlowModal key={m.id} flow={m.flow} />;
+    case 'tx':
+      return <TxFlowModal key={m.id} flow={m.flow} />;
+    case 'manage':
+      return oc ? <ManageModal oc={oc} id={m.id} /> : null;
   }
 }
 
@@ -825,7 +834,7 @@ export function ModalHost() {
   const bg = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const open = modal !== null;
-  const key = modal ? (modal.kind === 'flow' ? `flow-${modal.id}` : modal.kind) : '';
+  const key = modal ? (modal.kind === 'flow' || modal.kind === 'tx' ? `${modal.kind}-${modal.id}` : modal.kind) : '';
 
   const inerted = useRef(new Set<Element>());
   const path = usePathname();

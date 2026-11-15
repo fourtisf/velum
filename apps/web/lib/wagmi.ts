@@ -1,6 +1,10 @@
 import { CHAIN } from '@velum/config';
 import { createConfig, type CreateConnectorFn } from 'wagmi';
-import { coinbaseWallet, injected, walletConnect } from 'wagmi/connectors';
+// One import per connector (wagmi v3): the 'wagmi/connectors' barrel also re-exports connectors whose SDKs
+// are optional peer dependencies Velum does not install (MetaMask SDK, Base Account, Safe, Tempo).
+import { coinbaseWallet } from 'wagmi/connectors/coinbaseWallet';
+import { injected } from 'wagmi/connectors/injected';
+import { walletConnect } from 'wagmi/connectors/walletConnect';
 import { robinhoodChain } from './chain';
 import { ENV } from './env';
 import { readTransport } from './rpc';

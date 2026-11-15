@@ -5,7 +5,9 @@ import { CLOSED, SIM } from '@/lib/copy';
 import { closePos } from '@/lib/demo';
 import { ago, fmt, fmtLev, pct, sgnUsd, shortH } from '@/lib/format';
 import { mk, useLivePrice, usePriceTick } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp, type Activity, type Position } from '@/lib/store';
+import { OcPositionsCard } from '../onchain/lazy';
 import { toNumber } from '@velum/math';
 import { Icon } from '../icons';
 import { Av, Pv, Px } from '../ui';
@@ -171,6 +173,11 @@ export function ActList({ list, n }: { list: Activity[]; n: number }) {
 }
 
 export function PositionsCard() {
+  const oc = useOnchain();
+  return oc ? <OcPositionsCard oc={oc} /> : <DemoPositionsCard />;
+}
+
+function DemoPositionsCard() {
   const s = useApp();
   const connected = !!s.account;
   const { positions, history } = s.ledger;

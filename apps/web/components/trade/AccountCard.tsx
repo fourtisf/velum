@@ -3,9 +3,16 @@ import { inPos, privTotal } from '@/lib/calc';
 import { SIM, UI } from '@/lib/copy';
 import { fmt, fmtBal, shortH, usdBal } from '@/lib/format';
 import { usePriceTick } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
+import { OcAccountCard } from '../onchain/lazy';
 
 export function AccountCard() {
+  const oc = useOnchain();
+  return oc ? <OcAccountCard oc={oc} /> : <DemoAccountCard />;
+}
+
+function DemoAccountCard() {
   usePriceTick();
   const s = useApp();
   if (!s.account)

@@ -1,7 +1,10 @@
 'use client';
 import { IS_MAINNET } from '@velum/config';
+import { ONCHAIN } from '@/lib/copy';
 import { ENV } from '@/lib/env';
 import { useMarkets } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
+import { GuardBannerBadge } from './onchain/lazy';
 
 const hhmm = (t: number) => new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
@@ -14,6 +17,16 @@ const hhmm = (t: number) => new Date(t).toLocaleTimeString('en-US', { hour: '2-d
 export function DemoBanner() {
   const feedStale = useMarkets((s) => s.feedStale);
   const lastOkAt = useMarkets((s) => s.lastOkAt);
+  const oc = useOnchain();
+  // Real transactions (a live Phase 3 deployment): say so, with the testnet notice in full on testnet.
+  if (oc)
+    return (
+      <div className="demo-bar" role="note">
+        <span className="badge acc hide-sm">{ONCHAIN.bannerBadge}</span>
+        <GuardBannerBadge oc={oc} />
+        <span aria-live="polite">{ONCHAIN.banner}</span>
+      </div>
+    );
   if (!ENV.demoMode)
     return (
       <div className="demo-bar" role="note">

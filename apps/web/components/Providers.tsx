@@ -1,10 +1,11 @@
 'use client';
-import { CHAIN } from '@velum/config';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { WagmiProvider, useAccount } from 'wagmi';
+import { WagmiProvider, useConnection } from 'wagmi';
 import { checkLiq, demoTick } from '@/lib/demo';
+import { ENV } from '@/lib/env';
 import { startMarketFeed, useMarkets } from '@/lib/markets';
+import { startOnchainCheck } from '@/lib/onchain/deployment';
 import { dropLegacyStorage, emptyLedger, loadLedger, recallSession, saveLedger, seedLedger, useApp } from '@/lib/store';
 import { wagmiConfig } from '@/lib/wagmi';
 import { I } from './icons';
@@ -12,7 +13,7 @@ import { ModalHost } from './modals/ModalHost';
 
 /** Keeps the private-account session in step with the connected wallet. */
 function AccountSync() {
-  const { address, status, chainId } = useAccount();
+  const { address, status, chainId } = useConnection();
   const modal = useApp((s) => s.modal);
   const prompted = useRef<string | null>(null);
 
@@ -34,7 +35,7 @@ function AccountSync() {
   // shows when it closes (`modal` is a dependency, final audit W-13); a network dialog that is already
   // open counts as the prompt, so closing it does not bring it back.
   useEffect(() => {
-    if (status !== 'connected' || !chainId || chainId === CHAIN.id) {
+    if (status !== 'connected' || !chainId || chainId === ENV.chainId) {
       prompted.current = null;
       return;
     }
@@ -72,6 +73,8 @@ function VeilSync() {
 
 function Feeds() {
   useEffect(() => startMarketFeed(), []);
+  // Real transactions only when this build carries a deployment and the API serves the same one.
+  useEffect(() => startOnchainCheck(), []);
   useEffect(() => {
     const unsub = useMarkets.subscribe((s, p) => {
       if (s.tick !== p.tick) checkLiq();

@@ -13,7 +13,7 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 |---|---|
 | `CLAUDE.md` | Master brief: rules, stack, routes, phases |
 | `prototype/index.html` | Approved UI (Phase 1 serves it as-is). Visual source of truth |
-| `apps/web` | Next.js 15 port of the prototype: landing + `/app/*` (wagmi v2 + viem) |
+| `apps/web` | Next.js 15 port of the prototype: landing + `/app/*` (wagmi v3 + viem) |
 | `apps/api` | Fastify read API: health, markets, candles, pools, stats, quote |
 | `apps/workers` | BullMQ workers: price relay + candles |
 | `packages/config` | Verified chain constants, tokens, markets, protocol numbers, session calendar, Redis contract |

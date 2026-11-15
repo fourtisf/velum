@@ -6,8 +6,9 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { compact, fmt, usd } from '@/lib/format';
 import { apiMetric, useMarkets, usePriceOrigin } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp } from '@/lib/store';
-import { COPY, METRICS } from '@/lib/copy';
+import { COPY, METRICS, ONCHAIN } from '@/lib/copy';
 import { I } from '../icons';
 import { Av, Chg, ComingSoon, DemoTag, Px, Spark } from '../ui';
 
@@ -18,6 +19,7 @@ export function MarketsView() {
   const set = useApp((s) => s.set);
   const router = useRouter();
   const origin = usePriceOrigin();
+  const oc = useOnchain();
   const stats = useQuery({ queryKey: ['stats'], queryFn: ({ signal }) => api.stats(signal), refetchInterval: 30_000, retry: 1 });
   const oi = order.reduce((a, s) => a + (bySym[s]!.oi ?? 0), 0);
   const needle = q.toLowerCase().trim();
@@ -28,7 +30,7 @@ export function MarketsView() {
       <div className="vhead">
         <div>
           <h1 className="vtitle">Markets</h1>
-          <p className="vsub">{COPY.marketsSub(origin)}</p>
+          <p className="vsub">{oc ? ONCHAIN.marketsSub(origin) : COPY.marketsSub(origin)}</p>
         </div>
         <label className="search">
           <I.search />

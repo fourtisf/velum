@@ -1,11 +1,11 @@
 import { POOLS } from '@velum/config';
 import Link from 'next/link';
 import { ContractPill } from '@/components/landing/ContractPill';
-import { FrameCap, HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
+import { FrameCap, HeroFrame, LandingMarkets, OcText, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
 import { Av, DemoTag } from '@/components/ui';
 import { I, Mark, XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
-import { COPY, LANDING, METRICS, P, SOCIAL } from '@/lib/copy';
+import { COPY, LANDING, METRICS, ONCHAIN, P, SOCIAL } from '@/lib/copy';
 
 /** The TSLA pool's demo APR (config seed), shown only where protocol metrics are shown at all. */
 const TSLA_APR = POOLS.find((p) => p.symbol === 'TSLA')?.aprEst ?? null;
@@ -322,7 +322,9 @@ export default function Landing() {
                 </details>
                 <details>
                   <summary>Who can see my trades?</summary>
-                  <p>{LANDING.faqWho}</p>
+                  <p>
+                    <OcText sim={LANDING.faqWho} real={ONCHAIN.faqWho} />
+                  </p>
                 </details>
                 <details>
                   <summary>Is it anonymous?</summary>
@@ -334,7 +336,9 @@ export default function Landing() {
                 </details>
                 <details>
                   <summary>What if Velum goes offline?</summary>
-                  <p>{LANDING.faqOffline}</p>
+                  <p>
+                    <OcText sim={LANDING.faqOffline} real={ONCHAIN.faqOffline} />
+                  </p>
                 </details>
               </div>
             </div>
@@ -343,7 +347,9 @@ export default function Landing() {
 
         <section className="cta">
           <h2>Your trades are nobody&apos;s business.</h2>
-          <p>{COPY.ctaSub}</p>
+          <p>
+            <OcText sim={COPY.ctaSub} real={ONCHAIN.ctaSub} />
+          </p>
           <div className="ctas">
             <Link className="btn btn-white btn-lg" href="/app/trade/TSLA">
               Start trading
@@ -362,7 +368,9 @@ export default function Landing() {
               <Mark />
               <span>Velum</span>
             </Link>
-            <p>{COPY.footer}</p>
+            <p>
+              <OcText sim={COPY.footer} real={ONCHAIN.footer} />
+            </p>
             <ContractPill />
           </div>
           <div>

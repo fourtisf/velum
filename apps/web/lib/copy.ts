@@ -9,6 +9,7 @@
  * Protocol numbers (fees, leverage, delays) come from PROTOCOL so the copy cannot drift (RC-02).
  */
 import { CHAIN, IS_MAINNET, PROTOCOL } from '@velum/config';
+import { ENV } from './env';
 import { bpsPct } from './format';
 
 /**
@@ -77,7 +78,7 @@ export const CLOSED = {
 } as const;
 
 export const COPY = {
-  chainLabel: CHAIN.label,
+  chainLabel: ENV.localRpc ? 'the local test chain' : CHAIN.label,
   heroBadge: IS_MAINNET ? 'Demo' : 'Testnet',
   heroPill: IS_MAINNET ? 'Private trading demo on Robinhood Chain' : 'Simulated private perps on Robinhood Chain',
   /** The line under the landing terminal; testnet always carries the test-token notice (F11). */
@@ -104,7 +105,7 @@ export const COPY = {
       : `${priceSourceText(origin, false)} Trading here is simulated.`,
   networkNotice: IS_MAINNET ? '' : ' Test tokens have no value.',
   notOnNetwork: (sym: string) => `${sym} isn't on ${CHAIN.label} yet.`,
-  switchTo: `Switch to ${CHAIN.label}`,
+  switchTo: `Switch to ${ENV.localRpc ? 'the local test chain' : CHAIN.label}`,
 } as const;
 
 /**
@@ -237,3 +238,63 @@ export const LANDING = {
   faqLoss: 'No. Each position is designed to have its own margin, and losses stop there. You could lose all of it, so start small once real trading opens.',
   faqOffline: `Nothing is at risk today: trades are simulated and your tokens never leave your wallet. Once Velum holds funds, it is designed so you can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.`,
 } as const;
+
+/**
+ * Copy for the real (Phase 3) mode, used only while a deployment is live (lib/onchain/deployment.ts).
+ * Phase 3 contracts are public: deposits, vault balances, positions, swaps, pools and offers are visible
+ * onchain, so nothing here calls them private. The privacy layer stays "designed to" (Phase 4), and the
+ * features that only exist as a simulation (private transfers) say so. A function of the network so tests
+ * can check both.
+ */
+export function onchainCopy(mainnet: boolean) {
+  const net = ENV.localRpc ? 'the local test chain' : CHAIN.label;
+  return {
+    /** Account card and portfolio badge instead of "Simulated". */
+    badge: 'Onchain',
+    badgeTitle: 'Real transactions. Balances and trades are public onchain until the privacy layer launches.',
+    accountTitle: 'Vault account',
+    balanceLabel: 'Vault balance',
+    portfolioSub: `Your vault balance is held by the Velum contracts on ${net}. In this phase it is public onchain; the privacy layer comes later.`,
+    assetsTitle: 'Vault assets',
+    assetsSub: 'Free balance you can trade or unshield. Public onchain until the privacy layer launches.',
+    publicSub: 'Anyone can see this. Shield tokens to deposit them into your Velum vault balance.',
+    acctConnect: 'Connect a wallet and sign once to open your account. It costs no gas.',
+    banner: mainnet
+      ? 'Guarded beta: trades are real onchain transactions and public until the privacy layer launches.'
+      : 'Trades are real testnet transactions, public onchain until the privacy layer launches. Testnet. Test tokens have no value.',
+    bannerBadge: 'Onchain',
+    perpsNote: `This phase is public: size, side and entry are visible onchain. In the full version they will stay encrypted. Funding and the ${P.penalty} liquidation penalty apply.`,
+    spotNote: 'This phase is public: pool reserves and your trade are visible onchain. You own the token, so nothing can be liquidated.',
+    swapNote: 'This phase is public: pool reserves and your swap are visible onchain. The minimum protects you if the price moves.',
+    swapSub: 'Trade USDG and Stock Tokens through the Velum pools, onchain. Stock to stock routes through USDG in one transaction.',
+    earnSub: `Add to a Velum pool and earn ${P.poolFee} of every swap through it. In this phase pools and your share are public onchain.`,
+    makersSub: "Back traders' positions from your vault balance and earn the spread. You take the other side of every fill.",
+    visibleRow: ['Visible onchain', 'Your wallet, the amounts and the pool'] as [string, string],
+    chainLastLabel: 'Last transaction',
+    noTx: 'Nothing yet',
+    moveText: (kind: 'shield' | 'unshield' | 'send') =>
+      ({
+        shield: 'Deposit tokens from your wallet into your Velum vault balance, ready to trade.',
+        unshield: 'Withdraw tokens from your vault balance to a wallet address. Always available.',
+        send: 'Private transfers arrive with the privacy layer.',
+      })[kind],
+    moveNote: (kind: 'shield' | 'unshield' | 'send') =>
+      kind === 'send'
+        ? 'Not available yet: private transfers need the privacy layer, which is still being built. Nothing can be sent privately.'
+        : 'This step is public: anyone can see the wallet, token, amount and time.',
+    notDeployed: (sym: string) => `${sym} isn't in the Velum contracts on ${net} yet.`,
+    /** Landing and markets lines that describe trading as simulated, for when it is real. */
+    footer: mainnet
+      ? 'An independent project on Robinhood Chain, not affiliated with Robinhood. Guarded beta: trades are real onchain transactions, public until the privacy layer launches.'
+      : 'An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet: trades are real testnet transactions, public until the privacy layer launches. Test tokens have no value.',
+    faqWho: 'In this phase, anyone: trades are public onchain. Velum is designed so that, once the privacy layer launches, only the maker on the other side sees that one position, against a one-time address, and the public only sees that a position changed.',
+    faqOffline: `Velum's contracts hold what you deposit. You can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.${mainnet ? '' : ' On testnet, test tokens have no value.'}`,
+    ctaSub: mainnet ? 'Connect your wallet and make your first trade in under a minute.' : 'Get free test USDG from the faucet and make your first testnet trade in under a minute.',
+    /** The line under the landing terminal, which trades for real once a deployment is live. */
+    frameCap: (origin: PriceOrigin) =>
+      `${priceSourceText(origin, mainnet)} Trades in this terminal are real ${mainnet ? 'onchain' : 'testnet'} transactions, public onchain.${mainnet ? '' : ' Testnet. Test tokens have no value.'}`,
+    marketsSub: (origin: PriceOrigin) => `${priceSourceText(origin, mainnet)} Trades are real ${mainnet ? 'onchain' : 'testnet'} transactions.`,
+  };
+}
+
+export const ONCHAIN = onchainCopy(IS_MAINNET);

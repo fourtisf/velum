@@ -10,14 +10,14 @@
  */
 import { CHAIN } from '@velum/config';
 import { createTransport, http, type EIP1193RequestFn, type Transport } from 'viem';
-import { safeUrl, warn } from './env';
+import { ENV, safeUrl, warn } from './env';
 
 const browser = typeof window !== 'undefined';
 
-/** The official public RPC: the only one wallets are given. */
-export const OFFICIAL_RPC = CHAIN.rpcUrl;
+/** The official public RPC: the only one wallets are given (on a local development chain, that node). */
+export const OFFICIAL_RPC = ENV.localRpc ?? CHAIN.rpcUrl;
 
-const customUrl = safeUrl(process.env.NEXT_PUBLIC_RPC_URL, 'NEXT_PUBLIC_RPC_URL');
+const customUrl = ENV.localRpc ? null : safeUrl(process.env.NEXT_PUBLIC_RPC_URL, 'NEXT_PUBLIC_RPC_URL');
 /** Custom read RPC, if configured and well formed (still subject to the chain check). */
 export const CUSTOM_RPC: string | null = customUrl && customUrl.href.replace(/\/$/, '') !== OFFICIAL_RPC.replace(/\/$/, '') ? customUrl.href : null;
 const customHost = customUrl?.host ?? '';
@@ -39,8 +39,8 @@ async function checkChain(url: string): Promise<boolean> {
     const body = (await res.json().catch(() => null)) as { result?: unknown } | null;
     const hex = typeof body?.result === 'string' && /^0x[0-9a-f]{1,16}$/i.test(body.result) ? body.result : null;
     const id = hex ? Number.parseInt(hex, 16) : NaN;
-    if (id === CHAIN.id) return true;
-    warn(`Custom RPC ${customHost} reports chain ${Number.isNaN(id) ? 'unknown' : id}, not ${CHAIN.label} (${CHAIN.id}). Using the official RPC.`);
+    if (id === ENV.chainId) return true;
+    warn(`Custom RPC ${customHost} reports chain ${Number.isNaN(id) ? 'unknown' : id}, not ${CHAIN.label} (${ENV.chainId}). Using the official RPC.`);
     return false;
   } catch {
     warn(`Custom RPC ${customHost} did not answer eth_chainId. Using the official RPC.`);

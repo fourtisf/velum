@@ -61,6 +61,52 @@ export interface StatsDTO {
   demo?: boolean;
 }
 
+/** GET /v1/accounts/:address/positions (Phase 3): exact decimal strings, checksummed addresses. */
+export interface PositionDTO {
+  id: string;
+  market: string;
+  token: string;
+  role: 'taker' | 'maker';
+  side: 'long' | 'short';
+  taker: string;
+  maker: string;
+  status: 'open' | 'closed' | 'liquidated' | 'forced_exit' | string;
+  qty: string;
+  entry: string;
+  size: string | null;
+  takerMargin: string;
+  makerMargin: string;
+  offerId: string | null;
+  openedAt: number | null;
+  openTx: string | null;
+  closedAt: number | null;
+  closeTx: string | null;
+  exitPrice: string | null;
+  takerPnl: string | null;
+  fee: string | null;
+  takerOut: string | null;
+  forcedExit: { requester: string; requestedAt: number | null; settleAfter: number | null; atEntry: boolean | null } | null;
+}
+
+/** One item of GET /v1/accounts/:address/activity (Phase 3). `data` holds the event's fields as exact decimal strings. */
+export interface ActivityDTO {
+  kind: string;
+  tx: string;
+  block: number;
+  logIndex: number;
+  at: number | null;
+  contract: string;
+  market: string | null;
+  token: string | null;
+  positionId: string | null;
+  data: Record<string, unknown>;
+}
+
+export interface ActivityPageDTO {
+  items: ActivityDTO[];
+  next: string | null;
+}
+
 export class ApiError extends Error {
   constructor(
     public code: string,
@@ -99,4 +145,9 @@ export const api = {
     get<Candle[]>(`/v1/markets/${encodeURIComponent(symbol)}/candles?tf=${tf}&limit=${limit}`, signal),
   pools: (signal?: AbortSignal) => get<PoolDTO[]>('/v1/pools', signal),
   stats: (signal?: AbortSignal) => get<StatsDTO>('/v1/stats', signal),
+  /** Phase 3: the deployment the API serves (validated by lib/onchain/deployment.ts, never trusted as is). */
+  deployment: (signal?: AbortSignal) => get<unknown>('/v1/deployment', signal),
+  positions: (address: string, status: 'open' | 'closed' | 'all' = 'open', signal?: AbortSignal) =>
+    get<unknown>(`/v1/accounts/${encodeURIComponent(address)}/positions?status=${status}&limit=100`, signal),
+  activity: (address: string, limit = 50, signal?: AbortSignal) => get<unknown>(`/v1/accounts/${encodeURIComponent(address)}/activity?limit=${limit}`, signal),
 };

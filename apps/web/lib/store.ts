@@ -9,6 +9,7 @@ import { parseWad, type Side, type SpotSide, type Wad } from '@velum/math';
 import type { ReactNode } from 'react';
 import { create } from 'zustand';
 import type { IconName } from '@/components/icons';
+import type { TxFlowSpec } from './onchain/flow';
 import { randomHex } from './format';
 import { decodeLedger, encodeLedger } from './ledger-codec';
 
@@ -98,7 +99,11 @@ export type ModalState =
   | { kind: 'account' }
   | { kind: 'move'; move: 'shield' | 'unshield' | 'send' }
   | { kind: 'lpadd'; sym: string }
-  | { kind: 'flow'; flow: FlowSpec; id: number };
+  | { kind: 'flow'; flow: FlowSpec; id: number }
+  /** A real (Phase 3) flow: review, wallet transactions, receipt (components/modals/TxFlow.tsx). */
+  | { kind: 'tx'; flow: TxFlowSpec; id: number }
+  /** Phase 3 position management: add or remove margin, forced exit. */
+  | { kind: 'manage'; id: string };
 
 export interface Toast {
   id: number;
@@ -138,6 +143,7 @@ interface AppState {
   closeModal: (force?: boolean) => void;
   toast: (msg: string, warn?: boolean) => void;
   runFlow: (flow: FlowSpec) => void;
+  runTxFlow: (flow: TxFlowSpec) => void;
 }
 
 let toastId = 0;
@@ -179,6 +185,8 @@ export const useApp = create<AppState>((set, get) => ({
     setTimeout(() => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })), 3320);
   },
   runFlow: (flow) => set({ modal: { kind: 'flow', flow, id: ++flowId }, modalLocked: true }),
+  // Not locked while the user reviews it: nothing has been asked of the wallet yet.
+  runTxFlow: (flow) => set({ modal: { kind: 'tx', flow, id: ++flowId }, modalLocked: false }),
 }));
 
 /* ---------- ledger helpers (pure) ---------- */

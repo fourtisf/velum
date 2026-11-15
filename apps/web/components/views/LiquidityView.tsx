@@ -4,7 +4,9 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { lpRemove } from '@/lib/demo';
 import { compact, fmt, usdBal } from '@/lib/format';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
+import { OcLiquidityView } from '../onchain/lazy';
 import { METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { Av, DemoTag, Px } from '../ui';
@@ -67,6 +69,11 @@ function PoolCard({ s, size, apr, demo }: { s: string; size: number; apr: number
 }
 
 export function LiquidityView() {
+  const oc = useOnchain();
+  return oc ? <OcLiquidityView oc={oc} /> : <DemoLiquidityView />;
+}
+
+function DemoLiquidityView() {
   const pools = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => api.pools(signal), refetchInterval: 60_000, retry: 1 });
   const list = POOLS.map((p) => {
     const d = pools.data?.find((x) => x.symbol === p.symbol);

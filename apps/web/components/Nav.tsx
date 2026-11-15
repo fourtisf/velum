@@ -5,7 +5,9 @@ import { usePathname } from 'next/navigation';
 import { privTotal } from '@/lib/calc';
 import { shortH, usdBal } from '@/lib/format';
 import { usePriceTick } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp } from '@/lib/store';
+import { OcWalletTotal } from './onchain/lazy';
 import { DemoBanner } from './DemoBanner';
 import { I, Mark } from './icons';
 
@@ -38,6 +40,11 @@ export function EyeButton() {
 }
 
 function WalletTotal() {
+  const oc = useOnchain();
+  return oc ? <OcWalletTotal oc={oc} /> : <DemoWalletTotal />;
+}
+
+function DemoWalletTotal() {
   usePriceTick();
   const ledger = useApp((s) => s.ledger);
   return <span className="b num pv">{usdBal(privTotal(ledger))}</span>;

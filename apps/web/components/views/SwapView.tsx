@@ -6,7 +6,9 @@ import { CLOSED, SIM, UI } from '@/lib/copy';
 import { doSwap } from '@/lib/demo';
 import { dp, floorTo, fmt, fmtBal, sig4 } from '@/lib/format';
 import { mk, usePriceTick } from '@/lib/markets';
+import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
+import { OcSwapView } from '../onchain/lazy';
 import { I } from '../icons';
 
 const TOKS = ['USDG', ...MARKETS.map((m) => m.symbol)];
@@ -27,6 +29,11 @@ function TokenSelect({ id, label, value, onChange }: { id: string; label: string
 }
 
 export function SwapView() {
+  const oc = useOnchain();
+  return oc ? <OcSwapView oc={oc} /> : <DemoSwapView />;
+}
+
+function DemoSwapView() {
   usePriceTick();
   const s = useApp();
   const connected = !!s.account;

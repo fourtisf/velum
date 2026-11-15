@@ -36,11 +36,12 @@ port), and issues HTTPS. `www.` is included only if its DNS points at the server
 ## Phase 2: full stack
 
 ```
-apps/web      Next.js 14   127.0.0.1:3000   (PM2 cluster ×2 as velum-web; next free port if taken)
-apps/api      Fastify      127.0.0.1:4000   (PM2 cluster ×2 as velum, Nginx /api/ → :4000/)
-apps/workers  BullMQ       no port          (PM2 fork ×1 as velum)
+apps/web      Next.js 14   127.0.0.1:3000             (PM2 cluster ×2 as velum-web; next free port if taken)
+apps/api      Fastify      /run/velum-api/api.sock    (PM2 cluster ×2 as velum; Nginx /api/ → the socket)
+apps/workers  BullMQ       no port                    (PM2 fork ×1 as velum)
 PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password)
 ```
+Each user's PM2 daemon runs under its own systemd unit (`pm2-velum`, `pm2-velum-web`).
 
 First time on the server, as root in tmux (installs only what's missing, writes `.env` atomically with
 generated passwords, adds the Nginx site and security headers, issues HTTPS, runs the first release,
@@ -50,9 +51,12 @@ password), other Nginx sites never touched. The clone must be root-owned; api an
 as `velum`, the web runs as `velum-web`, which cannot read `.env` or the other apps' environment.
 
 ```bash
-git -c core.hooksPath=/dev/null clone --branch main <repo-url> /srv/velum
+git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --branch claude/new-session-93ke66 https://github.com/fourtisf/velum.git /srv/velum
 DOMAIN=velum.example EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
 ```
+(`claude/new-session-93ke66` is the repository's only branch.) Commands that must run as `velum` or
+`velum-web` go through `sudo bash /srv/velum/deploy/as-user.sh <user> <command>`, never plain
+`runuser`/`su`/`sudo -u` (see docs/05).
 
 Every release after that (as root; re-running setup is safe too and never drops HTTPS):
 
@@ -76,7 +80,8 @@ untouched; a failed health check switches back. Each PM2 app gets only the envir
 reads. **Servers set up before November 2026** (`/opt/velum` owned by `velum`) move to the new layout
 with the tmux procedure in `docs/05-deploy-vps.md` ("Upgrading"): fresh root-owned clone at
 `/srv/velum`, `deploy/import-env.sh` for `.env`, setup, automatic fallback to the old apps if the first
-release fails. See that file for the security model, manual steps and operations.
+release fails; if the app user may be compromised, its "Compromise suspected" section moves the install to
+new users before rotating secrets. See that file for the security model, manual steps and operations.
 
 ## Local development
 
@@ -146,6 +151,15 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
   the CSP lists exactly the hosts the installed wallet SDKs use (WalletConnect only with a project ID);
   the API trusts client addresses only from Nginx (`PROXY_SECRET`); URL redaction never prints any part
   of a password; a candle retry after a worker restart no longer moves the close back.
+- **Deploy, third audit round (R3)**: every switch from root to an app user starts in a new session
+  without root's terminal (no keystroke injection through TIOCSTI) and its output reaches the terminal
+  without control characters (`deploy/as-user.sh` for operators); the PM2 daemons run under their systemd
+  units; the pm2-logrotate module is replaced by root-owned logrotate rules run as each user, and each
+  user has a private `TMPDIR`; the API listens on a unix socket only Nginx can reach, so no local user can
+  catch the proxy secret; `--rollback` and failed releases never mix two networks (each release records
+  the settings it was built with; `set-network.sh` puts `.env` back on failure); the database backup runs
+  as Velum's own role (`deploy/backup-db.sh`); docs/05 adds a "Compromise suspected" path (new users first,
+  then rotation), and the users a base runs as are recorded in `.velum-users`.
 
 ## Stack
 

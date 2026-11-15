@@ -22,6 +22,7 @@ const env: ApiEnv = {
   demoMode: true,
   logLevel: 'silent',
   proxySecret: SECRET,
+  socketPath: null,
 };
 
 let app: FastifyInstance | undefined;

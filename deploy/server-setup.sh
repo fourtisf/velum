@@ -11,11 +11,14 @@
 # Moving from an older in-place layout (/opt/velum owned by velum): follow docs/05 "Upgrading"
 # (fresh clone, deploy/import-env.sh, then this script).
 # Optional: APP_USER (default velum, created if missing), WEB_USER (default velum-web, created if
-#           missing), BRANCH (default: current branch), WWW=yes|no|auto, REDIS_DB (default 5, keeps
+#           missing; both are recorded in <base>/.velum-users and every other script uses them from
+#           there; giving other names moves the install to new users, docs/05 "Compromise suspected"),
+#           BRANCH (default: current branch), WWW=yes|no|auto, REDIS_DB (default 5, keeps
 #           Velum's keys apart from other apps), REDIS_PORT (default 6379), REDIS_CONF (default
 #           /etc/redis/redis.conf), PG_PORT (default 5432, the local PostgreSQL to use), NGINX_DIR
-#           (default /etc/nginx), ALLOW_REDIS_WITHOUT_PASSWORD=yes (accept a shared Redis without a
-#           password; not recommended).
+#           (default /etc/nginx), NGINX_USER (default: nginx.conf's user, else www-data; the only other
+#           user that may reach the API socket), ALLOW_REDIS_WITHOUT_PASSWORD=yes (accept a shared
+#           Redis without a password; not recommended).
 # shellcheck disable=SC2015 # "A && B || die" is the intended idiom here: die exits.
 set -euo pipefail
 umask 022
@@ -29,8 +32,11 @@ ROOT="$(cd "$(dirname "${SELF}")/.." && pwd)"
 # shellcheck source=deploy/lib/common.sh
 . "${ROOT}/deploy/lib/common.sh"
 cd "${ROOT}"
-APP_USER="${APP_USER:-velum}"
-WEB_USER="${WEB_USER:-velum-web}"
+# The users this base was installed with (recorded below), unless APP_USER/WEB_USER name new ones.
+PREV_APP_USER="$(recorded_user "${ROOT}" APP_USER)"
+PREV_WEB_USER="$(recorded_user "${ROOT}" WEB_USER)"
+APP_USER="${APP_USER:-${PREV_APP_USER:-velum}}"
+WEB_USER="${WEB_USER:-${PREV_WEB_USER:-velum-web}}"
 WWW="${WWW:-auto}"
 REDIS_DB="${REDIS_DB:-5}"
 REDIS_PORT="${REDIS_PORT:-6379}"
@@ -97,6 +103,13 @@ fi
 command -v pm2 >/dev/null || npm i -g pm2
 
 echo "› Users (${APP_USER} builds and runs api + workers; ${WEB_USER} runs only the web)"
+# Moving to new users (audit R3-05): the old ones must be stopped first, or their apps would keep the
+# ports and the API socket (and they may be the reason for the move).
+for u in ${PREV_APP_USER} ${PREV_WEB_USER}; do
+  if [ "${u}" != "${APP_USER}" ] && [ "${u}" != "${WEB_USER}" ] && id -u "${u}" >/dev/null 2>&1 && [ -n "$(ps -u "${u}" -o pid= 2>/dev/null)" ]; then
+    die "This base ran as ${PREV_APP_USER}/${PREV_WEB_USER}, and ${u} still has running processes. Stop and lock the old users first (docs/05-deploy-vps.md, \"Compromise suspected\"), then re-run."
+  fi
+done
 if ! id -u "${APP_USER}" >/dev/null 2>&1; then
   useradd --system --create-home --shell /bin/bash "${APP_USER}"
 fi
@@ -106,7 +119,12 @@ if ! id -u "${WEB_USER}" >/dev/null 2>&1; then
 fi
 # Validates both users and homes (real directories owned by their user), refuses a web user that is in
 # the app group, sets APP_HOME, WEB_HOME, PM2_DIR, WEB_PM2_DIR, SEPARATE=1.
-velum_mode "${ROOT}"
+velum_mode "${ROOT}" setup
+[ -z "${PREV_APP_USER}" ] || [ "${PREV_APP_USER}/${PREV_WEB_USER}" = "${APP_USER}/${WEB_USER}" ] || say "Moving this install from ${PREV_APP_USER}/${PREV_WEB_USER} to ${APP_USER}/${WEB_USER}"
+printf '# Written by deploy/server-setup.sh: the users this base runs as. Change them only with server-setup.sh.\nAPP_USER=%s\nWEB_USER=%s\n' "${APP_USER}" "${WEB_USER}" | install_file "${ROOT}/${VELUM_USERS_FILE}" 644 root:root
+read -r NGINX_RUN_USER NGINX_RUN_GROUP < <(nginx_user_group "${NGINX_DIR}" || true; echo)
+[ -n "${NGINX_RUN_USER:-}" ] || die "Cannot tell which user Nginx runs as (no usable 'user' line in ${NGINX_DIR}/nginx.conf). Set NGINX_USER=…"
+[ "${NGINX_RUN_GROUP}" != "${APP_GROUP}" ] && [ "${NGINX_RUN_GROUP}" != "${WEB_GROUP}" ] && [ "${NGINX_RUN_USER}" != "${WEB_USER}" ] || die "Nginx must run as its own user and group, not as ${APP_USER} or ${WEB_USER}."
 # PM2 homes hold dump.pm2 (each app's environment) and logs: owner only (M5). Created and chmod'ed as
 # each user, never by root through a path that user controls (R2-H1).
 # shellcheck disable=SC2016
@@ -139,6 +157,11 @@ if [ -f "${ENV_FILE}" ]; then
     env_set "${ENV_FILE}" DATABASE_URL "$(url_with_password "${DATABASE_URL}" "${DB_PASS}")"
     echo "  generated a new database password (previous .env kept as ${backup##*/})"
   fi
+  if [ -z "$(env_get "${ENV_FILE}" API_SOCKET)" ]; then
+    backup="$(env_backup "${ENV_FILE}")"
+    env_set "${ENV_FILE}" API_SOCKET "${API_SOCKET_DEFAULT}"
+    echo "  the API now listens on ${API_SOCKET_DEFAULT} (previous .env kept as ${backup##*/})"
+  fi
 else
   PORT_WEB="$(pick_port 3000)"
   PORT_API="$(pick_port 4000)"
@@ -169,6 +192,7 @@ else
     CORS_ORIGIN "https://${DOMAIN},https://www.${DOMAIN}" \
     PORT_WEB "${PORT_WEB}" \
     PORT_API "${PORT_API}" \
+    API_SOCKET "${API_SOCKET_DEFAULT}" \
     DATABASE_URL "postgresql://velum:${DB_PASS}@127.0.0.1:${PG_PORT}/velum?schema=public" \
     REDIS_URL "${REDIS_URL}"
   # Validate before it goes live: every value reads back exactly as intended.
@@ -199,9 +223,22 @@ fi
 # The web's own settings (no secrets), readable by the web user only (R2-M3).
 render_web_env "${ENV_FILE}" | install_file "${ROOT}/web.env" 640 "root:${WEB_GROUP}"
 
+echo "› API socket directory (${NGINX_RUN_USER} and ${APP_USER} only) and log rotation"
+API_SOCKET_PATH="$(env_get "${ENV_FILE}" API_SOCKET)"
+valid_api_socket "${API_SOCKET_PATH}" || die "API_SOCKET in .env must look like /run/<dir>/<name>.sock (default ${API_SOCKET_DEFAULT})."
+# Root-created at every boot (tmpfiles.d) before the PM2 units start (R3-03).
+install -d -m 755 "$(dirname "${TMPFILES_CONF}")"
+render_tmpfiles "${API_SOCKET_PATH}" "${APP_USER}" "${NGINX_RUN_GROUP}" | install_file "${TMPFILES_CONF}" 644 root:root
+apply_tmpfiles "${API_SOCKET_PATH}"
+# PM2 logs rotated by logrotate as each user, never by root, never through npm or /tmp (R3-02).
+install -d -m 755 "$(dirname "${LOGROTATE_CONF}")"
+render_logrotate "${APP_USER}" "${WEB_USER}" | install_file "${LOGROTATE_CONF}" 644 root:root
+
 echo "› PostgreSQL (own role and database)"
 systemctl is-active --quiet postgresql || systemctl enable --now postgresql
-psql_() { runuser -u postgres -- psql -p "${PG_PORT}" -X -q -v ON_ERROR_STOP=1 "$@"; }
+# As postgres in a new session without this terminal, with a clean environment (R3-01, I-1); -X: no
+# ~postgres/.psqlrc.
+psql_() { run_isolated runuser -u postgres -- env -i PATH="${PATH}" HOME="$(getent passwd postgres | cut -d: -f6)" LANG=C.UTF-8 psql -p "${PG_PORT}" -X -q -v ON_ERROR_STOP=1 "$@"; }
 ROLE_EXISTS="$(psql_ -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'velum'")"
 if [[ "${DB_PASS}" =~ ^[0-9a-f]{32,128}$ ]]; then
   VERB=ALTER
@@ -259,11 +296,17 @@ SITE="${NGINX_DIR}/sites-available/velum.conf"
 SITE_LINK="${NGINX_DIR}/sites-enabled/velum.conf"
 HEADERS_SNIPPET="${NGINX_DIR}/snippets/velum-security-headers.conf"
 PROXY_SNIPPET="${NGINX_DIR}/snippets/velum-proxy-secret.conf"
+API_SNIPPET="${NGINX_DIR}/snippets/velum-api-upstream.conf"
+# /api/ goes to the API's unix socket, with the proxy secret (R3-03). Before the first release in this
+# base (moving from an older layout), Nginx keeps proxying to the older apps on 127.0.0.1:PORT_API,
+# without the secret; deploy.sh switches both snippets when the new API runs.
+API_MODE=socket
+[ -n "$(readlink "${ROOT}/current" 2>/dev/null || true)" ] || API_MODE=tcp
 NGINX_BACKUPS="${BACKUPS}/nginx"
 STAMP="$(date -u +%Y%m%d%H%M%S)"
 install -d -m 755 "${NGINX_DIR}/snippets" "${NGINX_DIR}/sites-available" "${NGINX_DIR}/sites-enabled"
 install -d -o root -g root -m 700 "${NGINX_BACKUPS}"
-for f in "${SITE}" "${SITE_LINK}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+for f in "${SITE}" "${SITE_LINK}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}" "${API_SNIPPET}"; do
   if [ -L "${f}" ] && [ "${f}" != "${SITE_LINK}" ]; then die "${f} is a symbolic link; Velum manages it as a regular file. Replace it by hand, then re-run."; fi
 done
 if [ -e "${SITE_LINK}" ] && ! { [ -L "${SITE_LINK}" ] && [ "$(readlink -f "${SITE_LINK}")" = "$(readlink -f "${SITE}")" ]; }; then
@@ -272,26 +315,25 @@ fi
 
 TEMPLATE_VERSION="$(sed -n 's/^# velum-site-template: \([0-9][0-9]*\).*/\1/p' deploy/nginx/velum.conf | head -n1)"
 render_site() {
-  sed -e "s/velum.example/${DOMAIN}/g" -e "s/127.0.0.1:3000/127.0.0.1:${PORT_WEB}/" -e "s/127.0.0.1:4000/127.0.0.1:${PORT_API}/" deploy/nginx/velum.conf |
+  sed -e "s/velum.example/${DOMAIN}/g" -e "s/127.0.0.1:3000/127.0.0.1:${PORT_WEB}/" deploy/nginx/velum.conf |
     if [ -e /proc/net/if_inet6 ]; then cat; else sed '/^[[:space:]]*listen[[:space:]]*\[::\]/d'; fi
 }
-# Upstream ports are the only thing refreshed in a Certbot-managed file of the current template version.
+# The web's upstream port is the only thing refreshed in a Certbot-managed file of the current template
+# version (the API's upstream lives in its snippet).
 merge_ports() {
-  awk -v web="${PORT_WEB}" -v api="${PORT_API}" '
+  awk -v web="${PORT_WEB}" '
     /upstream[[:space:]]+velum_web[[:space:]]*\{/ { blk = "web" }
-    /upstream[[:space:]]+velum_api[[:space:]]*\{/ { blk = "api" }
     blk == "web" { gsub(/server[[:space:]]+127\.0\.0\.1:[0-9]+/, "server 127.0.0.1:" web) }
-    blk == "api" { gsub(/server[[:space:]]+127\.0\.0\.1:[0-9]+/, "server 127.0.0.1:" api) }
     { print }
     blk != "" && /\}/ { blk = "" }' "$1"
 }
 backup_nginx() {
   local f
-  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}" "${API_SNIPPET}"; do
     if [ -f "${f}" ]; then cp -p -- "${f}" "${NGINX_BACKUPS}/$(basename "${f}").${STAMP}"; fi
   done
   # Keep the newest 5 backups of each file.
-  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}" "${API_SNIPPET}"; do
     find "${NGINX_BACKUPS}" -maxdepth 1 -type f -name "$(basename "${f}").*" -printf '%f\n' | sort -r | tail -n +6 | while IFS= read -r b; do rm -f -- "${NGINX_BACKUPS:?}/${b}"; done
   done
 }
@@ -302,7 +344,7 @@ HAD_LINK=0
 # Puts back the files this run found (and removes the ones it created), then reloads if Nginx accepts it.
 restore_nginx() {
   local f b
-  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}"; do
+  for f in "${SITE}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}" "${API_SNIPPET}"; do
     b="${NGINX_BACKUPS}/$(basename "${f}").${STAMP}"
     if [ -f "${b}" ]; then cp -p -- "${b}" "${f}"; else rm -f -- "${f}"; fi
   done
@@ -326,7 +368,13 @@ fi
 backup_nginx
 render_site >"${NGINX_BACKUPS}/velum.conf.template.${STAMP}"
 render_security_headers "${ENV_FILE}" | install_file "${HEADERS_SNIPPET}" 644 root:root || die "Fix NEXT_PUBLIC_RPC_URL in .env, then re-run."
-proxy_secret_include "${PROXY_SECRET}" | install_file "${PROXY_SNIPPET}" 600 root:root
+if [ "${API_MODE}" = socket ]; then
+  proxy_secret_include "${PROXY_SECRET}" | install_file "${PROXY_SNIPPET}" 600 root:root
+  render_api_upstream socket "${API_SOCKET_PATH}" | install_file "${API_SNIPPET}" 644 root:root
+else
+  render_proxy_secret_for tcp | install_file "${PROXY_SNIPPET}" 600 root:root
+  render_api_upstream tcp "${PORT_API}" | install_file "${API_SNIPPET}" 644 root:root
+fi
 
 # HTTPS decision inputs: which names, and which existing certificate (from `certbot certificates`).
 SERVER_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')"
@@ -426,7 +474,8 @@ case "${SITE_STATE}" in
 esac
 nginx -t -q 2>/dev/null || { restore_nginx; die "nginx -t fails after the HTTPS step; the previous Nginx files were restored."; }
 if ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 'Nginx Full' || true; fi
-# Nginx now sends the proxy secret: the API may require it from the next release on (R2-I4).
+# Nginx sends the proxy secret to the API's socket (now, or from the first release in this base on,
+# when deploy.sh switches /api/ to the socket): the API may require it from the next release on (R2-I4).
 if [ "${NEW_PROXY_SECRET}" = 1 ]; then
   backup="$(env_backup "${ENV_FILE}")"
   env_set "${ENV_FILE}" PROXY_SECRET "${PROXY_SECRET}"
@@ -434,21 +483,13 @@ if [ "${NEW_PROXY_SECRET}" = 1 ]; then
 fi
 unset PROXY_SECRET
 
-echo "› First release (api + workers as ${APP_USER}, web as ${WEB_USER})"
-APP_USER="${APP_USER}" WEB_USER="${WEB_USER}" BRANCH="${BRANCH}" NGINX_SNIPPET="${HEADERS_SNIPPET}" NGINX_PROXY_SNIPPET="${PROXY_SNIPPET}" NGINX_SITE="${SITE}" bash "${ROOT}/deploy/deploy.sh"
-
-echo "› PM2 on boot (pm2-${APP_USER} and pm2-${WEB_USER})"
-for u in "${APP_USER}" "${WEB_USER}"; do
-  h="$(user_home "${u}")"
-  env -i PATH="${PATH}" HOME=/root pm2 startup systemd -u "${u}" --hp "${h}" >/dev/null
-done
-as_app pm2 install pm2-logrotate >/dev/null 2>&1 || true
-as_web pm2 install pm2-logrotate >/dev/null 2>&1 || true
-as_app pm2 save --force >/dev/null
-as_web pm2 save --force >/dev/null
+# The release starts each user's PM2 daemon under its systemd unit (pm2-${APP_USER}, pm2-${WEB_USER}),
+# enabled for boot, and saves the process lists (I-2). No pm2-logrotate module (R3-02).
+echo "› First release (api + workers as ${APP_USER}, web as ${WEB_USER}, each PM2 under its systemd unit)"
+APP_USER="${APP_USER}" WEB_USER="${WEB_USER}" BRANCH="${BRANCH}" NGINX_SNIPPET="${HEADERS_SNIPPET}" NGINX_PROXY_SNIPPET="${PROXY_SNIPPET}" NGINX_API_SNIPPET="${API_SNIPPET}" NGINX_SITE="${SITE}" bash "${ROOT}/deploy/deploy.sh"
 
 echo "✓ Velum Phase 2 is live at https://${DOMAIN}"
-echo "  Status:   runuser -u ${APP_USER} -- pm2 status ; runuser -u ${WEB_USER} -- pm2 status"
-echo "  Logs:     runuser -u ${APP_USER} -- pm2 logs velum-api --lines 100"
+echo "  Status:   bash ${ROOT}/deploy/as-user.sh ${APP_USER} pm2 status ; bash ${ROOT}/deploy/as-user.sh ${WEB_USER} pm2 status"
+echo "  Logs:     bash ${ROOT}/deploy/as-user.sh ${APP_USER} pm2 logs velum-api --lines 100 --nostream"
 echo "  Health:   curl -s https://${DOMAIN}/api/v1/health"
 echo "  Releases: sudo bash ${ROOT}/deploy/deploy.sh   (roll back: sudo bash ${ROOT}/deploy/deploy.sh --rollback)"

@@ -5,6 +5,7 @@
 # This script never deploys contracts. Velum contracts stay off mainnet until the Phase 5 audit.
 # Afterwards you may put a provider RPC (Alchemy, QuickNode, …) in RPC_URL / NEXT_PUBLIC_RPC_URL
 # (edit .env as root) and run a release; the Content-Security-Policy follows NEXT_PUBLIC_RPC_URL.
+# A failed release leaves the previous network in place: .env, web.env and the running release.
 set -euo pipefail
 umask 077
 # A dropped SSH session must not stop a rewrite of .env halfway (R2-L6).
@@ -26,6 +27,7 @@ velum_mode "${BASE}"
 # The same lock as deploy.sh, held through the release below (deploy.sh inherits it).
 lock_deploy "${BASE}"
 
+before="$(readlink "${BASE}/current" 2>/dev/null || true)"
 backup="$(env_backup "${ENV_FILE}")"
 # One atomic rewrite (temp file + rename, owner and mode kept); values are never parsed by sed.
 env_set "${ENV_FILE}" \
@@ -39,5 +41,15 @@ env_set "${ENV_FILE}" \
   PRICE_SOURCE "${SRC}"
 say ".env now targets ${NET} (chain ${CHAIN_ID}, prices: ${SRC}); previous file kept as ${backup##*/}"
 
-# NEXT_PUBLIC_* values are compiled into the web build, so a release is required.
-exec bash "${BASE}/deploy/deploy.sh"
+# NEXT_PUBLIC_* values are compiled into the web build, so a release is required. If it fails, the
+# running release must keep the .env it was built with (audit R3-04): deploy.sh puts this backup back
+# before it switches back to the previous release, and if nothing was switched it is put back here.
+if VELUM_ENV_RESTORE="${backup}" bash "${BASE}/deploy/deploy.sh"; then exit 0; fi
+if [ "$(readlink "${BASE}/current" 2>/dev/null || true)" = "${before}" ]; then
+  if ! cmp -s "${backup}" "${ENV_FILE}"; then
+    restore_env_backup "${backup}"
+    [ "${SEPARATE}" != 1 ] || render_web_env "${ENV_FILE}" | install_file "${BASE}/web.env" 640 "root:${WEB_GROUP}"
+  fi
+  die "Switching to ${NET} failed; ${ENV_FILE} is back to its previous network (${backup##*/}) and the running release is unchanged. See the messages above."
+fi
+die "Switching to ${NET} failed after the new release went live; see the messages above (deploy.sh says which release runs and with which settings)."

@@ -12,15 +12,21 @@
 #   3. Exports the commit into releases/<time>-<commit> (owner: app user, group: web group, 2750) and
 #      builds it there as the app user: install, build every app, migrate. The live release is never
 #      touched, so a failed build leaves the running site exactly as it was.
+#      It records the settings the release was built with (VELUM_NETWORK, CHAIN_ID, NEXT_PUBLIC_*).
 #   4. First release in this base while the app user's PM2 still runs Velum apps from elsewhere (an
 #      older in-place layout): keeps a root-only copy of that PM2 process list (R2-M2).
-#   5. Renders web.env and the Nginx snippets from .env, switches `current` atomically and reloads
-#      PM2 with zero downtime: api + workers as the app user, the web as the web user (R2-M3).
-#   6. Checks health: API, web, a workers heartbeat written after the switch, then after a settle
-#      period again, plus PM2 status and restart counts (R2-L5). On failure it switches back to the
-#      previous release, or (first release) restores the older layout's apps from step 4.
+#   5. Renders web.env and the Nginx snippets from .env (headers + CSP, the API's unix socket, the
+#      proxy secret), switches `current` atomically and reloads PM2 with zero downtime: api + workers
+#      as the app user, the web as the web user (R2-M3), each daemon under its systemd unit (I-2).
+#   6. Checks health: API (on its socket), web, a workers heartbeat written after the switch, then
+#      after a settle period again, plus PM2 status and restart counts (R2-L5). On failure it switches
+#      back to the previous release if that release was built with the settings .env has now (R3-04),
+#      or (first release) restores the older layout's apps from step 4.
 #   7. Keeps the newest KEEP_RELEASES (default 3) releases, always including current and previous.
-# Run without root on a checkout you own (local or single-user setups), everything runs as you.
+# Everything that runs as another user starts in a new session without this terminal, and its output
+# reaches the terminal without control characters (run_isolated, audit R3-01).
+# --rollback refuses a release built with other settings than .env has now (R3-04) or by another app
+# user (R3-05). Run without root on a checkout you own (local or single-user setups), everything runs as you.
 # shellcheck disable=SC2015 # "A && B || die" is the intended idiom here: die exits.
 set -euo pipefail
 umask 022
@@ -39,6 +45,7 @@ BACKUPS="${BASE}/backups"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
 NGINX_SNIPPET="${NGINX_SNIPPET:-/etc/nginx/snippets/velum-security-headers.conf}"
 NGINX_PROXY_SNIPPET="${NGINX_PROXY_SNIPPET:-/etc/nginx/snippets/velum-proxy-secret.conf}"
+NGINX_API_SNIPPET="${NGINX_API_SNIPPET:-/etc/nginx/snippets/velum-api-upstream.conf}"
 HEALTH_SETTLE_SECONDS="${HEALTH_SETTLE_SECONDS:-20}"
 WORKERS_WAIT_SECONDS="${WORKERS_WAIT_SECONDS:-60}"
 ACTION=deploy
@@ -67,13 +74,32 @@ fi
 cd "${BASE}"
 [ -f "${ENV_FILE}" ] || die "Missing ${ENV_FILE}. Run deploy/server-setup.sh (or deploy/import-env.sh when moving from an older layout)."
 
+# PM2 daemons under systemd (I-2): as root with systemd running, every pm2 command talks to the
+# daemon its unit started (release.sh never starts one itself). Elsewhere the pm2 command starts it.
+PM2_SYSTEMD=0
+if [ "${SEPARATE}" = 1 ] && systemd_running; then PM2_SYSTEMD=1; fi
+export VELUM_PM2_SYSTEMD="${PM2_SYSTEMD}"
+if [ "${SEPARATE}" = 1 ] && [ "${PM2_SYSTEMD}" = 0 ]; then warn "systemd is not running: the PM2 daemons are started by this script and will not start at boot."; fi
+
+# The API's unix socket (R3-03): required as root; root's health checks and Nginx use only the socket.
+API_SOCKET_PATH="$(env_get "${ENV_FILE}" API_SOCKET)"
+if [ "${SEPARATE}" = 1 ] || [ -n "${API_SOCKET_PATH}" ]; then
+  valid_api_socket "${API_SOCKET_PATH}" || die "API_SOCKET in ${ENV_FILE} is missing or not /run/<dir>/<name>.sock. Re-run deploy/server-setup.sh: it sets it and creates the socket directory (audit R3-03)."
+fi
+
 current_id() { local t; t="$(readlink "${CURRENT}" 2>/dev/null || true)"; printf '%s' "${t##*/}"; }
 releases_sorted() { [ -d "${RELEASES}" ] && find "${RELEASES}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort; return 0; }
+# release_ours ID — a finished release built by the current app user for the current web group. A
+# release another (earlier, possibly compromised) app user built is never run again (R3-05).
+release_ours() {
+  [ -f "${RELEASES}/$1/.velum-release-ok" ] || return 1
+  if [ "${SEPARATE}" = 1 ]; then [ "$(stat -c '%U:%G' "${RELEASES}/$1")" = "${APP_USER}:${WEB_GROUP}" ] || return 1; fi
+}
 previous_of() {
   local prev="" r
   while IFS= read -r r; do
     [ "${r}" = "$1" ] && break
-    if [ -f "${RELEASES}/${r}/.velum-release-ok" ]; then prev="${r}"; fi
+    if release_ours "${r}"; then prev="${r}"; fi
   done < <(releases_sorted)
   printf '%s' "${prev}"
 }
@@ -94,35 +120,62 @@ previous_id() {
   local t
   t="$(readlink "${PREVIOUS}" 2>/dev/null || true)"
   t="${t##*/}"
-  if [ -n "${t}" ] && [ "${t}" != "$1" ] && [ -f "${RELEASES}/${t}/.velum-release-ok" ]; then printf '%s' "${t}"; else previous_of "$1"; fi
+  if [ -n "${t}" ] && [ "${t}" != "$1" ] && release_ours "${t}"; then printf '%s' "${t}"; else previous_of "$1"; fi
 }
+# Settings each release was built with (R3-04): releases/<id>.build-env, root-only.
+record_of() { printf '%s/%s.build-env' "${RELEASES}" "$1"; }
+# env_matches ID — true when .env holds exactly the values release ID was built with; otherwise warns
+# with the differences (all public: NEXT_PUBLIC_* is compiled into the browser bundle).
+env_matches() {
+  local rec
+  rec="$(record_of "$1")"
+  if [ ! -f "${rec}" ]; then warn "Release $1 has no record of the settings it was built with (built by an older deploy.sh), so it cannot be checked."; return 2; fi
+  [ "$(cat "${rec}")" = "$(build_env_record "${ENV_FILE}")" ] && return 0
+  warn "Release $1 was built with other settings than ${ENV_FILE} has now:"
+  awk 'FNR == 1 { f++ } !/=/ { next } { k = substr($0, 1, index($0, "=") - 1); v = substr($0, index($0, "=") + 1) }
+    f == 1 { b[k] = v; next } { n[k] = v }
+    END {
+      for (k in b) if (!(k in n)) printf "  %s: built with \"%s\", now not set\n", k, b[k]; else if (n[k] != b[k]) printf "  %s: built with \"%s\", now \"%s\"\n", k, b[k], n[k]
+      for (k in n) if (!(k in b)) printf "  %s: not set when built, now \"%s\"\n", k, n[k]
+    }' "${rec}" <(build_env_record "${ENV_FILE}") | LC_ALL=C sort >&2
+  return 1
+}
+# drop_release ID-DIR — removes a release and its record.
+drop_release() { remove_release "$1"; rm -f -- "$1.build-env"; }
 port_of() { local p; p="$(env_get "${ENV_FILE}" "$1")"; if valid_port "${p}"; then printf '%s' "${p}"; else printf '%s' "$2"; fi; }
 API_PORT="$(port_of PORT_API 4000)"
 WEB_PORT="$(port_of PORT_WEB 3000)"
 PROXY_SECRET_VALUE="$(env_get "${ENV_FILE}" PROXY_SECRET)"
 [[ "${PROXY_SECRET_VALUE}" =~ ^[0-9a-fA-F]{32,128}$ ]] || PROXY_SECRET_VALUE=""
 
-logs_hint() { if [ "${SEPARATE}" = 1 ] && [ "$1" = velum-web ]; then printf 'runuser -u %s -- pm2 logs %s --lines 100' "${WEB_USER}" "$1"; elif [ "${SEPARATE}" = 1 ]; then printf 'runuser -u %s -- pm2 logs %s --lines 100' "${APP_USER}" "$1"; else printf 'pm2 logs %s --lines 100' "$1"; fi; }
+# The command to read an app's logs (as the user, without handing it this terminal: R3-01).
+logs_hint() {
+  local u="${APP_USER}"
+  [ "$1" != velum-web ] || u="${WEB_USER}"
+  if [ "${SEPARATE}" = 1 ]; then printf 'bash %s/deploy/as-user.sh %s pm2 logs %s --lines 100 --nostream' "${BASE}" "${u}" "$1"; else printf 'pm2 logs %s --lines 100 --nostream' "$1"; fi
+}
 
-# GET on the API. With PROXY_SECRET it sends the header Nginx sends, through curl's stdin config (never
-# on a command line other users can read), so the check has its own rate-limit bucket (R2-I4).
+# GET on the API: on its unix socket (R3-03), or 127.0.0.1:PORT_API in local setups without one. The
+# proxy secret goes only to the socket, through curl's stdin config (never on a command line other
+# users can read), so the check has its own rate-limit bucket (R2-I4). No proxy for local requests.
 api_get() {
-  local url="http://127.0.0.1:${API_PORT}$1"
-  if [ -n "${PROXY_SECRET_VALUE}" ]; then
-    printf 'header = "X-Velum-Proxy-Secret: %s"\nheader = "X-Real-IP: velum-deploy-%s"\n' "${PROXY_SECRET_VALUE}" "$$" | curl -fsS --max-time 5 -K - "${url}"
+  local url="http://127.0.0.1:${API_PORT}$1" sock=()
+  if [ -n "${API_SOCKET_PATH}" ]; then url="http://velum-api$1"; sock=(--unix-socket "${API_SOCKET_PATH}"); fi
+  if [ -n "${PROXY_SECRET_VALUE}" ] && [ -n "${API_SOCKET_PATH}" ]; then
+    printf 'header = "X-Velum-Proxy-Secret: %s"\nheader = "X-Real-IP: velum-deploy-%s"\n' "${PROXY_SECRET_VALUE}" "$$" | curl -fsS --noproxy '*' --max-time 5 "${sock[@]}" -K - "${url}"
   else
-    curl -fsS --max-time 5 "${url}"
+    curl -fsS --noproxy '*' --max-time 5 "${sock[@]}" "${url}"
   fi
 }
-web_code() { curl -s --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/" || true; }
+web_code() { curl -s --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/" || true; }
 workers_age() { api_get /v1/health 2>/dev/null | sed -n 's/.*"workers":\([0-9]\{1,9\}\)[,}].*/\1/p'; }
 
 # PM2 state of every Velum app instance in both daemons, "user<TAB>name<TAB>status<TAB>restarts", sorted.
 pm2_snapshot() {
   {
-    as_app bash "${CURRENT}/deploy/release.sh" status | sed "s/^/${APP_USER}\t/"
-    if [ "${SEPARATE}" = 1 ]; then as_web bash "${CURRENT}/deploy/release.sh" status | sed "s/^/${WEB_USER}\t/"; fi
-  } 2>/dev/null | sort
+    run_pm2 "${CURRENT}" app status | sed "s/^/${APP_USER}\t/"
+    if [ "${SEPARATE}" = 1 ]; then run_pm2 "${CURRENT}" web status | sed "s/^/${WEB_USER}\t/"; fi
+  } 2>/dev/null | tty_sanitize | sort
 }
 # check_snapshot TEXT — every expected app has instances, all online, under the expected user.
 check_snapshot() {
@@ -181,33 +234,42 @@ health() {
   [ "$(web_code)" = 200 ] || { warn "The web stopped answering while settling. See: $(logs_hint velum-web)"; return 1; }
   w="$(workers_age)"
   [ -n "${w}" ] && [ "${w}" -le 15 ] || { warn "The workers heartbeat is stale (${w:-none}s). See: $(logs_hint velum-workers)"; return 1; }
-  api_get /v1/health && echo
+  # The API's answer is the app user's output: shown without control characters (R3-01).
+  { api_get /v1/health | tty_sanitize; } && echo
 }
 
 # Root-rendered files the apps and Nginx read: web.env (the web's only settings) and the Nginx
-# snippets (headers with the CSP, proxy secret). Snippets are refreshed only when server-setup.sh
-# created them; Nginx is reloaded only when one changed and nginx -t accepts it.
+# snippets (headers with the CSP, the API upstream on its unix socket, the proxy secret). Snippets are
+# refreshed only when server-setup.sh created them; Nginx is reloaded only when one changed and nginx -t
+# accepts it.
 write_web_env() {
   [ "${SEPARATE}" = 1 ] || return 0
   render_web_env "${ENV_FILE}" | install_file "${WEB_ENV_FILE}" 640 "root:${WEB_GROUP}"
 }
+snippet_content() {
+  case "$1" in
+    "${NGINX_SNIPPET}") printf '%s' "${HEADERS}" ;;
+    "${NGINX_PROXY_SNIPPET}") printf '%s' "${PROXY_INCLUDE}" ;;
+    "${NGINX_API_SNIPPET}") printf '%s' "${API_UPSTREAM}" ;;
+  esac
+}
 update_nginx() {
   local f content changed=0
   [ "$(id -u)" -eq 0 ] || return 0
-  for f in "${NGINX_SNIPPET}" "${NGINX_PROXY_SNIPPET}"; do
+  for f in "${NGINX_SNIPPET}" "${NGINX_PROXY_SNIPPET}" "${NGINX_API_SNIPPET}"; do
     [ -f "${f}" ] || continue
-    if [ "${f}" = "${NGINX_SNIPPET}" ]; then content="${HEADERS}"; else content="${PROXY_INCLUDE}"; fi
+    content="$(snippet_content "${f}")"
     [ -n "${content}" ] || continue
     if printf '%s\n' "${content}" | cmp -s - "${f}"; then continue; fi
     cp -p "${f}" "${f}.prev"
-    if [ "${f}" = "${NGINX_SNIPPET}" ]; then printf '%s\n' "${content}" | install_file "${f}" 644 root:root; else printf '%s\n' "${content}" | install_file "${f}" 600 root:root; fi
+    if [ "${f}" = "${NGINX_PROXY_SNIPPET}" ]; then printf '%s\n' "${content}" | install_file "${f}" 600 root:root; else printf '%s\n' "${content}" | install_file "${f}" 644 root:root; fi
     changed=1
   done
   [ "${changed}" = 1 ] || return 0
   if [ "${VELUM_NGINX_RELOAD:-1}" = "1" ] && command -v nginx >/dev/null; then
     if nginx -t -q 2>/dev/null; then
       systemctl reload nginx
-      say "Nginx snippets updated (CSP follows NEXT_PUBLIC_RPC_URL and NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID)"
+      say "Nginx snippets updated (CSP from .env; /api/ on the API socket)"
     else
       restore_nginx
       warn "nginx -t rejected the new snippets; kept the previous ones."
@@ -217,20 +279,71 @@ update_nginx() {
 restore_nginx() {
   local f any=0
   [ "$(id -u)" -eq 0 ] || return 0
-  for f in "${NGINX_SNIPPET}" "${NGINX_PROXY_SNIPPET}"; do
+  for f in "${NGINX_SNIPPET}" "${NGINX_PROXY_SNIPPET}" "${NGINX_API_SNIPPET}"; do
     if [ -f "${f}.prev" ]; then mv -f "${f}.prev" "${f}"; any=1; fi
   done
   if [ "${any}" = 1 ] && [ "${VELUM_NGINX_RELOAD:-1}" = "1" ] && command -v nginx >/dev/null && nginx -t -q 2>/dev/null; then systemctl reload nginx; fi
 }
-forget_nginx_backups() { rm -f "${NGINX_SNIPPET}.prev" "${NGINX_PROXY_SNIPPET}.prev" 2>/dev/null || true; }
+forget_nginx_backups() { rm -f "${NGINX_SNIPPET}.prev" "${NGINX_PROXY_SNIPPET}.prev" "${NGINX_API_SNIPPET}.prev" 2>/dev/null || true; }
+
+# run_pm2 RELEASE-DIR app|web ARGS… — release.sh ARGS as the app or web user (isolated, R3-01).
+run_pm2() {
+  local dir="$1" who="$2"
+  shift 2
+  if [ "${who}" = web ]; then as_web bash "${dir}/deploy/release.sh" "$@"; else as_app bash "${dir}/deploy/release.sh" "$@"; fi
+}
+
+# pm2_daemon_up RELEASE-DIR app|web — with systemd: writes and enables pm2-<user>, moves a daemon of that
+# user that runs outside the unit (started by hand or by an older deploy from root's shell) under it
+# (its apps restart), starts the unit, and restarts it when the daemon holds a secret in its own
+# environment (cluster workers inherit it). Returns 1 (with a warning) when the daemon cannot be started.
+pm2_daemon_up() {
+  local dir="$1" who="$2" user home unit main=0 others
+  [ "${PM2_SYSTEMD}" = 1 ] || return 0
+  if [ "${who}" = web ]; then user="${WEB_USER}"; home="${WEB_HOME}"; else user="${APP_USER}"; home="${APP_HOME}"; fi
+  unit="pm2-${user}"
+  ensure_pm2_unit "${user}" "${home}"
+  if systemctl is-active --quiet "${unit}"; then main="$(systemctl show -p MainPID --value "${unit}")"; fi
+  others="$(pm2_daemon_pids "${user}" "${home}/.pm2" | grep -vx -- "${main}" || true)"
+  if [ -n "${others}" ]; then
+    warn "The PM2 daemon of ${user} runs outside ${unit} (started by hand or by an older deploy); moving it under systemd, so its apps restart."
+    run_pm2 "${dir}" "${who}" save >/dev/null 2>&1 || true
+    run_pm2 "${dir}" "${who}" kill >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+      others="$(pm2_daemon_pids "${user}" "${home}/.pm2" | grep -vx -- "${main}" || true)"
+      [ -n "${others}" ] || break
+      sleep 0.5
+    done
+    if [ -n "${others}" ]; then
+      # As that user, so a reused PID can never hit another user's process.
+      # shellcheck disable=SC2086
+      as_user "${user}" "${home}" "${who}" kill -KILL ${others} >/dev/null 2>&1 || true
+      sleep 1
+      others="$(pm2_daemon_pids "${user}" "${home}/.pm2" | grep -vx -- "${main}" || true)"
+      [ -z "${others}" ] || { warn "Could not stop the PM2 daemon of ${user} that runs outside ${unit} (PID ${others//$'\n'/ })."; return 1; }
+    fi
+  fi
+  if ! systemctl is-active --quiet "${unit}"; then
+    systemctl start "${unit}" || { warn "Could not start ${unit}. See: systemctl status ${unit}"; return 1; }
+  fi
+  main="$(systemctl show -p MainPID --value "${unit}")"
+  if ! [[ "${main}" =~ ^[1-9][0-9]*$ ]] || [ "$(stat -c %U "/proc/${main}" 2>/dev/null)" != "${user}" ]; then
+    warn "${unit} is active but runs no PM2 daemon of ${user}. See: systemctl status ${unit}"
+    return 1
+  fi
+  if tr '\0' '\n' <"/proc/${main}/environ" 2>/dev/null | cut -d= -f1 | grep -Eq "${SECRET_ENV_NAMES}"; then
+    say "The PM2 daemon of ${user} has secrets in its own environment; restarting ${unit} with a clean one"
+    systemctl restart "${unit}" || { warn "Could not restart ${unit}."; return 1; }
+  fi
+}
 
 pm2_apply() {
-  as_app bash "${CURRENT}/deploy/release.sh" pm2
-  if [ "${SEPARATE}" = 1 ]; then as_web bash "${CURRENT}/deploy/release.sh" pm2; fi
+  { pm2_daemon_up "${CURRENT}" app && run_pm2 "${CURRENT}" app pm2; } || return 1
+  if [ "${SEPARATE}" = 1 ]; then { pm2_daemon_up "${CURRENT}" web && run_pm2 "${CURRENT}" web pm2; } || return 1; fi
 }
 pm2_list() {
-  as_app pm2 ls || true
-  if [ "${SEPARATE}" = 1 ]; then as_web pm2 ls || true; fi
+  run_pm2 "${CURRENT}" app ls || true
+  if [ "${SEPARATE}" = 1 ]; then run_pm2 "${CURRENT}" web ls || true; fi
 }
 
 # ── First release over an older layout (R2-M2) ───────────────────────────────
@@ -241,14 +354,14 @@ LEGACY_DUMP=""
 capture_legacy() {
   local running
   [ "${SEPARATE}" = 1 ] && [ -z "$(current_id)" ] || return 0
-  running="$(as_app bash "${REL}/deploy/release.sh" status 2>/dev/null || true)"
+  running="$(run_pm2 "${REL}" app status 2>/dev/null || true)"
   [ -n "${running}" ] || return 0
   say "The app user's PM2 runs Velum apps from an older layout; saving its process list first"
   install -d -o root -g root -m 700 "${BACKUPS}"
   LEGACY_DUMP="${BACKUPS}/pm2-dump-before-first-release.$(date -u +%Y%m%d%H%M%S).json"
-  if ! as_app pm2 save --force >/dev/null || ! as_app cat -- "${PM2_DIR}/dump.pm2" | install_file "${LEGACY_DUMP}" 600 root:root || ! grep -q '"velum-' "${LEGACY_DUMP}"; then
+  if ! run_pm2 "${REL}" app save >/dev/null || ! as_app cat -- "${PM2_DIR}/dump.pm2" | install_file "${LEGACY_DUMP}" 600 root:root || ! grep -q '"velum-' "${LEGACY_DUMP}"; then
     rm -f "${LEGACY_DUMP}"
-    remove_release "${REL}"
+    drop_release "${REL}"
     STAGE=aborted
     die "Could not save the running PM2 process list; nothing was switched (the old apps keep running). Save it by hand (docs/05-deploy-vps.md, Upgrading) and re-run."
   fi
@@ -257,21 +370,27 @@ capture_legacy() {
 restore_legacy() {
   local ok="" code=""
   warn "Restoring the apps that ran before this first release (older layout) from ${LEGACY_DUMP}"
-  as_web pm2 delete velum-web >/dev/null 2>&1 || true
-  as_web pm2 save --force >/dev/null 2>&1 || true
-  as_app pm2 delete velum-api velum-workers velum-web >/dev/null 2>&1 || true
-  # Written as the app user into its own PM2 home, then resurrected by its own PM2.
+  run_pm2 "${REL}" web delete velum-web >/dev/null 2>&1 || true
+  run_pm2 "${REL}" web save >/dev/null 2>&1 || true
+  if [ "${PM2_SYSTEMD}" = 1 ]; then systemctl disable --now --quiet "pm2-${WEB_USER}" >/dev/null 2>&1 || true; fi
+  run_pm2 "${REL}" app delete velum-api velum-workers velum-web >/dev/null 2>&1 || true
+  # Written as the app user into its own PM2 home, then resurrected by its own PM2 (under its unit).
   # shellcheck disable=SC2016
   as_app sh -c 'umask 077 && cat >"$PM2_HOME/dump.pm2.velum-restore" && mv -f "$PM2_HOME/dump.pm2.velum-restore" "$PM2_HOME/dump.pm2" && rm -f "$PM2_HOME/velum-apps.sha256"' <"${LEGACY_DUMP}"
-  as_app pm2 resurrect >/dev/null
+  if [ "${PM2_SYSTEMD}" = 1 ]; then
+    systemctl restart "pm2-${APP_USER}" || warn "Could not restart pm2-${APP_USER}. See: systemctl status pm2-${APP_USER}"
+  else
+    run_pm2 "${REL}" app resurrect >/dev/null || true
+  fi
   rm -f "${CURRENT}" "${PREVIOUS}"
   restore_nginx
+  # The older layout's API listens on TCP and knows no proxy secret: none is sent.
   for _ in $(seq 1 30); do
     code="$(web_code)"
-    if [ "${code}" = 200 ] && curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${API_PORT}/v1/health"; then ok=1; break; fi
+    if [ "${code}" = 200 ] && curl -fsS --noproxy '*' --max-time 5 -o /dev/null "http://127.0.0.1:${API_PORT}/v1/health"; then ok=1; break; fi
     sleep 2
   done
-  as_app pm2 ls || true
+  run_pm2 "${REL}" app ls || true
   if [ -n "${ok}" ]; then echo "✓ The apps from before this release run again (API and web answer)." >&2; else warn "The restored apps do not answer yet. Check: $(logs_hint velum-api)"; fi
 }
 
@@ -280,12 +399,17 @@ if [ "${ACTION}" = "rollback" ]; then
   cur="$(current_id)"
   [ -n "${cur}" ] || die "No current release to roll back from."
   prev="$(previous_id "${cur}")"
-  [ -n "${prev}" ] || die "No earlier release is kept; nothing to roll back to."
+  [ -n "${prev}" ] || die "No earlier release built by ${APP_USER} is kept; nothing to roll back to."
+  # A release runs only with the settings it was built with (R3-04): after set-network.sh (or an edit
+  # of NEXT_PUBLIC_*) the previous release would serve a web bundle for one network while web.env, the
+  # API and the CSP follow the other.
+  env_matches "${prev}" || die "Not rolling back to ${prev}: running it with this .env would mix two configurations (web bundle, API and CSP). Put the values it was built with back into ${ENV_FILE} (the .env.bak.* files next to it keep earlier versions; set-network.sh switches the network with a new release) and run --rollback again, or deploy a new release."
   say "Rolling back ${cur} → ${prev}"
+  if [ "${SEPARATE}" = 1 ]; then apply_tmpfiles "${API_SOCKET_PATH}"; fi
   write_web_env
   activate "${prev}"
   remember_previous ""
-  pm2_apply
+  pm2_apply || die "PM2 could not start ${prev}. See: $(logs_hint velum-api)"
   health "$(date +%s)" || die "The previous release ${prev} is not healthy either. See pm2 logs."
   pm2_list
   echo "✓ Rolled back to ${prev}. Database migrations are not rolled back."
@@ -295,19 +419,34 @@ fi
 # ── Deploy ───────────────────────────────────────────────────────────────────
 HEADERS=""
 PROXY_INCLUDE=""
+API_UPSTREAM=""
 if [ "$(id -u)" -eq 0 ] && [ -f "${NGINX_SNIPPET}" ]; then
   HEADERS="$(render_security_headers "${ENV_FILE}")" || die "Fix NEXT_PUBLIC_RPC_URL in ${ENV_FILE}."
 fi
-if [ "$(id -u)" -eq 0 ] && [ -f "${NGINX_PROXY_SNIPPET}" ]; then
-  PROXY_INCLUDE="$(render_proxy_secret "${ENV_FILE}")" || die "Fix PROXY_SECRET in ${ENV_FILE} (or re-run deploy/server-setup.sh)."
+if [ "$(id -u)" -eq 0 ] && [ -f "${NGINX_PROXY_SNIPPET}" ] && [ -n "${API_SOCKET_PATH}" ]; then
+  PROXY_INCLUDE="$(render_proxy_secret_for socket "${ENV_FILE}")" || die "Fix PROXY_SECRET in ${ENV_FILE} (or re-run deploy/server-setup.sh)."
+fi
+if [ "$(id -u)" -eq 0 ] && [ -f "${NGINX_API_SNIPPET}" ] && [ -n "${API_SOCKET_PATH}" ]; then
+  API_UPSTREAM="$(render_api_upstream socket "${API_SOCKET_PATH}")"
 fi
 # With PROXY_SECRET the API trusts X-Real-IP only from requests that carry it (R2-I4). If Nginx does
-# not send it, every visitor would share one rate-limit bucket: refuse instead of deploying that.
+# not send it, every visitor would share one rate-limit bucket: refuse instead of deploying that. As
+# root the API listens only on its unix socket (R3-03): the site must take /api/ there.
 NGINX_SITE="${NGINX_SITE:-/etc/nginx/sites-available/velum.conf}"
-if [ "$(id -u)" -eq 0 ] && [ -n "${PROXY_SECRET_VALUE}" ] && [ -f "${NGINX_SITE}" ] && ! grep -q 'velum-proxy-secret\.conf' "${NGINX_SITE}"; then
-  die "PROXY_SECRET is set in .env but ${NGINX_SITE} does not include snippets/velum-proxy-secret.conf, so the API would see every visitor as one client. Re-run deploy/server-setup.sh (it updates the site file) or remove PROXY_SECRET from .env."
+if [ "$(id -u)" -eq 0 ] && [ -f "${NGINX_SITE}" ]; then
+  if [ -n "${PROXY_SECRET_VALUE}" ] && ! grep -q 'velum-proxy-secret\.conf' "${NGINX_SITE}"; then
+    die "PROXY_SECRET is set in .env but ${NGINX_SITE} does not include snippets/velum-proxy-secret.conf, so the API would see every visitor as one client. Re-run deploy/server-setup.sh (it updates the site file) or remove PROXY_SECRET from .env."
+  fi
+  if [ "${SEPARATE}" = 1 ] && { ! grep -q 'velum-api-upstream\.conf' "${NGINX_SITE}" || [ ! -f "${NGINX_API_SNIPPET}" ]; }; then
+    die "${NGINX_SITE} comes from an older template: it does not send /api/ to the API's unix socket (snippets/velum-api-upstream.conf). Re-run deploy/server-setup.sh (it updates the site file and keeps HTTPS)."
+  fi
 fi
-if [ "${SEPARATE}" = "1" ]; then install -d -o root -g root -m 751 "${RELEASES}"; else mkdir -p "${RELEASES}"; fi
+if [ "${SEPARATE}" = "1" ]; then
+  install -d -o root -g root -m 751 "${RELEASES}"
+  apply_tmpfiles "${API_SOCKET_PATH}"
+else
+  mkdir -p "${RELEASES}"
+fi
 
 COMMIT="$(root_git rev-parse HEAD)"
 ID="$(date -u +%Y%m%d%H%M%S)-${COMMIT:0:12}"
@@ -318,7 +457,7 @@ STAGE=build
 on_exit() {
   local rc=$?
   if [ "${rc}" -ne 0 ] && [ "${STAGE}" = "build" ]; then
-    remove_release "${REL}"
+    drop_release "${REL}"
     echo "✗ Build of ${COMMIT:0:12} failed. Nothing was switched: the running release (${PREV_ID:-none}) is untouched." >&2
   fi
 }
@@ -334,8 +473,14 @@ fi
 root_git archive --format=tar "${COMMIT}" | as_app tar -x -C "${REL}"
 
 say "Building ${ID} as ${APP_USER} (the live release is not touched)"
-as_app ${PREV_ID:+"VELUM_PREVIOUS=${RELEASES}/${PREV_ID}"} bash "${REL}/deploy/release.sh" build
+BUILD_RECORD="$(build_env_record "${ENV_FILE}")"
+# The Next.js cache only from a release this app user built (never from an earlier app user's, R3-05).
+CACHE_FROM=""
+if [ -n "${PREV_ID}" ] && release_ours "${PREV_ID}"; then CACHE_FROM="${RELEASES}/${PREV_ID}"; fi
+as_app ${CACHE_FROM:+"VELUM_PREVIOUS=${CACHE_FROM}"} bash "${REL}/deploy/release.sh" build
 [ -f "${REL}/.velum-release-ok" ] || die "The build did not finish."
+[ "$(build_env_record "${ENV_FILE}")" = "${BUILD_RECORD}" ] || die "VELUM_NETWORK, CHAIN_ID or a NEXT_PUBLIC_* value in .env changed during the build. Run deploy.sh again."
+printf '%s\n' "${BUILD_RECORD}" | install_file "$(record_of "${ID}")" 600 root:root
 
 capture_legacy
 
@@ -353,32 +498,49 @@ if [ "${PM2_OK}" = "1" ] && health "${SINCE}"; then
   forget_nginx_backups
   remember_previous "${PREV_ID}"
 else
-  if [ -n "${PREV_ID}" ] && [ -f "${RELEASES}/${PREV_ID}/.velum-release-ok" ]; then
-    warn "Release ${ID} is not healthy; switching back to ${PREV_ID}."
-    activate "${PREV_ID}"
-    restore_nginx
-    pm2_apply || true
-    health "$(date +%s)" >/dev/null || warn "The previous release is not healthy either. See pm2 logs."
-    remove_release "${REL}"
-    die "Release ${ID} failed its checks and was rolled back to ${PREV_ID}. Migrations it applied stay applied."
+  if [ -n "${PREV_ID}" ] && release_ours "${PREV_ID}"; then
+    warn "Release ${ID} is not healthy."
+    # set-network.sh passes the .env it replaced: with it, the previous release runs with its own
+    # network again (R3-04).
+    if [ -n "${VELUM_ENV_RESTORE:-}" ] && ! env_matches "${PREV_ID}" >/dev/null 2>&1; then
+      restore_env_backup "${VELUM_ENV_RESTORE}"
+      warn "Put back ${ENV_FILE} from ${VELUM_ENV_RESTORE##*/} (the settings ${PREV_ID} was built with)."
+    fi
+    if env_matches "${PREV_ID}"; then
+      warn "Switching back to ${PREV_ID}."
+      write_web_env
+      activate "${PREV_ID}"
+      restore_nginx
+      pm2_apply || true
+      health "$(date +%s)" >/dev/null || warn "The previous release is not healthy either. See: $(logs_hint velum-api)"
+      drop_release "${REL}"
+      die "Release ${ID} failed its checks and was rolled back to ${PREV_ID}. Migrations it applied stay applied."
+    fi
+    forget_nginx_backups
+    remember_previous "${PREV_ID}"
+    die "Release ${ID} failed its checks and stays active: running ${PREV_ID} with this .env would mix two configurations (above). Fix the problem and deploy again, or put back the values ${PREV_ID} was built with and run deploy.sh --rollback."
   fi
   if [ -n "${LEGACY_DUMP}" ]; then
     warn "Release ${ID} is not healthy."
     restore_legacy
-    remove_release "${REL}"
+    drop_release "${REL}"
     die "Release ${ID} failed its checks. The apps that ran before it were restored from ${LEGACY_DUMP}; this base has no current release again. Fix the problem, then run deploy.sh again. Migrations it applied stay applied."
   fi
   die "Release ${ID} failed its checks and there is no previous release to switch back to. See pm2 logs."
 fi
 
-# Prune: keep the newest KEEP_RELEASES, always current and previous.
+# Prune: keep the newest KEEP_RELEASES, always current and previous (and every release record whose
+# release is gone).
 mapfile -t ALL < <(releases_sorted)
 n=0
 for ((i = ${#ALL[@]} - 1; i >= 0; i--)); do
   r="${ALL[i]}"
   n=$((n + 1))
-  if [ "${n}" -gt "${KEEP_RELEASES}" ] && [ "${r}" != "${ID}" ] && [ "${r}" != "${PREV_ID}" ]; then remove_release "${RELEASES}/${r}"; fi
+  if [ "${n}" -gt "${KEEP_RELEASES}" ] && [ "${r}" != "${ID}" ] && [ "${r}" != "${PREV_ID}" ]; then drop_release "${RELEASES}/${r}"; fi
 done
+while IFS= read -r r; do
+  [ -d "${RELEASES}/${r%.build-env}" ] || rm -f -- "${RELEASES:?}/${r}"
+done < <(find "${RELEASES}" -maxdepth 1 -type f -name '*.build-env' -printf '%f\n')
 
 pm2_list
 echo "✓ Deployed ${ID}${PREV_ID:+ (previous: ${PREV_ID}; roll back with: deploy.sh --rollback)}"

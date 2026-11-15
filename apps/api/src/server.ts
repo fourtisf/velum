@@ -3,6 +3,7 @@ import { Redis } from 'ioredis';
 import { buildApp } from './app';
 import { loadEnv } from './env';
 import { prismaDb, redisCache, viemChain } from './lib/adapters';
+import { listenOnSocket } from './lib/listen';
 import { redactUrls } from './lib/redact';
 
 async function main(): Promise<void> {
@@ -51,7 +52,12 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  await app.listen({ host: env.host, port: env.port });
+  if (env.socketPath) {
+    // On the server: a unix socket only the app user and Nginx can reach (audit R3-03).
+    await listenOnSocket(app, env.socketPath, { instance: Number(process.env.NODE_APP_INSTANCE) || 0 });
+  } else {
+    await app.listen({ host: env.host, port: env.port });
+  }
 }
 
 main().catch((err: unknown) => {

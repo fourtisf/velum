@@ -21,7 +21,16 @@ export interface ApiEnv {
    * trusts X-Forwarded-For from loopback as before.
    */
   proxySecret: string | null;
+  /**
+   * Unix socket to listen on instead of HOST:PORT_API (audit R3-03). deploy/server-setup.sh sets it to
+   * /run/velum-api/api.sock: a directory only the app user and Nginx's user can enter, so no other local
+   * user can take the API's address while it is down and receive what Nginx sends (the proxy secret).
+   */
+  socketPath: string | null;
 }
+
+/** Absolute path, plain characters, short enough for sun_path (108 bytes, minus margin). */
+const SOCKET_PATH_RE = /^\/[A-Za-z0-9._/-]{1,99}$/;
 
 const bool = (v: string | undefined, dflt: boolean): boolean => {
   if (v === undefined || v === '') return dflt;
@@ -69,6 +78,11 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
   const proxySecret = (e.PROXY_SECRET ?? '').trim();
   if (proxySecret && !/^[0-9a-f]{32,128}$/i.test(proxySecret)) problems.push('PROXY_SECRET must be 32 to 128 hex characters (deploy/server-setup.sh generates one).');
 
+  const socketPath = (e.API_SOCKET ?? '').trim();
+  if (socketPath && (!SOCKET_PATH_RE.test(socketPath) || socketPath.split('/').includes('..'))) {
+    problems.push('API_SOCKET must be an absolute path of at most 100 plain characters (letters, digits, . _ - /), e.g. /run/velum-api/api.sock.');
+  }
+
   const env: ApiEnv = {
     host: e.HOST || '127.0.0.1',
     port: int('PORT_API', e.PORT_API ?? e.PORT, 4000, 1, 65535),
@@ -83,6 +97,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     demoMode: bool(e.DEMO_MODE, true),
     logLevel: e.LOG_LEVEL || (e.NODE_ENV === 'production' ? 'info' : 'debug'),
     proxySecret: proxySecret || null,
+    socketPath: socketPath || null,
   };
 
   if (problems.length) throw new Error(`Invalid API environment:\n  - ${problems.join('\n  - ')}`);

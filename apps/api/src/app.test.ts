@@ -23,6 +23,7 @@ const env: ApiEnv = {
   demoMode: true,
   logLevel: 'silent',
   proxySecret: null,
+  socketPath: null,
 };
 
 const snap = (symbol: string, price: string, over: Partial<MarketSnapshot> = {}): MarketSnapshot => ({

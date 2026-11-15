@@ -10,10 +10,15 @@
 #                      when the app definitions or env keys changed, or when a running app comes from
 #                      another directory (an older layout), so removed secrets never linger.
 #   release.sh status  One line per Velum app instance in this user's PM2: name, status, restarts.
+#   release.sh save | kill | ls | delete NAME… | resurrect
+#                      The pm2 command of the same name, for deploy.sh (never by hand).
 #
 # VELUM_PM2_SCOPE picks the apps: backend (api + workers, the app user), web (the web user) or all
 # (single-user setups). Needs VELUM_BASE (the directory holding .env, web.env, releases/ and current).
 # Optional for build: VELUM_PREVIOUS (previous release directory, to reuse its Next.js build cache).
+# VELUM_PM2_SYSTEMD=1 (set by deploy.sh as root): the daemon runs under its systemd unit (pm2-<user>),
+# which deploy.sh starts first; then no command here ever starts a daemon (audit I-2): status prints
+# nothing and the others stop with an error when the daemon is not running.
 set -euo pipefail
 umask 027
 REL="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
@@ -24,8 +29,26 @@ SCOPE="${VELUM_PM2_SCOPE:-all}"
 case "${SCOPE}" in backend | all) ENV_FILE="${BASE}/.env" ;; web) ENV_FILE="${BASE}/web.env" ;; *) die "VELUM_PM2_SCOPE must be backend, web or all." ;; esac
 export CHECKPOINT_DISABLE=1 NEXT_TELEMETRY_DISABLED=1
 pm2_home="${PM2_HOME:-${HOME}/.pm2}"
+SYSTEMD_DAEMON="${VELUM_PM2_SYSTEMD:-0}"
+# The pm2 command runs under node --no-global-search-paths: Node then never loads modules from
+# $HOME/.node_modules (PM2's ws dependency asks for the optional bufferutil, which a user could plant
+# there), so a pm2 command deploy.sh runs as this user executes only PM2's own code (R3-01).
+pm2_bin="$(readlink -f "$(command -v pm2)")" || die "pm2 is not installed."
+pm2_cmd=(pm2)
+if head -n1 "${pm2_bin}" 2>/dev/null | grep -q '^#!.*node'; then pm2_cmd=(node --no-global-search-paths "${pm2_bin}"); fi
 # Never hand the caller's environment to PM2: reload merges the CLI's environment into every app.
-pm2_() { env -i HOME="${HOME}" PATH="${PATH}" PM2_HOME="${pm2_home}" LANG="${LANG:-C.UTF-8}" VELUM_PM2_SCOPE="${SCOPE}" pm2 "$@"; }
+pm2_() { env -i HOME="${HOME}" PATH="${PATH}" PM2_HOME="${pm2_home}" LANG="${LANG:-C.UTF-8}" VELUM_PM2_SCOPE="${SCOPE}" "${pm2_cmd[@]}" "$@"; }
+# True when this user's PM2 daemon runs (its PID file names a live PM2 daemon of this user).
+daemon_alive() {
+  local pid
+  pid="$(tr -dc '0-9' <"${pm2_home}/pm2.pid" 2>/dev/null || true)"
+  [ -n "${pid}" ] && [ -O "/proc/${pid}" ] && tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null | grep -q '^PM2 v[0-9.]*: God Daemon'
+}
+# need_daemon — with VELUM_PM2_SYSTEMD=1, refuse to let the pm2 command start a daemon of its own.
+need_daemon() {
+  [ "${SYSTEMD_DAEMON}" = 1 ] || return 0
+  daemon_alive || die "The PM2 daemon of $(id -un) is not running. deploy.sh starts it with its systemd unit (pm2-$(id -un)) first."
+}
 
 build() {
   [ -r "${ENV_FILE}" ] || die "Cannot read ${ENV_FILE}."
@@ -79,6 +102,7 @@ build() {
 # Velum app instances in this daemon as "name<TAB>status<TAB>restarts<TAB>cwd" lines (jlist carries
 # env values: parsed here, never printed).
 pm2_instances() {
+  if [ "${SYSTEMD_DAEMON}" = 1 ] && ! daemon_alive; then return 0; fi
   pm2_ jlist 2>/dev/null | node -e '
     let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
       let list = []; try { list = JSON.parse(s); } catch {}
@@ -95,12 +119,15 @@ pm2_apply() {
   local eco="${REL}/deploy/ecosystem.config.cjs" fp want have names wanted_cwds pid running others n cwd good="" bad=""
   mkdir -p "${pm2_home}"
   chmod 700 "${pm2_home}"
+  need_daemon
 
   # A daemon started from a shell with .env exported (the old deploy.sh did that) holds every secret,
-  # and Node's cluster.fork copies it into each cluster worker. Restart such a daemon once.
+  # and Node's cluster.fork copies it into each cluster worker. Restart such a daemon once (under
+  # systemd, deploy.sh restarts the unit before it gets here).
   if [ -r "${pm2_home}/pm2.pid" ]; then
     pid="$(tr -dc '0-9' <"${pm2_home}/pm2.pid")"
     if [ -n "${pid}" ] && [ -r "/proc/${pid}/environ" ] && tr '\0' '\n' <"/proc/${pid}/environ" | cut -d= -f1 | grep -Eq "${SECRET_ENV_NAMES}"; then
+      [ "${SYSTEMD_DAEMON}" != 1 ] || die "The PM2 daemon has secrets in its own environment; restart pm2-$(id -un) (deploy.sh does)."
       say "The PM2 daemon has secrets in its own environment; restarting it with a clean one"
       pm2_ kill >/dev/null
     fi
@@ -157,5 +184,17 @@ case "${1:-}" in
   build) build ;;
   pm2) pm2_apply ;;
   status) pm2_instances | cut -f1-3 ;;
-  *) die "Usage: release.sh build|pm2|status (called by deploy/deploy.sh)" ;;
+  ls) if [ "${SYSTEMD_DAEMON}" != 1 ] || daemon_alive; then pm2_ ls; fi ;;
+  save) need_daemon; pm2_ save --force ;;
+  kill) need_daemon; pm2_ kill ;;
+  delete)
+    shift
+    need_daemon
+    for n in "$@"; do
+      [[ "${n}" =~ ^velum-[a-z]+$ ]] || die "delete: ${n} is not a Velum app."
+      pm2_ delete "${n}" >/dev/null 2>&1 || true
+    done
+    ;;
+  resurrect) [ "${SYSTEMD_DAEMON}" != 1 ] || die "resurrect: restart pm2-$(id -un) instead."; pm2_ resurrect ;;
+  *) die "Usage: release.sh build|pm2|status|ls|save|kill|delete|resurrect (called by deploy/deploy.sh)" ;;
 esac

@@ -1,6 +1,8 @@
 # 03 — API contract (apps/api, Fastify)
 
-Base URL: `https://<domain>/api` (Nginx proxies `/api/` → `127.0.0.1:4000/`).
+Base URL: `https://<domain>/api`. On the server Nginx proxies `/api/` to the API's unix socket
+(`API_SOCKET`, `/run/velum-api/api.sock`, reachable only by the app user and Nginx: docs/05); in local
+development the API listens on `HOST:PORT_API` (`127.0.0.1:4000`).
 All responses JSON. Money as **strings** in base units or fixed decimals; never JS floats.
 The API holds no user keys and keeps no per-user state.
 
@@ -16,7 +18,8 @@ seconds since the workers process last reported alive, whether or not the price 
 (null if never); `deploy/deploy.sh` requires a fresh one after each release. `block` is null when the
 RPC is unreachable. 503 only when Postgres or Redis is down. Rate limited per client
 (`RATE_LIMIT_HEALTH_PER_MIN`, default 60). Behind Nginx the client is `X-Real-IP`, trusted only on
-requests that carry Nginx's `X-Velum-Proxy-Secret` when `PROXY_SECRET` is set (docs/05).
+requests that carry Nginx's `X-Velum-Proxy-Secret` when `PROXY_SECRET` is set (docs/05); requests on
+the socket without it share one "direct" bucket.
 
 ### `GET /v1/deployment`
 Contract addresses and public keys the client needs (Phase 3+).

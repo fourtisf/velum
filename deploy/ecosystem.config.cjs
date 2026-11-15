@@ -5,8 +5,9 @@
 // environment of the `pm2` command itself on start and merges it into every app on reload (PM2's
 // filter_env does not stop that: `true` is ignored by PM2 6.0.14 and no form filters reload or the
 // daemon's environment that cluster workers inherit). So release.sh always runs pm2 under `env -i`
-// with only HOME, PATH, LANG, PM2_HOME and VELUM_PM2_SCOPE, and restarts a daemon whose own
-// environment holds secrets. deploy.sh verifies the result from /proc/<pid>/environ in the tests.
+// with only HOME, PATH, LANG, PM2_HOME and VELUM_PM2_SCOPE. The daemon itself runs under its systemd
+// unit (pm2-<user>, written by deploy.sh) with a fixed environment that holds no secret, and deploy.sh
+// restarts a daemon whose own environment holds one (audit R3-01, I-2).
 //
 // Scopes (VELUM_PM2_SCOPE, audit R2-M3): on a server the web runs as its own user in its own PM2
 // daemon and reads <base>/web.env (rendered by root, no secrets); api and workers run as the app user
@@ -60,7 +61,8 @@ const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, 'utf8
 const ALLOW = {
   'velum-web': { keys: ['NODE_ENV', 'PORT_WEB', 'PUBLIC_SITE_URL'], prefixes: ['NEXT_PUBLIC_'] },
   'velum-api': {
-    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET'],
+    // API_SOCKET: on the server the API listens on a unix socket only Nginx can reach (audit R3-03).
+    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET'],
     prefixes: ['RATE_LIMIT_'],
   },
   'velum-workers': {

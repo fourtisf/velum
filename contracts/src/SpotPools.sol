@@ -56,6 +56,9 @@ contract SpotPools is ReentrancyGuard {
     error SameToken();
     error NoLiquidity(address stock);
     error Slippage(uint256 got, uint256 min);
+    /// @notice A zero `minOut`, `minShares`, `minStock` or `minUsdg` (no slippage protection) is refused (final
+    ///         audit FA-05, as `priceLimit = 0` in perps since IA-10).
+    error NoMinimum();
     error InsufficientShares(uint256 have, uint256 need);
 
     constructor(IVelumVault vault_, address usdg_) {
@@ -90,7 +93,7 @@ contract SpotPools is ReentrancyGuard {
     // ---------------------------------------------------------------- liquidity
 
     /// @notice Add liquidity up to `maxStock` / `maxUsdg`. Only the amounts matching the current
-    ///         ratio are taken (rounded up, in the pool's favour).
+    ///         ratio are taken (rounded up, in the pool's favour). `minShares` must be non-zero (FA-05).
     function addLiquidity(address stock, uint256 maxStock, uint256 maxUsdg, uint256 minShares, uint256 deadline)
         external
         nonReentrant
@@ -99,6 +102,7 @@ contract SpotPools is ReentrancyGuard {
     {
         Pool storage p = _pool(stock);
         if (maxStock == 0 || maxUsdg == 0) revert ZeroAmount();
+        if (minShares == 0) revert NoMinimum();
         if (p.totalShares == 0) {
             stockIn = maxStock;
             usdgIn = maxUsdg;
@@ -126,7 +130,8 @@ contract SpotPools is ReentrancyGuard {
         emit PoolChanged(stock, p.stockReserve, p.usdgReserve, p.totalShares);
     }
 
-    /// @notice Burn shares for a pro-rata slice of both reserves (rounded down).
+    /// @notice Burn shares for a pro-rata slice of both reserves (rounded down). `minStock` and `minUsdg` must
+    ///         both be non-zero (FA-05).
     function removeLiquidity(address stock, uint256 shares, uint256 minStock, uint256 minUsdg, uint256 deadline)
         external
         nonReentrant
@@ -135,6 +140,7 @@ contract SpotPools is ReentrancyGuard {
     {
         Pool storage p = _pool(stock);
         if (shares == 0) revert ZeroAmount();
+        if (minStock == 0 || minUsdg == 0) revert NoMinimum();
         uint256 have = sharesOf[stock][msg.sender];
         if (have < shares) revert InsufficientShares(have, shares);
         uint256 total = p.totalShares;
@@ -158,7 +164,7 @@ contract SpotPools is ReentrancyGuard {
     // ---------------------------------------------------------------- swaps
 
     /// @notice Swap an exact input. USDG<->stock uses one pool; stock->stock routes through USDG in
-    ///         the same call and pays both pools' fees.
+    ///         the same call and pays both pools' fees. `minOut` must be non-zero (FA-05).
     function swap(address tokenIn, address tokenOut, uint256 amountIn, uint256 minOut, uint256 deadline)
         external
         nonReentrant
@@ -167,6 +173,7 @@ contract SpotPools is ReentrancyGuard {
     {
         if (tokenIn == tokenOut) revert SameToken();
         if (amountIn == 0) revert ZeroAmount();
+        if (minOut == 0) revert NoMinimum();
         vault.transferInternal(tokenIn, msg.sender, address(this), amountIn);
         if (tokenIn == usdg) {
             amountOut = _swapInPool(tokenOut, true, amountIn);

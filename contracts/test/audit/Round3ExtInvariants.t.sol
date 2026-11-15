@@ -11,11 +11,13 @@ import {MakerBook} from "../../src/MakerBook.sol";
 import {PerpsMarkets} from "../../src/PerpsMarkets.sol";
 import {PerpsBase} from "../../src/perps/PerpsBase.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {MockAggregator} from "../mocks/MockAggregator.sol";
 
 /// @notice Independent audit (round 3) extended handler: the original handler plus the paths it never drives
 ///         (taker margin removal, insurance donations, oracle pokes, explicit funding advances, dead-oracle
 ///         forced exits at the entry price) and, since IA-06, relayed prices outside the oracle bounds (clamped,
-///         rate-limited, lagging until they come back).
+///         rate-limited, lagging until they come back). Since the final audit it also moves the L2 sequencer feed
+///         (down, grace, up) and checks the payout of liquidations reached through close and settleForcedExit.
 contract Round3ExtHandler is Handler {
     uint256 public marginRemovals;
     uint256 public deadExits;
@@ -36,8 +38,9 @@ contract Round3ExtHandler is Handler {
         MockERC20 s0,
         MockERC20 s1,
         address relayer_,
-        address guardian_
-    ) Handler(vault_, oracle_, pools_, book_, perps_, usdg_, s0, s1, relayer_, guardian_) {}
+        address guardian_,
+        MockAggregator sequencerFeed_
+    ) Handler(vault_, oracle_, pools_, book_, perps_, usdg_, s0, s1, relayer_, guardian_, sequencerFeed_) {}
 
     function removeMargin(uint256 idx, uint256 pct) external {
         if (positionIds.length == 0) return;
@@ -79,13 +82,7 @@ contract Round3ExtHandler is Handler {
         for (uint256 i; i < positionIds.length; ++i) {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open || p.exitRequestedAt == 0) continue;
-            bool capWasSet = _capSet();
-            vm.prank(liquidator);
-            try perps.settleForcedExit(positionIds[i]) {
-                forcedExits++;
-                deadExits++;
-                _trackClaims(p, capWasSet);
-            } catch {}
+            if (_settleForcedExit(positionIds[i])) deadExits++;
         }
         refreshPrices();
     }
@@ -144,14 +141,22 @@ contract Round3ExtHandler is Handler {
 
 contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
+    MockAggregator internal seq;
+
+    /// @dev Final audit: the suites now run with an L2 sequencer-uptime feed (up for two hours at the start).
+    function _sequencerFeed() internal override returns (address) {
+        seq = new MockAggregator(0);
+        seq.set(0, block.timestamp - 2 hours);
+        return address(seq);
+    }
 
     function setUp() public override {
         super.setUp();
         Round3ExtHandler h =
-            new Round3ExtHandler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian);
+            new Round3ExtHandler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian, seq);
         handler = h;
         targetContract(address(h));
-        bytes4[] memory s = new bytes4[](34);
+        bytes4[] memory s = new bytes4[](37);
         s[0] = Handler.deposit.selector;
         s[1] = Handler.deposit.selector;
         s[2] = Handler.withdraw.selector;
@@ -186,6 +191,9 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
         s[31] = Handler.removeLiquidity.selector;
         s[32] = Round3ExtHandler.outOfBounds.selector;
         s[33] = Round3ExtHandler.backInBounds.selector;
+        s[34] = Handler.sequencer.selector;
+        s[35] = Handler.sequencer.selector;
+        s[36] = Handler.closeLiquidatable.selector;
         targetSelector(FuzzSelector({addr: address(h), selectors: s}));
     }
 
@@ -327,11 +335,21 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
             " deadExits=",
             vm.toString(h.deadExits()),
             " outOfBounds=",
-            vm.toString(h.outOfBoundsMoves())
+            vm.toString(h.outOfBoundsMoves()),
+            " closeLiqs=",
+            vm.toString(handler.closeLiquidations()),
+            " exitLiqs=",
+            vm.toString(handler.forcedExitLiquidations()),
+            " seqDown=",
+            vm.toString(handler.sequencerDowns()),
+            " seqGrace=",
+            vm.toString(handler.sequencerGraces())
         );
         if (vm.envOr("VELUM_INV_STATS", false)) vm.writeLine("deployments/inv-stats.txt", string.concat("ext ", line));
         emit log_named_string("ext run", line);
         handler.windDown();
+        assertFalse(handler.liquidationOverpaid(), "wind-down close overpaid");
+        assertFalse(handler.immediateCoverPaid(), "wind-down close paid cover");
         assertEq(perps.totalMargin(), 0, "margins left");
         assertEq(perps.coverReserved(), 0, "cover left reserved");
         for (uint256 i; i < handler.claimEpochCount(); ++i) {

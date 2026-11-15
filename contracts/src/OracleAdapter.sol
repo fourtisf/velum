@@ -22,13 +22,28 @@ import {FixedMath} from "./libraries/FixedMath.sol";
 /// "lagging": perps refuses opens, closes, forced exits and margin removal on it, but liquidations and funding
 /// go on at the effective price.
 ///
+/// The clock (final audit FA-01). Before, every recording set `lastAt` to now, so anyone could throw away the
+/// allowance the next source value would have had (a `poke` every second kept prices lagging half the time). Now:
+///   - a recording that sees the same source value at an unchanged price (anyone's `poke` or `read`: trades,
+///     keepers, indexers) writes nothing, exactly as if it had not happened;
+///   - a recording that moves the price advances `lastAt` from the start of the allowance it used by the whole
+///     seconds the move needed (rounded up), never past now: a move clamped at the limit uses everything up to
+///     now, as before, and a catch-up that needed less leaves the rest to the next recording;
+///   - a new source value (updatedAt > lastValidAt) also sets `lastAt` to at least its timestamp.
+/// The limit per recording is unchanged and time is never credited twice: over any run of recordings the price
+/// stays within (1 + 1/6000)^t of the price set when the clock started t seconds earlier, and no recording moves
+/// it more than 5%. Because every source value sets the clock to at least its timestamp and a read needs a source
+/// value at most maxAge old, at any successful read the clock started at most maxAge earlier (10 s for opens and
+/// margin removal, 60 s otherwise); guarantees measured from an open shift by at most those 10 s.
+///
 /// Guarantees for a 5x pair (taker and maker margin 20%, maintenance 10%; test/audit/Round2PoC.t.sol):
 ///   - a side that is not liquidatable at a recorded price needs a 10% adverse move to reach zero: never
 ///     in one recording (at most 5%), and at least 9.5 minutes of recordings. Between its last
 ///     non-liquidatable recording and the first insolvent one there are always at least 60 s of fresh
 ///     prices at which it is liquidatable and solvent (9.5 minutes if the source reports every minute);
 ///   - no side of a pair opened at any non-lagging price can fall below zero within 12 minutes of the
-///     open, for every leverage, side and open spread the book allows (13.1 minutes at the worst spread);
+///     open, for every leverage, side and open spread the book allows (at the worst spread 13.1 minutes from the
+///     clock's start, 12.95 minutes when the open comes 10 s after it, FA-01);
 ///   - a compromised relay key moves a maker's claim by at most 5.5% of its margin per minute.
 ///
 /// Bounds (independent audit IA-06). Each token has fixed sanity bounds [minPrice, maxPrice]. A source answer
@@ -44,11 +59,21 @@ import {FixedMath} from "./libraries/FixedMath.sol";
 /// answer keeps the token alive). A failed, zero or malformed read only makes the price stale. A token is dead
 /// when no valid price was seen for DEAD_AFTER since max(lastValidAt, setup time).
 ///
+/// Live clock (FA-02, FA-03). `liveClock` is block time minus every gap of more than DEAD_AFTER between two
+/// consecutive recorded valid source times, and it stands still at the last valid time while such a gap is
+/// running. Perps accrues funding over live time only, so a silence long enough to make the token dead is never
+/// charged, whether the position leaves by a dead-oracle forced exit or stays open until prices return.
+///
 /// Sequencer (F-05, IA-07). With Chainlink sources the deployer must give the L2 sequencer-uptime feed;
 /// `sequencerStatus()` reports whether the sequencer is up and whether it is past SEQUENCER_GRACE since it came
 /// back ("ready"). Perps blocks opens and margin removal until ready; liquidations wait while it is down and,
 /// during the grace hour, only go ahead for positions below half the maintenance margin. Zero sequencer feed
 /// means relay sources only (testnet): always up and ready.
+///
+/// Feed reads (FA-07). Every feed is read with a plain staticcall and a length check, so a feed without code or
+/// with malformed return data reads as failed (price stale, sequencer down) instead of reverting, and `poke`
+/// never reverts. `setup` refuses a price feed or sequencer feed that does not answer `latestRoundData` with five
+/// words, and a sequencer feed whose answer is neither 0 (up) nor 1 (down).
 contract OracleAdapter is IOracleAdapter {
     using FixedMath for uint256;
 
@@ -93,6 +118,9 @@ contract OracleAdapter is IOracleAdapter {
     mapping(address token => Source) public sources;
     mapping(address token => Relayed) public relayed;
     mapping(address token => Band) public bands;
+    /// @notice Total length of the gaps of more than DEAD_AFTER between consecutive recorded valid source times
+    ///         (FA-02, FA-03): the time `liveClock` leaves out.
+    mapping(address token => uint256) public deadTime;
 
     event Setup(address[] tokens, address[] feeds, address relayer, address sequencerFeed);
     /// @param price The price the relayer pushed. @param effectivePrice The rate-limited price now reported.
@@ -104,6 +132,9 @@ contract OracleAdapter is IOracleAdapter {
     error ZeroAddress();
     error BadBounds(address token);
     error BadFeedDecimals(address feed);
+    /// @notice A feed without code or without a well-formed `latestRoundData`, or a sequencer feed whose answer is
+    ///         neither 0 (up) nor 1 (down) (FA-07).
+    error BadFeed(address feed);
     error SequencerFeedRequired();
     error NotRelayer();
     error NotRelaySourced(address token);
@@ -138,6 +169,11 @@ contract OracleAdapter is IOracleAdapter {
         relayer = relayer_;
         sequencerFeed = sequencerFeed_;
         setupAt = block.timestamp;
+        if (sequencerFeed_ != address(0)) {
+            // FA-07: an unreadable sequencer feed would read as "down" for good (nothing can be changed later).
+            (bool ok, int256 answer,,) = _latestRound(sequencerFeed_);
+            if (!ok || (answer != 0 && answer != 1)) revert BadFeed(sequencerFeed_);
+        }
         for (uint256 i; i < tokens.length; ++i) {
             address token = tokens[i];
             if (token == address(0)) revert ZeroAddress();
@@ -145,6 +181,8 @@ contract OracleAdapter is IOracleAdapter {
             uint8 dec;
             if (feeds[i] != address(0)) {
                 if (sequencerFeed_ == address(0)) revert SequencerFeedRequired();
+                (bool ok,,,) = _latestRound(feeds[i]);
+                if (!ok) revert BadFeed(feeds[i]);
                 dec = IAggregatorV3(feeds[i]).decimals();
                 if (dec > 18) revert BadFeedDecimals(feeds[i]);
             } else if (relayer_ == address(0)) {
@@ -237,6 +275,23 @@ contract OracleAdapter is IOracleAdapter {
     }
 
     /// @inheritdoc IOracleAdapter
+    function liveClock(address token) external view returns (uint256) {
+        uint256 validAt = bands[token].lastValidAt;
+        uint256 dead = deadTime[token];
+        // A valid source reading nobody recorded yet counts as recording it would.
+        (uint256 raw, uint256 at) = _source(token);
+        if (raw != 0 && at > validAt) {
+            dead += _deadGap(validAt, at);
+            validAt = at;
+        }
+        uint256 t = block.timestamp;
+        // A gap already longer than DEAD_AFTER: the clock stands at the last valid time.
+        if (validAt != 0 && t - validAt > DEAD_AFTER) t = validAt;
+        // `dead` sums gaps between valid times, all of them before validAt <= t.
+        return t - dead;
+    }
+
+    /// @inheritdoc IOracleAdapter
     function isDead(address token) external view returns (bool) {
         if (!sources[token].configured) return true;
         uint256 alive = bands[token].lastValidAt;
@@ -251,13 +306,11 @@ contract OracleAdapter is IOracleAdapter {
     function sequencerStatus() public view returns (bool up, bool ready) {
         address feed = sequencerFeed;
         if (feed == address(0)) return (true, true);
-        try IAggregatorV3(feed).latestRoundData() returns (uint80, int256 answer, uint256 startedAt, uint256, uint80) {
-            // answer 0 = up; startedAt = when the current status began (0 = feed not initialised).
-            if (answer != 0 || startedAt == 0 || startedAt > block.timestamp) return (false, false);
-            return (true, block.timestamp - startedAt > SEQUENCER_GRACE);
-        } catch {
-            return (false, false);
-        }
+        (bool ok, int256 answer, uint256 startedAt,) = _latestRound(feed);
+        // answer 0 = up; startedAt = when the current status began (0 = feed not initialised). An unreadable or
+        // malformed feed reads as down and never reverts (FA-07).
+        if (!ok || answer != 0 || startedAt == 0 || startedAt > block.timestamp) return (false, false);
+        return (true, block.timestamp - startedAt > SEQUENCER_GRACE);
     }
 
     /// @inheritdoc IOracleAdapter
@@ -268,21 +321,60 @@ contract OracleAdapter is IOracleAdapter {
 
     // ---------------------------------------------------------------- internals
 
-    /// @dev Record a valid source reading: clamp it to the bounds, rate-limit it against the last recorded
-    ///      effective price, remember the result and the time, and advance lastValidAt.
+    /// @dev Record a valid source reading: clamp it to the bounds and rate-limit it against the last recorded
+    ///      effective price. The result and the clock are stored only when the reading brings a new source value or
+    ///      changes the effective price (FA-01); otherwise nothing is written, exactly as if there had been no
+    ///      recording. A new source value also advances lastValidAt and adds a gap of more than DEAD_AFTER since
+    ///      the previous one to deadTime (FA-02, FA-03).
     function _record(address token, Source memory s, uint256 raw, uint256 updatedAt)
         internal
         returns (uint256 effective)
     {
         Band storage b = bands[token];
-        effective = _limit(b, _clamp(s, raw));
-        // effective lies between the clamped source price and the last price, both within the uint128 bounds.
-        // forge-lint: disable-next-line(unsafe-typecast)
-        b.last = uint128(effective);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        b.lastAt = uint64(block.timestamp);
-        // forge-lint: disable-next-line(unsafe-typecast)
-        if (updatedAt > b.lastValidAt) b.lastValidAt = uint64(updatedAt);
+        Band memory old = b;
+        effective = _limit(old, _clamp(s, raw));
+        bool newSource = updatedAt > old.lastValidAt;
+        if (newSource || effective != old.last) {
+            // effective lies between the clamped source price and the last price, both within the uint128 bounds;
+            // the clock is at most block.timestamp.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            b.last = uint128(effective);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            b.lastAt = uint64(_clockAfter(old, effective, newSource ? updatedAt : 0));
+        }
+        if (newSource) {
+            uint256 gap = _deadGap(old.lastValidAt, updatedAt);
+            if (gap != 0) deadTime[token] += gap;
+            // Source timestamps are at most block.timestamp (relay: the push time; feeds: checked in _source).
+            // forge-lint: disable-next-line(unsafe-typecast)
+            b.lastValidAt = uint64(updatedAt);
+        }
+    }
+
+    /// @dev The rate-limit clock after a recording moved the price from `b.last` to `effective` (FA-01): the start
+    ///      of the allowance `_limit` used (lastAt, or now - MOVE_WINDOW if that is later) plus the whole seconds the
+    ///      move needed at 1/6000 of `b.last` per second, rounded up; for a new source value at least its timestamp
+    ///      `sourceAt` (0 otherwise). A move clamped at the limit uses all the time up to now, as before. A move that
+    ///      reached its target sooner leaves the rest of the allowance to the next recording instead of discarding
+    ///      it, so recording a caught-up price (a poke just before the next push) costs that push nothing. The time
+    ///      is never credited twice: every move of m seconds' worth advances the clock by at least m, so over any
+    ///      run of recordings the price stays within (1 + 1/6000)^t of the price set at the clock's start, and one
+    ///      recording still moves it at most 5%. The first price ever starts the clock at now.
+    function _clockAfter(Band memory b, uint256 effective, uint256 sourceAt) internal view returns (uint256 at) {
+        uint256 last = b.last;
+        if (last == 0) return block.timestamp;
+        at = block.timestamp - b.lastAt > MOVE_WINDOW ? block.timestamp - MOVE_WINDOW : b.lastAt;
+        uint256 moved = effective > last ? effective - last : last - effective;
+        // moved <= last x dt / 6000 (the allowance _limit gave), so the seconds used are at most dt: at <= now.
+        if (moved != 0) at += moved.mulDivUp(BPS * MOVE_WINDOW, last * MAX_MOVE_BPS);
+        if (sourceAt > at) at = sourceAt;
+    }
+
+    /// @dev The dead time between two consecutive valid source times: all of it when it is longer than DEAD_AFTER
+    ///      (the token counted as dead in between), else none; none before the first valid price (`from` = 0).
+    function _deadGap(uint256 from, uint256 to) internal pure returns (uint256) {
+        if (from == 0 || to - from <= DEAD_AFTER) return 0;
+        return to - from;
     }
 
     /// @dev The effective price a recording of `target` (a price within the bounds) would produce now: `target`
@@ -320,13 +412,32 @@ contract OracleAdapter is IOracleAdapter {
             Relayed memory r = relayed[token];
             return (r.price, r.updatedAt);
         }
-        try IAggregatorV3(s.feed).latestRoundData() returns (uint80, int256 answer, uint256, uint256 at, uint80) {
-            if (answer <= 0 || FixedMath.toUint(answer) > type(uint128).max || at == 0 || at > block.timestamp) {
-                return (0, 0);
-            }
-            return (FixedMath.toUint(answer) * 10 ** (18 - s.feedDecimals), at);
-        } catch {
+        (bool ok, int256 answer,, uint256 at) = _latestRound(s.feed);
+        if (!ok || answer <= 0 || FixedMath.toUint(answer) > type(uint128).max || at == 0 || at > block.timestamp) {
             return (0, 0);
+        }
+        return (FixedMath.toUint(answer) * 10 ** (18 - s.feedDecimals), at);
+    }
+
+    /// @dev `latestRoundData()` of `feed` through a plain staticcall that copies back at most five words (FA-07).
+    ///      `ok` is false when the call fails or returns fewer than five words (no code, wrong interface), so a
+    ///      broken feed never reverts the caller. roundId and answeredInRound are not used.
+    function _latestRound(address feed)
+        internal
+        view
+        returns (bool ok, int256 answer, uint256 startedAt, uint256 updatedAt)
+    {
+        bytes4 selector = IAggregatorV3.latestRoundData.selector;
+        assembly ("memory-safe") {
+            let ptr := mload(0x40)
+            mstore(ptr, selector)
+            let success := staticcall(gas(), feed, ptr, 4, ptr, 0xa0)
+            if and(success, iszero(lt(returndatasize(), 0xa0))) {
+                ok := 1
+                answer := mload(add(ptr, 0x20))
+                startedAt := mload(add(ptr, 0x40))
+                updatedAt := mload(add(ptr, 0x60))
+            }
         }
     }
 }

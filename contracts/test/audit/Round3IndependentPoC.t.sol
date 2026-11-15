@@ -108,6 +108,49 @@ contract Round3IndependentPoC is VelumBase, PerpsRef {
         _assertPerpsSolvent();
     }
 
+    /// @notice IA-01 with a moving price (final audit: the regressions only used an unchanged price). The price walks
+    ///         +6% during the week and is still moving when the exit is settled (pushes in the last two seconds, inside
+    ///         the rate limit); the taker's forced exit settles exactly like the plain close the taker could send at
+    ///         that moment: same exit (oracle - committed close spread), same fee, same funding, whoever settles.
+    function test_IA01_takerForcedExitEqualsPlainCloseAtAMovingPrice_fixed() public {
+        uint256 offerId = _postOffer(10_000 * USD, 10_000 * USD, 2, 200); // 2% close spread
+        _fund(alice, usdg, 2000 * USD);
+        _fund(carol, usdg, 2000 * USD);
+        uint256 id = _open(alice, offerId, true, 1000 * USD, 4); // 2x long
+        _open(carol, offerId, false, 500 * USD, 4); // some skew so funding is not zero
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        perps.requestForcedExit{value: 0.001 ether}(id);
+        vm.warp(block.timestamp + 7 days);
+        _movePriceTo(address(tsla), (TSLA_PRICE * 10_600) / 10_000);
+        uint256 px = _effectivePrice(address(tsla));
+        _pushPrice(address(tsla), (px * 10_001) / 10_000); // still moving: +0.01% in one second...
+        _pushPrice(address(tsla), (px * 10_002) / 10_000); // ...and again, inside 1/6000 per second
+        assertFalse(oracle.lagging(address(tsla)), "settled at a fresh, non-lagging, moving price");
+        uint256 settlePx = _effectivePrice(address(tsla));
+        assertGt(settlePx, (TSLA_PRICE * 10_600) / 10_000);
+
+        uint256 snap = vm.snapshotState();
+        Outcome memory b = _balances();
+        vm.prank(alice);
+        perps.close(id, 1);
+        Outcome memory viaClose = _since(b);
+        vm.revertToState(snap);
+
+        PerpsBase.Position memory p = perps.getPosition(id);
+        b = _balances();
+        vm.prank(carol);
+        perps.settleForcedExit(id);
+        Outcome memory viaForced = _since(b);
+        assertEq(viaForced.taker, viaClose.taker, "taker: exactly a plain close at the moving price");
+        assertEq(viaForced.maker, viaClose.maker, "maker");
+        assertEq(viaForced.insurance, viaClose.insurance, "close fee");
+        uint256 exit = _refExit(settlePx, true, 200);
+        assertEq(viaForced.insurance, _ceilDiv(p.qty * exit * 6, SCALE * 10_000), "fee on the spread-adjusted exit");
+        assertGt(viaForced.taker, 1000 * USD / 2, "a winning long: margin plus the move, less spread and fee");
+        _assertPerpsSolvent();
+    }
+
     /// @notice IA-01, the other direction: a maker's forced exit keeps the no-spread, no-fee settlement. Against the
     ///         plain close (the only exit the taker controls) the maker gives up its close spread and the taker
     ///         pays nothing extra, so the maker cannot use it to escape anything it owes; the pool is the same.
@@ -535,6 +578,47 @@ contract Round3ChainlinkPoC is Test {
         assertEq(aliceBack, uint256(claim) - penalty, "claim minus the penalty at the effective price");
         assertLt(aliceBack, 100 * USD, "was > 190 USDG (entry-price refund)");
         assertEq(perps.coverClaims(perps.currentCoverEpoch(), bob), 0, "no shortfall");
+    }
+
+    /// @notice IA-01 at the bound (final audit): a forced exit the TAKER requested also settles at the bound once the
+    ///         source stays outside it (IA-06), and it still costs what a plain close at that price would (the committed
+    ///         close spread and the 0.06% fee on the exit). A plain close itself is refused there (lagging price).
+    function test_IA01_takerForcedExitAtTheBoundPaysSpreadAndFee_fixed() public {
+        _fund(bob, 10_000 * USD);
+        vm.prank(bob);
+        uint256 offerId =
+            book.postOffer(address(tsla), 10_000 * USD, 10_000 * USD, 2, 100, uint64(block.timestamp + 60 days)); // 1%
+        _fund(alice, 2000 * USD);
+        vm.prank(alice);
+        uint256 id = perps.open(offerId, address(tsla), true, 1000 * USD, 2, type(uint256).max); // 1x long
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        perps.requestForcedExit{value: 0.001 ether}(id); // the taker's request
+        _feed(7 days, 50e8); // half the 100 USDG floor
+        for (uint256 i; i < 60 && !oracle.atBound(address(tsla)); ++i) {
+            _feed(5 minutes, 50e8);
+            assertTrue(oracle.poke(address(tsla)));
+        }
+        assertTrue(oracle.atBound(address(tsla)));
+        assertEq(oracle.price(address(tsla)), 100e18);
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
+        perps.close(id, 1);
+
+        perps.advanceFunding(address(tsla));
+        PerpsBase.Position memory p = perps.getPosition(id);
+        uint256 exit = (100e18 * (10_000 - 100)) / 10_000; // the bound less the 1% committed close spread
+        int256 gross = perps.takerClaimAt(id, exit); // margin + pnl at the exit - funding
+        uint256 fee = (p.qty * exit * 6 + 1e30 * 10_000 - 1) / (1e30 * 10_000);
+        uint256 before = vault.balanceOf(alice, address(usdg));
+        uint256 insBefore = perps.insurance();
+        vm.expectEmit(address(perps));
+        emit PerpsBase.ForcedExitSettled(id, 100e18, false);
+        perps.settleForcedExit(id);
+        assertGt(gross, int256(fee));
+        assertEq(vault.balanceOf(alice, address(usdg)) - before, uint256(gross) - fee, "spread and fee, at the bound");
+        assertEq(perps.insurance() - insBefore, fee, "close fee to insurance");
+        assertFalse(perps.getPosition(id).open);
     }
 
     /// @notice IA-06, settling at the bound: a 1x long cannot be liquidated at the floor, and a source that stays

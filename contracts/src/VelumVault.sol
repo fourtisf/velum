@@ -88,9 +88,7 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     function deposit(address token, uint256 amount, address to) external nonReentrant returns (uint256 received) {
         if (!locked) revert NotSetUp();
         if (!isToken[token]) revert UnknownToken(token);
-        if (to == address(0)) revert ZeroAddress();
-        if (isModule[to]) revert ModuleRecipient(to);
-        if (to == address(this) || isToken[to] || isBlockedRecipient[to]) revert ProtocolRecipient(to);
+        _checkRecipient(to);
         if (amount == 0) revert ZeroAmount();
         uint256 before = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -101,11 +99,12 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
         emit Deposited(msg.sender, to, token, received);
     }
 
-    /// @notice Withdraw from the caller's own internal balance to any address except the vault itself
-    ///         (tokens sent there would be held without any internal balance, stranded for good).
+    /// @notice Withdraw from the caller's own internal balance. The recipient checks are the deposit's (final
+    ///         audit FA-06): not a module, the vault itself, a listed token or a blocked protocol address. None of
+    ///         them can move the ERC-20s it receives (the vault would hold them without an internal balance), so the
+    ///         tokens would be stranded for good.
     function withdraw(address token, uint256 amount, address to) external nonReentrant {
-        if (to == address(0)) revert ZeroAddress();
-        if (to == address(this)) revert ProtocolRecipient(to);
+        _checkRecipient(to);
         if (amount == 0) revert ZeroAmount();
         uint256 bal = balanceOf[msg.sender][token];
         if (bal < amount) revert InsufficientBalance(msg.sender, token, bal, amount);
@@ -123,6 +122,14 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
         if (!isModule[module]) revert NotModule(module);
         approved[msg.sender][module] = ok;
         emit ModuleApproval(msg.sender, module, ok);
+    }
+
+    /// @dev Refuse a recipient that could never use what it receives: the zero address, a module, the vault itself,
+    ///      a listed token or a blocked protocol address (deposits: I-1, R2-05; withdrawals: FA-06).
+    function _checkRecipient(address to) internal view {
+        if (to == address(0)) revert ZeroAddress();
+        if (isModule[to]) revert ModuleRecipient(to);
+        if (to == address(this) || isToken[to] || isBlockedRecipient[to]) revert ProtocolRecipient(to);
     }
 
     /// @inheritdoc IVelumVault

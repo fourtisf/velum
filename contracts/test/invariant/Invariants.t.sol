@@ -6,24 +6,34 @@ import {VelumBase} from "../Base.t.sol";
 import {Handler} from "./Handler.sol";
 import {PerpsBase} from "../../src/perps/PerpsBase.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {MockAggregator} from "../mocks/MockAggregator.sol";
 
 /// @notice Protocol-wide invariants (docs/04 §1):
 ///   1. No token leaves the vault except through withdraw.
 ///   2. Sum of internal balances (users + pools + offers + margins + insurance) == vault holdings.
 ///   3. A liquidation never pays out more than the posted margins plus the insurance fund; shortfall
 ///      cover is never paid at liquidation (only the capped keeper top-up), and one epoch's top-ups plus
-///      cover never exceed 10% of the fund at the epoch's first draw (audit F-02, R2-02, R2-03).
+///      cover never exceed 10% of the fund at the epoch's first draw (audit F-02, R2-02, R2-03). Checked for
+///      liquidations through liquidate, close and settleForcedExit (final audit).
 ///   4. Closing the whole book returns every unit: nothing is stuck and nothing is created.
 ///   5. Cover bookkeeping: reserved cover equals the unpaid budgets of epochs with unpaid claims,
 ///      outstanding claims equal the claims recorded, and the guardian never moves funds (audit F-07).
+/// The oracle has an L2 sequencer-uptime feed that the handler moves between down, grace and up (final audit).
 contract InvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
+    MockAggregator internal seq;
+
+    function _sequencerFeed() internal override returns (address) {
+        seq = new MockAggregator(0);
+        seq.set(0, block.timestamp - 2 hours);
+        return address(seq);
+    }
 
     function setUp() public override {
         super.setUp();
-        handler = new Handler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian);
+        handler = new Handler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian, seq);
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](30);
+        bytes4[] memory selectors = new bytes4[](33);
         selectors[0] = Handler.deposit.selector;
         selectors[1] = Handler.deposit.selector; // weighted: more deposits
         selectors[2] = Handler.withdraw.selector;
@@ -54,6 +64,9 @@ contract InvariantsTest is StdInvariant, VelumBase {
         selectors[27] = Handler.openPosition.selector;
         selectors[28] = Handler.openPosition.selector;
         selectors[29] = Handler.liquidate.selector;
+        selectors[30] = Handler.sequencer.selector;
+        selectors[31] = Handler.sequencer.selector;
+        selectors[32] = Handler.closeLiquidatable.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -175,7 +188,15 @@ contract InvariantsTest is StdInvariant, VelumBase {
             " closeOnlyToggles=",
             vm.toString(handler.closeOnlyToggles()),
             " gaps=",
-            vm.toString(handler.gaps())
+            vm.toString(handler.gaps()),
+            " closeLiqs=",
+            vm.toString(handler.closeLiquidations()),
+            " exitLiqs=",
+            vm.toString(handler.forcedExitLiquidations()),
+            " seqDown=",
+            vm.toString(handler.sequencerDowns()),
+            " seqGrace=",
+            vm.toString(handler.sequencerGraces())
         );
         if (vm.envOr("VELUM_INV_STATS", false)) vm.writeLine("deployments/inv-stats.txt", line);
         emit log_named_string(
@@ -198,6 +219,8 @@ contract InvariantsTest is StdInvariant, VelumBase {
             )
         );
         handler.windDown();
+        assertFalse(handler.liquidationOverpaid(), "wind-down close overpaid");
+        assertFalse(handler.immediateCoverPaid(), "wind-down close paid cover");
         assertEq(perps.totalMargin(), 0, "margins left");
         assertEq(perps.coverReserved(), 0, "cover left reserved");
         for (uint256 i; i < handler.claimEpochCount(); ++i) {

@@ -260,21 +260,27 @@ contract AuditPoC is VelumBase {
     /// @notice F-04 regression: the relayer key pushed +10% eight times in 8 s to double the price and let an
     ///         accomplice take the maker's margin plus insurance. Now the reported price moves at most 1/6000
     ///         per second from the last recorded price (1% per minute, at most 5% per recording): after those
-    ///         8 s it has moved 0.13%, the maker is nowhere near liquidation, the accomplice cannot exit at the
+    ///         8 s it has moved 0.15%, the maker is nowhere near liquidation, the accomplice cannot exit at the
     ///         pushed price, and doubling takes over 69 minutes.
+    ///         Changed for FA-01 (final audit), with the same limit: the open's read sees the same source value at
+    ///         an unchanged price, so it no longer restarts the rate-limit clock. The 8 pushes are therefore measured
+    ///         from the setUp push one second before the open: 9 s of allowance, (1 + 1/6000)^9 = +0.150% (this
+    ///         assertion pinned the old timing, +0.13% = 8 s from the open). The bound itself is unchanged.
     function test_F04_fixed_relayerCannotDoublePriceQuickly() public {
         _seedInsurance(1000 * USD);
         uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
         _fund(mallory2, usdg, 1000 * USD);
         vm.prank(mallory2);
         uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, type(uint256).max);
+        (, uint64 clockStart,) = oracle.bands(address(tsla));
+        assertEq(clockStart, block.timestamp - 1, "the clock started at the setUp push, 1 s before the open");
         uint256 p = TSLA_PRICE;
         for (uint256 i; i < 8; ++i) {
             p = (p * 110) / 100;
             _pushPrice(address(tsla), p);
         }
         assertGt(p, 2 * TSLA_PRICE);
-        assertLe(_effectivePrice(address(tsla)), (TSLA_PRICE * 10_014) / 10_000, "+0.13% after 8 s");
+        assertLe(_effectivePrice(address(tsla)), (TSLA_PRICE * 10_016) / 10_000, "+0.15%: 9 s since the clock started");
         uint256 ins = perps.insurance();
         vm.prank(mallory2);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotLiquidatable.selector, id));

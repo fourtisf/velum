@@ -37,8 +37,8 @@ abstract contract PerpsBase is ReentrancyGuard {
     uint256 public constant FORCED_EXIT_BOND = 0.001 ether;
 
     // ---------------------------------------------------------------- audit hardening (2026-11)
-    /// @notice Opens (F-06) and margin removal (independent audit IA-03) need a price at most 10 s old;
-    ///         closes, liquidations, forced exits and funding 60 s.
+    /// @notice Opens (F-06), margin removal (independent audit IA-03) and forced-exit settlement (final audit
+    ///         FA-04) need a price at most 10 s old; closes, liquidations and funding 60 s.
     uint256 public constant OPEN_MAX_AGE = 10;
     uint256 public constant MAX_PRICE_AGE = 60;
     /// @notice Shortfall cover is paid per hourly epoch (F-02)...

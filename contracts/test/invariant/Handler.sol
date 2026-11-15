@@ -9,6 +9,8 @@ import {MakerBook} from "../../src/MakerBook.sol";
 import {PerpsMarkets} from "../../src/PerpsMarkets.sol";
 import {PerpsBase} from "../../src/perps/PerpsBase.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {MockAggregator} from "../mocks/MockAggregator.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 /// @notice Drives random but valid-ish protocol usage for the invariant suite and keeps ghost totals.
 contract Handler is Test {
@@ -21,6 +23,13 @@ contract Handler is Test {
     MockERC20[2] public stocks;
     address public relayer;
     address public guardian;
+    /// @dev The oracle's L2 sequencer-uptime feed (final audit: the suites had none).
+    MockAggregator public sequencerFeed;
+    uint256 public sequencerDowns;
+    uint256 public sequencerGraces;
+    /// @dev Liquidations reached through close (taker as liquidator) and through settleForcedExit.
+    uint256 public closeLiquidations;
+    uint256 public forcedExitLiquidations;
 
     address[] public actors;
     address public liquidator = makeAddr("inv-liquidator");
@@ -65,8 +74,10 @@ contract Handler is Test {
         MockERC20 s0,
         MockERC20 s1,
         address relayer_,
-        address guardian_
+        address guardian_,
+        MockAggregator sequencerFeed_
     ) {
+        sequencerFeed = sequencerFeed_;
         vault = vault_;
         oracle = oracle_;
         pools = pools_;
@@ -199,7 +210,7 @@ contract Handler is Test {
         s = bound(s, 1e15, sb);
         u = bound(u, 1e6, ub);
         vm.prank(a);
-        try pools.addLiquidity(address(st), s, u, 0, block.timestamp) {} catch {}
+        try pools.addLiquidity(address(st), s, u, 1, block.timestamp) {} catch {}
     }
 
     function removeLiquidity(uint256 actorSeed, uint256 stockSeed, uint256 pct) external {
@@ -210,7 +221,7 @@ contract Handler is Test {
         uint256 amount = (sh * bound(pct, 1, 100)) / 100;
         if (amount == 0) return;
         vm.prank(a);
-        try pools.removeLiquidity(st, amount, 0, 0, block.timestamp) {} catch {}
+        try pools.removeLiquidity(st, amount, 1, 1, block.timestamp) {} catch {}
     }
 
     function swap(uint256 actorSeed, uint256 inSeed, uint256 outSeed, uint256 amount) external {
@@ -222,7 +233,7 @@ contract Handler is Test {
         if (bal == 0) return;
         amount = bound(amount, 1, bal);
         vm.prank(a);
-        try pools.swap(address(tin), address(tout), amount, 0, block.timestamp) {} catch {}
+        try pools.swap(address(tin), address(tout), amount, 1, block.timestamp) {} catch {}
     }
 
     // ------------------------------------------------------------ makers
@@ -306,17 +317,76 @@ contract Handler is Test {
         if (qtyCap < maxSize) maxSize = qtyCap;
     }
 
+    /// @dev USDG balances of everyone a settlement can pay, and the fund, before it.
+    struct Payees {
+        uint256 taker;
+        uint256 maker;
+        uint256 caller;
+        uint256 insurance;
+    }
+
+    function _payees(PerpsBase.Position memory p, address caller) internal view returns (Payees memory b) {
+        b = Payees(
+            vault.balanceOf(p.taker, address(usdg)),
+            vault.balanceOf(p.maker, address(usdg)),
+            caller == p.taker ? 0 : vault.balanceOf(caller, address(usdg)),
+            perps.insurance()
+        );
+    }
+
+    /// @dev Invariant 3 for any settlement (liquidate, close, settleForcedExit): what left the position's pool to the
+    ///      taker, maker and caller is at most the pool plus the fund, and at most the pool plus the capped keeper
+    ///      top-up (cover is never paid at settlement). Counts the Liquidated events in `logs`.
+    function _checkPayout(PerpsBase.Position memory p, address caller, Payees memory b, Vm.Log[] memory logs)
+        internal
+        returns (bool liquidated)
+    {
+        uint256 pool = p.takerMargin + p.makerMargin;
+        uint256 paid =
+            (vault.balanceOf(p.taker, address(usdg)) - b.taker) + (vault.balanceOf(p.maker, address(usdg)) - b.maker);
+        if (caller != p.taker) paid += vault.balanceOf(caller, address(usdg)) - b.caller;
+        if (paid > pool + b.insurance) liquidationOverpaid = true;
+        if (paid > pool + perps.keeperRewardCap()) immediateCoverPaid = true;
+        bytes32 sig = PerpsBase.Liquidated.selector;
+        for (uint256 j; j < logs.length; ++j) {
+            if (logs[j].emitter == address(perps) && logs[j].topics[0] == sig) liquidated = true;
+        }
+    }
+
     function closePosition(uint256 idx) external {
         if (positionIds.length == 0) return;
         uint256 id = positionIds[idx % positionIds.length];
         PerpsBase.Position memory p = perps.getPosition(id);
         if (!p.open) return;
         bool capWasSet = _capSet();
+        Payees memory b = _payees(p, p.taker);
+        vm.recordLogs();
         vm.prank(p.taker);
         try perps.close(id, p.isLong ? 1 : type(uint256).max) {
             closes++;
+            if (_checkPayout(p, p.taker, b, vm.getRecordedLogs())) closeLiquidations++;
             _trackClaims(p, capWasSet);
         } catch {}
+    }
+
+    /// @dev The taker of the first liquidatable position from `idx` closes it: the close settles as a liquidation
+    ///      with the taker as liquidator (F-12), or as a plain close when the sequencer rule forbids the liquidation.
+    function closeLiquidatable(uint256 idx) external {
+        uint256 n = positionIds.length;
+        if (n == 0) return;
+        uint256 start = idx % n;
+        for (uint256 j; j < n; ++j) {
+            uint256 id = positionIds[(start + j) % n];
+            PerpsBase.Position memory p = perps.getPosition(id);
+            if (!p.open) continue;
+            try perps.isLiquidatable(id) returns (bool yes) {
+                if (!yes) continue;
+            } catch {
+                continue;
+            }
+            this.closePosition((start + j) % n);
+            return;
+        }
     }
 
     function addMargin(uint256 idx, uint256 amount, bool makerSide) external {
@@ -349,20 +419,29 @@ contract Handler is Test {
     }
 
     function _liquidate(uint256 id, PerpsBase.Position memory p) internal {
-        uint256 pool = p.takerMargin + p.makerMargin;
-        uint256 insBefore = perps.insurance();
-        uint256 tb = vault.balanceOf(p.taker, address(usdg));
-        uint256 mb = vault.balanceOf(p.maker, address(usdg));
-        uint256 lb = vault.balanceOf(liquidator, address(usdg));
         bool capWasSet = _capSet();
+        Payees memory b = _payees(p, liquidator);
         vm.prank(liquidator);
         perps.liquidate(id);
         liquidations++;
-        uint256 paid = (vault.balanceOf(p.taker, address(usdg)) - tb) + (vault.balanceOf(p.maker, address(usdg)) - mb)
-            + (vault.balanceOf(liquidator, address(usdg)) - lb);
-        if (paid > pool + insBefore) liquidationOverpaid = true;
-        if (paid > pool + perps.keeperRewardCap()) immediateCoverPaid = true;
+        _checkPayout(p, liquidator, b, new Vm.Log[](0));
         _trackClaims(p, capWasSet);
+    }
+
+    /// @dev Settle `id`'s matured forced exit as the keeper, checking the payout like any liquidation (a liquidatable
+    ///      position settles as one, F-08).
+    function _settleForcedExit(uint256 id) internal returns (bool settled) {
+        PerpsBase.Position memory p = perps.getPosition(id);
+        bool capWasSet = _capSet();
+        Payees memory b = _payees(p, liquidator);
+        vm.recordLogs();
+        vm.prank(liquidator); // a liquidatable position settles as a liquidation: reward to the keeper
+        try perps.settleForcedExit(id) {
+            settled = true;
+            forcedExits++;
+            if (_checkPayout(p, liquidator, b, vm.getRecordedLogs())) forcedExitLiquidations++;
+            _trackClaims(p, capWasSet);
+        } catch {}
     }
 
     function requestForcedExit(uint256 idx, bool byMaker) external {
@@ -381,12 +460,24 @@ contract Handler is Test {
         for (uint256 i; i < positionIds.length; ++i) {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open || p.exitRequestedAt == 0) continue;
-            bool capWasSet = _capSet();
-            vm.prank(liquidator); // a liquidatable position settles as a liquidation: reward to the keeper
-            try perps.settleForcedExit(positionIds[i]) {
-                forcedExits++;
-                _trackClaims(p, capWasSet);
-            } catch {}
+            _settleForcedExit(positionIds[i]);
+        }
+    }
+
+    /// @dev Move the L2 sequencer-uptime feed: down (1 in 12), just back up (grace hour, 1 in 12), or up for two hours.
+    ///      While it is down nothing is liquidated or opened; during grace only positions below MM / 2 are liquidated
+    ///      (IA-07), and closes of liquidatable positions settle as plain closes when the liquidation is not allowed.
+    function sequencer(uint256 seed) external {
+        if (address(sequencerFeed) == address(0)) return;
+        uint256 k = seed % 12;
+        if (k == 0) {
+            sequencerFeed.set(1, block.timestamp);
+            sequencerDowns++;
+        } else if (k == 1) {
+            sequencerFeed.set(0, block.timestamp);
+            sequencerGraces++;
+        } else {
+            sequencerFeed.set(0, block.timestamp - 2 hours);
         }
     }
 
@@ -491,8 +582,11 @@ contract Handler is Test {
             PerpsBase.Position memory p = perps.getPosition(positionIds[i]);
             if (!p.open) continue;
             bool capWasSet = _capSet();
+            Payees memory b = _payees(p, p.taker);
+            vm.recordLogs();
             vm.prank(p.taker);
             perps.close(positionIds[i], p.isLong ? 1 : type(uint256).max);
+            if (_checkPayout(p, p.taker, b, vm.getRecordedLogs())) closeLiquidations++;
             _trackClaims(p, capWasSet);
         }
         for (uint256 i; i < offerIds.length; ++i) {
@@ -506,7 +600,7 @@ contract Handler is Test {
                 uint256 sh = pools.sharesOf(address(stocks[s]), actors[a]);
                 if (sh == 0) continue;
                 vm.prank(actors[a]);
-                try pools.removeLiquidity(address(stocks[s]), sh, 0, 0, block.timestamp) {} catch {}
+                try pools.removeLiquidity(address(stocks[s]), sh, 1, 1, block.timestamp) {} catch {}
             }
         }
         // Pay every outstanding cover claim once its epoch has ended.

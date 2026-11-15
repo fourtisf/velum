@@ -274,23 +274,30 @@ contract OracleAdapterTest is VelumBase {
         assertTrue(lag);
     }
 
-    /// @notice Whatever mix of pushes, pokes and reads, at whatever spacing: every recording lies between the
-    ///         last price and the source price, within the per-recording limit, and over the whole run the
-    ///         price stays within (1 + 1/6000)^t of where it started.
+    /// @notice Whatever mix of pushes, pokes and reads, at whatever spacing (same second included): every recording
+    ///         lies between the last price and the source price, within the per-recording limit, and over the whole
+    ///         run the price stays within (1 + 1/6000)^t of where it started, t measured on the rate-limit clock
+    ///         (which never runs ahead of block time).
+    ///         Changed for FA-01 (final audit): this test pinned the old clock (`lastAt == block.timestamp` after every
+    ///         recording, which is what let anyone keep prices lagging). The clock now moves only when a recording
+    ///         brings a new source value or changes the price: from the start of the allowance used, by the whole
+    ///         seconds the move needed, and for a new source value at least to its time. The per-recording range
+    ///         check is unchanged; the run-wide bound is now checked against the clock, which is stricter than
+    ///         checking it against elapsed time.
     function testFuzz_limit_everyRecordingWithinLimit(uint256[12] memory ops) public {
         (uint256 start, uint256 t0) = _bandOf(oracle, address(tsla));
         for (uint256 i; i < 12; ++i) {
-            vm.warp(block.timestamp + bound(ops[i] >> 160, 1, 15 minutes));
+            vm.warp(block.timestamp + bound(ops[i] >> 160, 0, 15 minutes));
             (uint256 last, uint256 at) = _bandOf(oracle, address(tsla));
-            (uint256 lo, uint256 hi) = _range(last, at, block.timestamp);
             uint256 kind = (ops[i] >> 128) % 3;
             if (kind == 0) {
-                uint256 raw = bound(uint128(ops[i]), 1e18, 100_000e18);
+                (, uint64 pushedAt) = oracle.relayed(address(tsla));
+                if (pushedAt == block.timestamp) continue; // one push per second
                 vm.prank(relayer);
                 address[] memory t = new address[](1);
                 uint256[] memory v = new uint256[](1);
                 t[0] = address(tsla);
-                v[0] = raw;
+                v[0] = bound(uint128(ops[i]), 1e18, 100_000e18);
                 oracle.pushPrices(t, v);
             } else if (kind == 1) {
                 assertTrue(oracle.poke(address(tsla)));
@@ -299,19 +306,42 @@ contract OracleAdapterTest is VelumBase {
                 if (block.timestamp > updatedAt + 60) continue;
                 oracle.read(address(tsla), 60);
             }
-            (uint256 now_, uint256 nowAt) = _bandOf(oracle, address(tsla));
-            assertEq(nowAt, block.timestamp);
-            assertGe(now_, lo);
-            assertLe(now_, hi);
+            _checkRecording(last, at, kind == 0, start, t0);
         }
-        // compounding bound over the run: (1 + 1/6000)^t <= e^(t/6000)
-        uint256 elapsed = block.timestamp - t0;
-        uint256 p = _effectivePrice(address(tsla));
-        uint256 capHi = start;
-        for (uint256 s; s < elapsed; s += 60) {
-            capHi = (capHi * 10_101) / 10_000; // >= (1 + 1/6000)^60 per started minute
+    }
+
+    /// @dev After one recording (the band was `last`, `at` before it): per-recording range, clock rule, run-wide bound.
+    function _checkRecording(uint256 last, uint256 at, bool newSource, uint256 start, uint256 t0) internal view {
+        (uint256 lo, uint256 hi) = _range(last, at, block.timestamp);
+        (uint256 now_, uint256 nowAt) = _bandOf(oracle, address(tsla));
+        assertGe(now_, lo);
+        assertLe(now_, hi);
+        if (!newSource && now_ == last) {
+            assertEq(nowAt, at, "nothing new, nothing written");
+        } else {
+            uint256 from = block.timestamp - at > 5 minutes ? block.timestamp - 5 minutes : at;
+            uint256 moved = now_ > last ? now_ - last : last - now_;
+            uint256 expected = from + (moved * 6000 + last - 1) / last;
+            if (newSource && block.timestamp > expected) expected = block.timestamp;
+            assertEq(nowAt, expected, "clock: start of the allowance + whole seconds used");
         }
-        assertLe(p, capHi);
+        assertLe(nowAt, block.timestamp);
+        // run-wide, on the clock: up at most (1 + 1/6000)^c (fastest rise: a recording every second), down at least
+        // to 0.95^(c / 300) x (1 - (c % 300) / 6000) (fastest fall: as few recordings as possible)
+        uint256 c = nowAt - t0;
+        assertLe(now_, (start * _rpow(1e27 + 166_666_666_666_666_666_666_667, c, true)) / 1e27 + 1, "rise");
+        uint256 floorP = (start * _rpow(0.95e27, c / 300, false)) / 1e27;
+        assertGe(now_, (floorP * (6000 - (c % 300))) / 6000, "fall");
+    }
+
+    /// @dev x^n in 27-decimal fixed point, rounded up or down at every step.
+    function _rpow(uint256 x, uint256 n, bool up) internal pure returns (uint256 z) {
+        z = 1e27;
+        while (n != 0) {
+            if (n & 1 != 0) z = up ? (z * x + 1e27 - 1) / 1e27 : (z * x) / 1e27;
+            x = up ? (x * x + 1e27 - 1) / 1e27 : (x * x) / 1e27;
+            n >>= 1;
+        }
     }
 
     // ------------------------------------------------------------ freshness

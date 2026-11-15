@@ -54,6 +54,7 @@ contract PerpsMarkets is PerpsForcedExit {
             m.oiCap = oiCaps[i];
             // forge-lint: disable-next-line(unsafe-typecast)
             m.lastFundingUpdate = uint64(block.timestamp);
+            _fundingLiveAt[markets_[i]] = oracle.liveClock(markets_[i]); // FA-02: funding runs on the live clock
             marketList.push(markets_[i]);
         }
         emit Setup(markets_, oiCaps, guardian_);

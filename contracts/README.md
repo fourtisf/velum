@@ -10,12 +10,14 @@ with their licenses, in `lib/` (see `lib/VENDORED.md`: versions, upstream commit
 Phase 5 external audit of contracts and circuits.
 
 The November 2026 internal audit (`docs/audit/2026-11-internal.md`) findings F-01 to F-08, F-10 to F-13
-and I-1 are fixed or mitigated here, and so are the second-round findings R2-01 to R2-07 and the
-independent third-round findings IA-01 to IA-08, IA-10 and RC-02; see [Audit hardening](#audit-hardening-2026-11).
+and I-1 are fixed or mitigated here, and so are the second-round findings R2-01 to R2-07, the
+independent third-round findings IA-01 to IA-08, IA-10 and RC-02, and the final internal audit's FA-01 to FA-07;
+see [Audit hardening](#audit-hardening-2026-11).
 Each fix has a regression that runs the original exploit: `test_Fxx_fixed_*` in `test/audit/AuditPoC.t.sol`,
 `test_R2_xx*_fixed*` in `test/audit/Round2PoC.t.sol`, `test_IAxx_*_fixed` in
-`test/audit/Round3IndependentPoC.t.sol` (plus the extended invariants in `test/audit/Round3ExtInvariants.t.sol`
-and the config check in `test/ConfigConstants.t.sol`).
+`test/audit/Round3IndependentPoC.t.sol`, `test_FAxx_*_fixed` in `test/audit/FinalAuditPoC.t.sol` (plus the
+extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuzz tests in
+`test/audit/FinalAuditFuzz.t.sol` and the config check in `test/ConfigConstants.t.sol`).
 
 ## Architecture
 
@@ -32,9 +34,9 @@ and the config check in `test/ConfigConstants.t.sol`).
 
 | Contract | File | Responsibility |
 |---|---|---|
-| `VelumVault` | `src/VelumVault.sol` | Holds all tokens. `deposit` (fee-on-transfer safe) / `withdraw` from your own balance. A deposit may not be credited to an address that can never withdraw: a module, the vault itself, a listed token, or a protocol address fixed at setup (the oracle). A withdrawal may not be sent to the vault itself. Modules may only debit themselves or accounts that approved them. Tokens, modules and blocked recipients fixed by a one-time `setup`, then locked: no owner, no pause, no upgrade. |
-| `OracleAdapter` | `src/OracleAdapter.sol` | One source per token: Chainlink AggregatorV3 (decimals scaled to 1e18, answer > 0) guarded by the L2 sequencer-uptime feed, or a testnet price-relay address. Every source price is **clamped** to the token's fixed bounds and then **rate-limited** against the last recorded price: at most 5% × dt / 5 min per recording (dt capped at 5 minutes), so 1/6000 per second, 1% per minute, and never more than 5% at once. `price()` reverts if older than 60 s or missing; `read()` and `poke()` also record the reading (new last price, `lastValidAt`). The price is "lagging" when the reported price differs from the source (outside the rate limit or outside the bounds); `atBound()` says the source is outside the bounds and the reported price has reached the bound. Any positive answer is a valid reading, inside the bounds or not (IA-06); a failed or zero read is stale; `isDead()` only after 14 days without any valid price. `sequencerStatus()` returns (up, ready = up for more than the 1 h grace). Relay updates: at most one per token per second, any positive price up to `uint128`. |
-| `SpotPools` | `src/SpotPools.sol` | Constant-product Stock/USDG pools. A 30 bps fee stays in the pool, and a stock→stock swap routes through USDG in one call, paying two fees. LP shares are tracked internally. The first deposit locks 1,000 shares against inflation attacks. Reserves are state variables, so donations can't skew them. |
+| `VelumVault` | `src/VelumVault.sol` | Holds all tokens. `deposit` (fee-on-transfer safe) / `withdraw` from your own balance. Neither a deposit nor a withdrawal (FA-06) may go to an address that can never use it: a module, the vault itself, a listed token, or a protocol address fixed at setup (the oracle). Modules may only debit themselves or accounts that approved them. Tokens, modules and blocked recipients fixed by a one-time `setup`, then locked: no owner, no pause, no upgrade. |
+| `OracleAdapter` | `src/OracleAdapter.sol` | One source per token: Chainlink AggregatorV3 (decimals scaled to 1e18, answer > 0) guarded by the L2 sequencer-uptime feed, or a testnet price-relay address. Every source price is **clamped** to the token's fixed bounds and then **rate-limited** against the last recorded price: at most 5% × dt / 5 min per recording (dt capped at 5 minutes), so 1/6000 per second, 1% per minute, and never more than 5% at once. dt is measured on the rate-limit clock, which only moves when a recording brings a new source value or changes the price (FA-01, [below](#the-rate-limit-clock-fa-01)). `price()` reverts if older than 60 s or missing; `read()` and `poke()` also record the reading (new last price, `lastValidAt`). The price is "lagging" when the reported price differs from the source (outside the rate limit or outside the bounds); `atBound()` says the source is outside the bounds and the reported price has reached the bound. Any positive answer is a valid reading, inside the bounds or not (IA-06); a failed or zero read is stale; `isDead()` only after 14 days without any valid price. `liveClock()` is the clock funding runs on: block time minus every gap of more than 14 days between valid prices (FA-02, FA-03). `sequencerStatus()` returns (up, ready = up for more than the 1 h grace). Feeds are read with a length-checked staticcall: a feed without code or with malformed data reads as stale (sequencer: down) and `poke` never reverts; `setup` refuses such a feed, and a sequencer feed whose answer is not 0 or 1 (FA-07). Relay updates: at most one per token per second, any positive price up to `uint128`. |
+| `SpotPools` | `src/SpotPools.sol` | Constant-product Stock/USDG pools. A 30 bps fee stays in the pool, and a stock→stock swap routes through USDG in one call, paying two fees. LP shares are tracked internally. The first deposit locks 1,000 shares against inflation attacks. Reserves are state variables, so donations can't skew them. `minOut`, `minShares`, `minStock` and `minUsdg` must be non-zero (FA-05). |
 | `MakerBook` | `src/MakerBook.sol` | Standing offers: backing (USDG), largest single fill (≤ backing), open spread (2 bps to 5%) and close spread (≤ 5%), expiry. The maker can withdraw unused backing at any time. Only `PerpsMarkets` can allocate backing to a fill. Backing caps the maker's **margin**, not its exposure (see [Maker offers](#maker-offers)). |
 | `PerpsMarkets` | `src/PerpsMarkets.sol` + `src/perps/*` | Pairs between a taker and the maker of the chosen offer. Open, close (any time, no maker signature), add/remove margin, funding, liquidation, forced exit, an insurance fund with deferred pro-rata shortfall cover (`PerpsCover`), and an optional close-only switch held by a guardian. |
 
@@ -52,12 +54,12 @@ and the config check in `test/ConfigConstants.t.sol`).
 - **Claims:** the taker's claim is `takerMargin + pnl(P) − funding`, and the maker's claim is the rest of the pool. Claims always sum to the pool, so value is conserved and payouts are capped by posted margins.
 - **Close:** needs a price up to 60 s old that is **not lagging** (on every route) and a non-zero `priceLimit` (IA-10). A plain close settles at oracle ∓ the maker's committed close spread, with a 0.06% fee on exit notional: the taker gets `max(0, claim − fee)`, capped by the pool, and the maker gets the rest. If the position is liquidatable at that moment and the sequencer rule allows a liquidation (below), the close settles as a liquidation instead, with the taker as liquidator, so an insolvent counterparty's shortfall becomes a cover claim instead of being forfeited. That route uses the oracle price with no close spread and no fee; a losing taker pays the 1% liquidation penalty and gets the liquidator half (0.5% of notional) back. `priceLimit` is checked against the spread-adjusted exit before either route and does not account for the penalty.
 - **Margin:** anyone on the pair adds margin at any time. The taker removes margin down to the initial margin (20% of notional) at a non-lagging price at most **10 s** old, like an open (IA-03), with the sequencer past its grace period.
-- **Funding:** `rate = 0.01%/h × (longOI − shortOI) / (longOI + shortOI)`, using taker open interest. It accrues per second and is updated on every action and by anyone via `advanceFunding`. A dead-oracle forced exit accrues at the rate in force up to the token's last valid time (at the last recorded price) and nothing for the dead period after it (IA-02).
+- **Funding:** `rate = 0.01%/h × (longOI − shortOI) / (longOI + shortOI)`, using taker open interest. It accrues per second of the oracle's **live clock** and is updated on every action and by anyone via `advanceFunding`. The live clock leaves out every gap of more than 14 days (the oracle's `DEAD_AFTER`) between two valid prices (FA-02, FA-03): such a silence is never charged, whether the position leaves by a dead-oracle forced exit (which accrues at the rate in force up to the token's last valid time, at the last recorded price, IA-02) or stays open until prices return, also after a dead exit. A shorter gap is charged at the next accrual as before, at most 14 days × 0.01%/h = 3.36% of the price.
 - **Liquidation:** anyone can liquidate when either side's claim is below the 10% maintenance margin (0.5/maxL) at a price up to 60 s old. A lagging price is accepted: the loser is then settled at the effective price, and since it is liquidatable its claim there is under 10% of notional, so relative to the source price it keeps less than 9% of notional (claim minus the 1% penalty), and the winner's cover claim is smaller by the same amount. The side with the smaller claim pays a penalty of 1% of notional, split 50/50 between the liquidator and insurance. If the loser cannot pay the full penalty, insurance tops the liquidator up to half the full penalty, at most 1 USDG, drawn against the epoch's cover cap (below). A shortfall is paid later as a deferred cover claim.
 - **Sequencer rule for liquidations (F-05, IA-07):** none while the L2 sequencer is down. During the 1-hour grace period after it comes back, only a position whose liquidated side is below **half** the maintenance margin (MM / 2, 5% of notional at 5x, derived from the existing parameters) may be liquidated; positions between MM / 2 and MM stay protected for the whole hour. After the grace hour the normal rule applies. Closes and forced exits that would settle as liquidations follow the same rule (a plain close stays available when the rule forbids the liquidation).
 - **Shortfall cover (`PerpsCover`):** the winner of an insolvent liquidation gets the whole pool at once; the shortfall is filed as a claim in the current hourly epoch. Each epoch has a cap of 10% of the insurance fund as it stood at the epoch's first draw. Keeper top-ups (paid at once) and cover for filed claims (reserved in `coverReserved` at once, paid later) both draw on that cap, in the order they happen. After the epoch ends anyone may call `settleCoverEpoch` / `claimCover`: each claimant gets `claim × budget / claims`, where the budget is the cover reserved during the epoch, and the rest is a haircut to the winner. Rounding dust returns to the fund with the last claim.
 - **Forced exit:** taker or maker posts a 0.001 ETH bond. After 7 days anyone settles it.
-  - Price: the oracle price (≤ 60 s old); the entry price if the oracle is dead (no valid price for 14 days); the bound, if the source is outside the oracle bounds and the reported price has reached it (IA-06). Any other lagging price is refused.
+  - Price: the oracle price, **≤ 10 s old** (`OPEN_MAX_AGE`, FA-04: the settler chooses the moment); the entry price if the oracle is dead (no valid price for 14 days; the oracle is poked first, so a feed round nobody recorded counts); the bound, if the source is outside the oracle bounds and the reported price has reached it (IA-06). Any other lagging price is refused. A liquidatable position can still be liquidated at a 60 s old price through `liquidate`.
   - A position that is liquidatable at settlement is liquidated instead (penalty applies, the settler gets the liquidator reward; the sequencer rule above applies).
   - **Taker's request (IA-01):** exactly what a plain close costs: exit = price ∓ the committed close spread, and the 0.06% close fee on exit notional, both capped at the taker's claim (a small margin never makes it revert), whoever calls settle. At the entry price (dead oracle) the spread and fee are losses for the taker, never gains.
   - **Maker's request:** at the price with no spread and no fee (unchanged). The maker gives up its own close spread, the taker pays nothing extra, so the maker gains nothing over a close (`test_IA01_makerForcedExitGainsMakerNothingOverAPlainClose_fixed`).
@@ -81,7 +83,7 @@ and the config check in `test/ConfigConstants.t.sol`).
 4. Closing the whole book returns every unit. After all positions close, every cover claim is paid, offers are withdrawn and liquidity is removed, only insurance and the locked pool dust remain outside user balances.
 5. Reserved cover equals the unpaid budgets of epochs with unpaid claims, outstanding claims equal the claims recorded, settling never changes a budget, and guardian actions never move funds.
 
-Each run also checks that open interest equals the sum of open positions. The handler opens, closes, liquidates and force-exits positions, moves prices (mostly slowly enough for the rate limit, a quarter of the time in one second so the price lags), simulates keeper-free gaps of 15-40% (shortfall claims), pays cover claims, toggles close-only as the guardian, jumps time, swaps and adds or removes liquidity.
+Each run also checks that open interest equals the sum of open positions. The handler opens, closes, liquidates and force-exits positions, moves prices (mostly slowly enough for the rate limit, a quarter of the time in one second so the price lags), simulates keeper-free gaps of 15-40% (shortfall claims), pays cover claims, toggles close-only as the guardian, jumps time, swaps and adds or removes liquidity. Since the final audit the oracle has an L2 sequencer-uptime feed that the handler moves between down, grace and up; invariant 3 is checked for every settlement that can liquidate (`liquidate`, `close`, `settleForcedExit`, and the wind-down closes), and a dedicated action has takers close liquidatable positions.
 
 The extended suite (`test/audit/Round3ExtInvariants.t.sol`, from the independent audit) runs the same invariants with a handler that also removes taker margin, donates to insurance, pokes the oracle, advances funding, lets the relay go quiet for 15 days so requested forced exits settle at the entry price, and pushes prices outside the oracle bounds (clamped and lagging, with keepers liquidating on the way). It adds two invariants: margin removal never leaves a taker below the initial margin at the price used, and the recorded effective price always stays within the bounds.
 
@@ -92,7 +94,7 @@ Foundry 1.5.1 and solc 0.8.28 are required. Use `--offline` if `binaries.solidit
 ```bash
 cd contracts
 forge build
-forge test                      # 155 tests: unit, fuzz (512 runs), invariants (64 × 128)
+forge test                      # 176 tests: unit, fuzz (512 runs), invariants (64 × 128)
 FOUNDRY_PROFILE=ci forge test   # fuzz 4096 runs, invariants 256 × 256
 forge lint src script           # test/ is excluded in foundry.toml
 forge coverage --report summary --no-match-path "test/invariant/*"
@@ -104,8 +106,8 @@ forge snapshot                  # writes .gas-snapshot
 `setup()` function as a test contract. Measure them with
 `forge inspect <Contract> deployedBytecode` or from `out/<Contract>.sol/<Contract>.json` after `forge build --force`
 (`forge inspect` can leave abi-only artifacts in `out/`; run `forge build --force` before `forge script` afterwards)
-(runtime sizes: PerpsMarkets 17,017 bytes, about 16.6 KB of the 24 KB limit; OracleAdapter 7,306; SpotPools 5,606;
-VelumVault 4,361; MakerBook 3,918).
+(runtime sizes: PerpsMarkets 17,640 bytes, about 17.2 KB of the 24 KB limit; OracleAdapter 8,112; SpotPools 5,711;
+VelumVault 4,291; MakerBook 3,918).
 
 To deploy locally on anvil (mock USDG with 6 decimals, TSLA and AMZN with 18, starting prices pushed):
 
@@ -213,7 +215,7 @@ cannot follow balance changes that happen without a transfer through it (indepen
 
 | Finding | Change | Regressions |
 |---|---|---|
-| R2-01 (Medium) | The ±10% band around a reference fixed for 10 minutes (one push could move +22%, two records around an attacker-timed roll +21%) is replaced by a rate limit against the last recorded price: `maxMove = last × 5% × min(dt, 5 min) / 5 min`. `poke` is a recording like any other | `testFuzz_R2_01_fixed_noSideInsolventWithin12MinOfAnyNonLaggingOpen`, `test_R2_01_fixed_extremePathsKeepFiveXSolventFor12Min`, `test_R2_01_fixed_worstCaseInsolvencyTime`, `testFuzz_R2_01_fixed_notLiquidatableSurvivesAnyNextRecording`, `test_R2_01_fixed_relayerExtractionPerMinuteBounded`, `test_R2_01a_fixed_relayerOscillationCannotDrainHonestMaker`, `testFuzz_R2_01_fixed_openAnywhereThenOppositeExtremeStaysSolvent`, `test_R2_01b_fixed_gapNearOldWindowRollStraddleUnprofitable`, `testFuzz_limit_everyRecordingWithinLimit` |
+| R2-01 (Medium) | The ±10% band around a reference fixed for 10 minutes (one push could move +22%, two records around an attacker-timed roll +21%) is replaced by a rate limit against the last recorded price: `maxMove = last × 5% × min(dt, 5 min) / 5 min`. `poke` is a recording like any other (since FA-01 the clock that dt is measured on moves only for a new source value or a price change) | `testFuzz_R2_01_fixed_noSideInsolventWithin12MinOfAnyNonLaggingOpen`, `test_R2_01_fixed_extremePathsKeepFiveXSolventFor12Min`, `test_R2_01_fixed_worstCaseInsolvencyTime`, `testFuzz_R2_01_fixed_notLiquidatableSurvivesAnyNextRecording`, `test_R2_01_fixed_relayerExtractionPerMinuteBounded`, `test_R2_01a_fixed_relayerOscillationCannotDrainHonestMaker`, `testFuzz_R2_01_fixed_openAnywhereThenOppositeExtremeStaysSolvent`, `test_R2_01b_fixed_gapNearOldWindowRollStraddleUnprofitable`, `testFuzz_limit_everyRecordingWithinLimit` |
 | R2-02 (Low) | Keeper top-ups draw on the epoch's cover cap, ahead of the cover reserved for that liquidation's shortfall | `test_R2_02_fixed_keeperTopUpsCountAgainstEpochCap` |
 | R2-03 (Info) | The cap is fixed at the epoch's first draw and draws leave the fund at once, so the budget no longer depends on who settles or when. Real bound: 10% per epoch, 19% for an event spanning two epochs, 1 − 0.9^k over k epochs | `test_R2_03_fixed_capFixedAtFirstDrawAndTwoEpochsAtMost19Percent` |
 | R2-04 (Low) | `close()` refuses a lagging price before routing to liquidation; third-party keepers still liquidate. Bound for any liquidation at a lagging price documented (< 9% of notional) | `test_R2_04_fixed_closeRefusedAtLaggingPriceKeepersStillLiquidate`, `test_R2_04_fixed_winnerAtLaggingPriceKeepsCoverThroughLiquidate` |
@@ -273,14 +275,82 @@ Design choices:
   5x, about five minutes of the 1%-per-minute rate limit); liquidating it costs the loser the same 1% penalty it would
   pay an hour later, while waiting risks a shortfall for the winner. Shallower positions keep the full grace hour.
 
+### Final round: final internal audit (2026-11-15, `test/audit/FinalAuditPoC.t.sol`)
+
+The auditor's proofs of concept are kept with their scenarios and assert the fixed behaviour (`test_FAxx_*_fixed`);
+the auditor's fuzz tests are kept in `test/audit/FinalAuditFuzz.t.sol` (only reformatted by `forge fmt`).
+
+| Finding | Change | Regressions (before → after) |
+|---|---|---|
+| FA-01 (Medium) | The rate-limit clock no longer restarts at every recording ([The rate-limit clock](#the-rate-limit-clock-fa-01)). A recording that sees the same source value at an unchanged price writes nothing; one that moves the price advances the clock from the start of the allowance it used by the whole seconds the move needed, never past now; a new source value sets it to at least that value's timestamp. The limit per recording is unchanged | `test_FA01_pokeOneSecondBeforePushNoLongerMakesInLimitMoveLagging_fixed` (in-limit push after a poke: lagging → not lagging), `test_FA01_sustainedPokingNoLongerMakesPricesLag_fixed` (the auditor's simulation, seconds lagging of 1,800: recordings only at pushes 64 → 64; a poke every second 905 → 94; a poke one second before each push 905 → 94, where the auditor's tried fix gives 489), `test_FA01_laggingShareByPushInterval`, `testFuzz_limit_everyRecordingWithinLimit`, `test_R2_01_fixed_worstCaseInsolvencyTimeOpenTenSecondsAfterThePush` (777 s and 1,083 s), `test_R2_01_fixed_relayerLiquidatableTimeOpenTenSecondsAfterThePush` (516 s) |
+| FA-02 (Low), FA-03 (Low) | Funding runs on the oracle's live clock (`liveClock`): every gap of more than `DEAD_AFTER` (14 days) between two recorded valid prices is dead time, booked by the oracle when it records the first price after the gap (`deadTime`), and never charged. A dead-oracle exit pokes the oracle first and accrues up to the last valid time at the last recorded price; if the token stays dead and revives later, the time after the exit is dead time too | `test_FA02_longSilenceFundingNoLongerSkipsKeeperWindow_fixed` (30-day silence, the long's claim at the first accrual: −6.74 → +54.81 USDG, liquidated solvent, no cover claim), `testFuzz_FA02_firstAccrualAfterAnySilenceKeepsTheSideSolvent_fixed` (any silence up to 60 days, the paying side on either side of the book), `test_FA02_liveClockChargesOnlyLiveTime` (a 10-day gap charged in full; two 15-day gaps around one live day charge that day), `test_FA03_deadPeriodAfterADeadExitNotCharged_fixed` (35.99 → 0.000000 USDG) |
+| FA-04 (Info) | Forced-exit settlement needs a price at most `OPEN_MAX_AGE` (10 s) old, on either side's request (liquidations keep 60 s through `liquidate`) | `test_FA04_forcedExitSettlementNeedsOpenFreshness_fixed` (an 11 s old price: accepted → `StalePrice`) |
+| FA-05 (Info) | `swap`, `addLiquidity` and `removeLiquidity` refuse a zero `minOut`, `minShares`, `minStock` or `minUsdg` (`NoMinimum`), as perps refuses `priceLimit = 0` (IA-10) | `test_FA05_zeroMinimumsRefused_fixed` |
+| FA-06 (Info) | `withdraw` applies the deposit's recipient checks: no module, vault, listed token or blocked protocol address | `test_FA06_withdrawRefusesProtocolRecipients_fixed` |
+| FA-07 (Info) | Feeds are read with a staticcall that copies back at most five words and checks the length, so a feed without code or with malformed data reads as failed (`sequencerStatus()` = (false, false), price stale) and `poke` never reverts. `setup` refuses a price or sequencer feed that does not answer `latestRoundData` with five words, and a sequencer feed whose answer is not 0 or 1 (`BadFeed`) | `test_FA07_codelessSequencerFeedRefusedAtSetup_fixed`, `test_FA07_feedBrokenAfterSetupReadsAsDownNeverReverts_fixed` |
+| Test gaps | The invariant handlers move an L2 sequencer feed between down, grace and up; invariant 3 also covers liquidations reached through `close` and `settleForcedExit` (and the wind-down closes), with an action that has takers close liquidatable positions; IA-01 regressions with a moving price and with a taker's request settling at the bound; `ConfigConstants.t.sol` fails with a clear message when `../packages/config` is missing | `Invariants.t.sol`, `Round3ExtInvariants.t.sol`, `test_IA01_takerForcedExitEqualsPlainCloseAtAMovingPrice_fixed`, `test_IA01_takerForcedExitAtTheBoundPaysSpreadAndFee_fixed`, `test/ConfigConstants.t.sol` |
+
+Assertions that pinned the old timing, changed with the reason written next to them:
+`test_F04_fixed_relayerCannotDoublePriceQuickly` (+0.13% after the 8 pushes → +0.15%: the open's read no longer restarts
+the clock, which started at the setUp push one second earlier, so the pushes have 9 s of allowance, not 8) and
+`testFuzz_limit_everyRecordingWithinLimit` (`lastAt == now` after every recording → the exact new clock rule, plus the
+run-wide bound checked against the clock). For the same reason the measured R2-01 numbers move by one second (786 s,
+1,092 s and 525 s instead of 787 s, 1,093 s and 526 s). Tests and handlers that passed zero spot minimums now pass 1.
+
+ABI changes (indexer and web, Phase 3 wiring): additive only.
+
+- `OracleAdapter`: new views `liveClock(address) → uint256` (also in `IOracleAdapter`) and `deadTime(address) → uint256`,
+  new error `BadFeed(address)` (setup). `bands(token).lastAt` is now the rate-limit clock: after a catch-up it can be
+  earlier than the block of the last recording, and a recording that changes nothing leaves the band untouched.
+  `sequencerStatus()` and `poke()` no longer revert on a broken feed.
+- `SpotPools`: new error `NoMinimum()`.
+- `VelumVault`: no ABI change; `withdraw` now reverts `ModuleRecipient` / `ProtocolRecipient` for the refused recipients.
+- `PerpsMarkets`: no ABI change; `settleForcedExit` reverts `StalePrice` for a price older than 10 s; funding over a
+  dead gap is no longer charged (`markets(m).lastFundingUpdate` is still the block time of the last accrual).
+- Storage: `OracleAdapter` and `PerpsMarkets` each append one mapping (contracts are immutable; this is a redeploy).
+
+Design choices:
+
+- **FA-01, a clock that only spends the time a move used.** The auditor's tried fix (store nothing when nothing changed,
+  otherwise restart at now) is not enough: a poke one second before each push, after the price has caught up, stores
+  the caught-up price and restarts the clock, so the push gets one second of allowance, lags, and the cycle repeats
+  (489 of 1,800 s lagging in the auditor's simulation). Advancing the clock by the time the move used removes that
+  lever. Time is never credited twice: each move of `u` whole seconds' worth (u ≥ 1) advances the clock by at least `u`,
+  and `1 + u/6000 ≤ (1 + 1/6000)^u`, so over any run the price stays within `(1 + 1/6000)^c` of the price at the clock's
+  start `c` seconds earlier, and one recording still moves it at most 5%: exactly the R2-01 bound. Whole seconds, not
+  fractions: fractional credits would let pieces of a second compound slightly faster than `(1 + 1/6000)^t`. A new
+  source value sets the clock to at least its timestamp, so at any successful read the clock started at most that
+  read's maxAge earlier (10 s for opens); guarantees measured from an open move by at most 10 s (the 12-minute
+  open-to-insolvency bound: 787 s → 777 s worst case; the relay-key bound: 526 s → 516 s). Not storing catch-ups at
+  all (a two-phase move computed at the next push, with the old target kept in storage) was simulated: within about
+  15% of this clock either way (a little better at TSLA-like volatility, worse at twice that), so not worth the extra
+  state. In both, what remains is mostly not lost time but the price path continuing from the price that was observed,
+  which is the protection a keeper's recording gives (see [The rate-limit clock](#the-rate-limit-clock-fa-01)).
+- **FA-02 and FA-03, one rule with the dead threshold.** A gap counts as dead when it is longer than the oracle's
+  `DEAD_AFTER` (14 days), the threshold that already makes a token dead, so the dead-exit rule (IA-02) and the revival
+  rule are the same rule and FA-03 cannot recur. `MAX_AGE` (60 s) was rejected: every night, weekend and any minute
+  without a recording would go unpaid, and on a Chainlink market the receiving side would have to record a price every
+  minute to keep earning; funding through ordinary market closures is part of the model. With 14 days the largest
+  one-shot charge is 14 days × 0.01%/h = 3.36% of the price; with the 5% cap on one price recording that is at most
+  8.53% of notional, under the 10% maintenance margin, so a side above maintenance at the last valid price (funding
+  accrued) is still solvent at the first accrual after any silence. A cap on funding per accrual was considered and
+  not added: the threshold already bounds the one-shot charge, and a cap would forgive owed funding with a new
+  hard-coded number. The gap is booked by the oracle and not computed by perps from "the previous price", because the
+  relay's own push records the new price before any accrual and several gaps can pass between two accruals.
+- **FA-04, done.** Settlement is never time-critical (it is matured), the relay pushes every 8-10 s and opens already
+  need 10 s, so a 10 s price is available whenever the relay runs; liquidations keep 60 s through `liquidate`, and the
+  dead-oracle path needs no price. No new liveness problem; with heartbeat-only Chainlink feeds a keeper settles right
+  after a round, as for opens (see the production-oracle limitation).
+
 ### New parameters (constants; not in CLAUDE.md §5, which is unchanged)
 
 | Parameter | Value | Contract |
 |---|---|---|
 | Price rate limit | 5% per recording at most (`MAX_MOVE_BPS` = 500) | `OracleAdapter` |
-| Rate-limit window | 5 minutes (`MOVE_WINDOW`): the move allowed grows linearly with time since the last recording up to this, so 1/6000 per second, 1% per minute | `OracleAdapter` |
+| Rate-limit window | 5 minutes (`MOVE_WINDOW`): the move allowed grows linearly with time on the rate-limit clock up to this, so 1/6000 per second, 1% per minute; the clock only moves for a new source value or a price change, by the time the move used (FA-01) | `OracleAdapter` |
 | Sequencer grace | 1 hour (`SEQUENCER_GRACE`) | `OracleAdapter` |
-| Open price age | 10 s (`OPEN_MAX_AGE`), also for margin removal (IA-03); closes, liquidations, forced exits, funding 60 s (`MAX_PRICE_AGE`) | `PerpsBase` |
+| Open price age | 10 s (`OPEN_MAX_AGE`), also for margin removal (IA-03) and forced-exit settlement (FA-04); closes, liquidations, funding 60 s (`MAX_PRICE_AGE`) | `PerpsBase` |
+| Funding dead-gap threshold | A gap between valid prices longer than `DEAD_AFTER` (14 days) is not charged: the oracle's existing dead threshold, not a new constant (FA-02, FA-03) | `OracleAdapter.liveClock` |
 | Grace-period liquidation threshold | MM / 2, derived (`MM_BPS / 2` = 5% of notional at 5x), not a new constant (IA-07) | `PerpsBase._liquidationSide` |
 | Cover epoch | 1 hour (`COVER_EPOCH`) | `PerpsBase` |
 | Cover cap per epoch | 10% of the insurance fund at the epoch's first draw, top-ups included (`COVER_CAP_BPS`) | `PerpsBase` |
@@ -291,13 +361,56 @@ Design choices:
 ### Why these choices
 
 - **Rate limit on both sources, relative to the last recorded price (R2-01).** A claim moves by `qty × Δprice`; a 5x side starts with a 20% margin and is liquidated below 10% of notional. The limit gives these guarantees (tests in `test/audit/Round2PoC.t.sol`):
-  - **Open to insolvency ≥ 12 minutes.** No side of a pair opened at any non-lagging price (after any history, at any leverage, side, size and open spread the book allows) can fall below zero within 12 minutes of the open, whatever the source reports. The tight worst case is a 5x short at the 5% maximum open spread, 13.1 minutes (787 s) of a recording every second at the limit; at the 2 bps minimum spread it is 18.2 minutes (1,093 s).
+  - **Open to insolvency ≥ 12 minutes.** No side of a pair opened at any non-lagging price (after any history, at any leverage, side, size and open spread the book allows) can fall below zero within 12 minutes of the open, whatever the source reports. The tight worst case is a 5x short at the 5% maximum open spread, 13.1 minutes (787 s) of a recording every second at the limit, counted from the start of the rate-limit clock; at the 2 bps minimum spread it is 18.2 minutes (1,093 s). Since FA-01 an open's read that changes nothing does not restart the clock, which can then have started up to 10 s (`OPEN_MAX_AGE`) before the open: from the open the worst case is 777 s and 1,083 s (`test_R2_01_fixed_worstCaseInsolvencyTimeOpenTenSecondsAfterThePush`).
   - **Keeper window.** A side that is not liquidatable at a recorded price needs a 10% adverse move to reach zero: never in one recording (≤ 5%), and at least 9.5 minutes of recordings (10% up takes ln 1.1 / ln(1 + 1/6000) = 572 s). It follows (`testFuzz_R2_01_fixed_notLiquidatableSurvivesAnyNextRecording` checks the one-step bound) that between its last non-liquidatable recording and its first insolvent one there are always at least 60 s of fresh prices at which it is liquidatable and solvent: the recording just before insolvency is one, and if recordings come faster than once a minute the 10% takes at least 9.5 minutes of fresh prices. The R2-01b regression measures 572 s. In that window the position offers a 0.5% of notional liquidation reward.
-  - **Compromised relay key.** Prices move at most 1.005% per minute, so an honest 5x maker's claim falls by at most 5.5% of its margin per minute while it is above maintenance. It cannot be made liquidatable sooner than 8.7 minutes after the open (measured 526 s) or insolvent sooner than 18 minutes. Doubling a price takes at least 69 minutes. Opens and closes at a jumped price are refused as lagging, so the in-window oscillation of R2-01 is gone.
+  - **Compromised relay key.** Prices move at most 1.005% per minute, so an honest 5x maker's claim falls by at most 5.5% of its margin per minute while it is above maintenance. It cannot be made liquidatable sooner than 8.6 minutes after the open (measured 516 s with the open 10 s after the relay's last push, 525 s right after it; 526 s before FA-01) or insolvent sooner than 18 minutes. Doubling a price takes at least 69 minutes. Opens and closes at a jumped price are refused as lagging, so the in-window oscillation of R2-01 is gone.
   - **Parameters.** 5% per recording is half the 10% maintenance cushion. 1% per minute keeps the first round's average speed (10% per 10 minutes), so honest gaps catch up as before: a 30% gap takes about 20-35 minutes. A slower limit would halve the relay-key bound but refuse most opens in normal markets (see limitations).
 - **Lagging prices.** While a source is outside the limit (or outside the bounds, IA-06), the reported price is a known-wrong, catching-up value. Opens, closes (on both routes, R2-04), forced exits that are not liquidations and margin removal at it are refused: they would be free options against the counterparty. The one exception is a matured forced exit once the reported price has reached the bound the source is beyond: it settles at the bound, so a market is never stuck. Liquidations and funding go on, because they reduce risk. A loser liquidated at a lagging price keeps less than 9% of notional relative to the source price. Anyone can call `liquidate`, the loser included, but it then gains only the 0.5% keeper half a third party would get.
 - **10 s opens, 2 bps floor (F-06).** Two-step (commit/fill) opens would remove the option entirely but need a coordinator flow (Phase 4). With opens limited to 10 s old prices, the remaining option is worth less than the minimum taker round trip (≥ 2 bps open spread + 6 bps fee in, 6 bps fee out). Closes keep 60 s. That is not risk-free for the maker (R2-06): at a price up to 60 s old the taker holds an exit option worth the market's move since that price, minus the close spread and the 6 bps fee. It is bounded because a pushed jump beyond the rate limit makes the price lagging, and lagging closes are refused. 60 s is kept so closes don't fail whenever the relay is a few seconds late. Makers price the option into their close spread.
 - **Cover cap (R2-02, R2-03).** One epoch's keeper top-ups plus cover draw at most 10% of the fund as it stood at the epoch's first draw. That 10% is shared pro rata with every honest claimant of the same hour, and claims never carry over, so the fund cannot be queued out. Draws leave the fund at once. So an event spanning two epochs takes at most 19% (10% + 10% of the remaining 90%), and k consecutive epochs at most 1 − 0.9^k of the fund. Fees earned in between add to the base.
+
+### The rate-limit clock (FA-01)
+
+The limit is `maxMove = last × 5% × dt / 5 min` with `dt = min(now − lastAt, 5 min)`. Before the final audit every
+recording (a push, but also anyone's `poke` or `read`, so every trade, keeper and indexer call) set `lastAt = now`,
+throwing away the allowance the next pushed value would have had: with a poke every second, 36-50% of seconds saw
+a lagging price at TSLA-like volatility with pushes every 5-8 s (the table below; 50% in the auditor's simulation), and
+opens, closes, margin removal and forced exits reverted. The quiet column is the same before and after. Now:
+
+- a recording that sees the same source value at an unchanged price writes nothing;
+- a recording that moves the price sets `lastAt` to the start of the allowance it used (`lastAt`, or `now − 5 min` if
+  later) plus the whole seconds the move needed at 1/6000 of the price per second, rounded up, never past now. A move
+  clamped at the limit therefore uses everything up to now, as before; a catch-up that needed less leaves the rest;
+- a new source value sets `lastAt` to at least its timestamp (for the relay: the push time).
+
+What a third party can still do: a recording rounds the time a catch-up used up to the next whole second, so a poke
+costs at most one second of allowance per pushed value that lagged; and a recorded price pins the path, so the next
+pushed value moves on from the price that was observed (that is the protection a keeper's recording gives, and the
+reason a busy market lags somewhat more than a quiet one at high volatility). Recordings that change nothing, which
+are most of them, have no effect at all.
+
+Measured share of seconds at which an open or close would see a lagging price (`test_FA01_laggingShareByPushInterval`;
+the source follows a per-second random walk, the relay pushes its latest value every k seconds, 30 minutes per cell;
+"busy" = a poke every second, standing in for trades, keepers and indexers):
+
+| Volatility | Push every | Quiet (recordings only at pushes) | Busy, before FA-01 | Busy, after FA-01 |
+|---|---|---|---|---|
+| 0.19%/min (TSLA-like) | 1 s | 62.4% | 62.4% | 62.4% |
+| | 2 s | 30.6% | 52.6% | 42.3% |
+| | 5 s | 5.2% | 39.2% | 6.5% |
+| | 6 s | 2.8% | 38.2% | 4.5% |
+| | 8 s | 1.2% | 35.8% | 1.6% |
+| | 10 s | 0.2% | 30.4% | 0.2% |
+| 0.38%/min | 1 s | 86.6% | 86.6% | 86.6% |
+| | 2 s | 67.6% | 80.6% | 77.3% |
+| | 5 s | 37.5% | 69.7% | 53.0% |
+| | 6 s | 31.3% | 69.0% | 50.0% |
+| | 8 s | 20.0% | 64.0% | 31.3% |
+| | 10 s | 13.2% | 58.5% | 21.2% |
+
+Pushing more often does not help: every pushed value restarts the clock at its own time (needed so that the clock is
+never more than 10 s behind an open), so frequent small pushes each get little allowance. With pushes every 8-10 s at
+TSLA-like volatility, at most 1-2% of seconds lag, busy or not; pushes must stay at most 10 s apart for opens.
 
 ## Emergency controls
 
@@ -336,15 +449,15 @@ must be empty first.
 ## Known limitations and risks (review before any audit)
 
 - **Relayer trust (testnet).** A compromised relay key can still move a price, but only at 1% per minute (5.5% of a 5x maker's margin per minute, doubling in ≥ 69 minutes). Makers cannot close a filled position themselves, so committed margin stays exposed at that rate until the taker closes, a keeper liquidates, or a forced exit matures. Production must use verified Chainlink feeds with the sequencer-uptime feed (implemented) or a low-latency verified oracle.
-- **Production oracle choice is open.** Opens need a price at most 10 s old. Chainlink push feeds for stocks update on deviation or heartbeat, so with them opens would revert most of the time; production needs a low-latency verified source (for example a pull oracle verified at open), which changes the adapter. Choose before the external audit.
-- **Lagging in normal markets (owner decision).** Because "lagging" means the effective price differs from the source at all, ordinary volatility faster than 1% per minute over the push interval makes opens and closes revert until the price catches up. A simulation at TSLA-like volatility (0.19% per minute) puts the share of reads that see a lagging price at 58% with 1-s pushes, 38% with 2 s, 14% with 5 s and 3% with 10 s. At double that volatility it is 86%, 76%, 54% and 35%. Refusing then is protective (the on-chain price is behind the market, so opening at it would be a free option), but users see retries. The price-relay worker should push about every 5-8 s (opens need ≤ 10 s), and the UI should retry an open after a fresh push. Alternatives for the owner: a faster limit (2% per minute: about 0.2% of reads lagging at 5-s pushes, but twice the relay-key bound and keeper windows half as long); or a small lag tolerance for opens executed at the worse of the two prices for the taker (changes the lagging rule). A slower limit (0.5% per minute) is safer but refuses 32-85% of opens in normal markets, depending on the push interval.
+- **Production oracle choice is open.** Opens and forced-exit settlement need a price at most 10 s old. Chainlink push feeds for stocks update on deviation or heartbeat, so with them opens would revert most of the time; production needs a low-latency verified source (for example a pull oracle verified at open), which changes the adapter. Choose before the external audit.
+- **Lagging in normal markets (owner decision).** Because "lagging" means the effective price differs from the source at all, ordinary volatility faster than the limit over the push interval makes opens, closes, margin removal and forced exits revert until the price catches up. Since FA-01, recordings by other users no longer make this worse beyond the rounding described in [The rate-limit clock](#the-rate-limit-clock-fa-01); its table has the measured numbers. At TSLA-like volatility (0.19% per minute) about 1.6% of seconds lag with 8-s pushes and 0.2% with 10-s pushes in a busy market (5-s pushes: 6.5%; the earlier "push every 5-8 s, about 14% lagging" estimate is replaced by these measurements, and pushing more often makes it worse: 42% with 2-s pushes). At twice that volatility it is 31% with 8-s pushes and 21% with 10-s pushes. Refusing then is protective (the on-chain price is behind the market, so opening at it would be a free option), but users see retries. The price-relay worker should push every 8-10 s (opens and forced-exit settlement need ≤ 10 s), and the UI should retry after a fresh push. Alternatives for the owner (same model, busy market, 8-s pushes): a faster limit (2% per minute: 0% lagging at TSLA-like volatility, 1.8% at twice that, but twice the relay-key bound and keeper windows half as long); or a small lag tolerance for opens executed at the worse of the two prices for the taker (changes the lagging rule). A slower limit (0.5% per minute) is safer but leaves 33% (TSLA-like) to 76% of seconds lagging.
 - **Lag after real gaps.** With the limit on Chainlink too, a 30% opening gap is reported over about 20-35 minutes (the first recording moves 5%, then 1% per minute); opens and closes wait, liquidations proceed at the effective price (a loser keeps under 9% of notional more than at the true price). An owner may prefer raw feed prices plus a market-hours close-only policy instead; that reopens the F-02 straddle around gaps (bounded by the epoch cap).
 - **Worst-case cover (F-02 residual).** If keepers stay away for more than 9 minutes of liquidatable, solvent prices (at least 60 s of them fresh), a self-paired straddle can still end insolvent and claim cover. It gets at most its pro-rata share of 10% of the fund per epoch, minus its fees, and only by forgoing a 0.5% liquidation reward that any keeper can take (`test_R2_02_fixed_keeperTopUpsCountAgainstEpochCap`: +6.76 USDG on a 103.6 USDG fund). Run at least one keeper (Phase 4 risk workers) per market. Once an epoch's cap is used up, keepers of further insolvent positions get no top-up in that epoch; the winning side still gains the pool by liquidating.
 - **Funding wash trading (F-09, accepted).** Funding follows global taker skew, so a self-paired position can move (even flip) the rate. It stays within the 0.01%/h cap and costs the attacker fees plus 40% of the wash size in locked margin; any genuinely large one-sided trader moves it the same way. A clean fix needs identity or a different funding model (Phase 4 coordinator).
 - **Open-interest caps (F-10 residual).** Self-paired positions can fill a side's cap. The minimum size stops dust; filling a cap still costs 40% of the capped notional in margin plus fees. Size caps so that cost is prohibitive.
 - **60-second freshness vs stock feeds.** Outside market hours prices go stale, so opens, closes, liquidations and funding revert with `StalePrice`. That is deliberate (no trading on stale prices), but liquidations pause too; the rate limit then walks the first prices after the reopen.
 - **Sequencer downtime.** While the sequencer is down, liquidations wait; during its grace hour only positions below half the maintenance margin can be liquidated (IA-07). Closes at a non-lagging price still work as plain closes whenever the liquidation is not allowed (a liquidatable position closed then pays the close spread and fee, not the penalty, and an insolvent counterparty's cover is forfeited in that window).
-- **Funding over price gaps.** A dead-oracle forced exit settles funding up to the last valid price and charges nothing for the dead period (IA-02). A market whose price returns before it counts as dead (under 14 days of silence) still charges the gap at the rate in force and the new price at the next accrual, as before: an approximation only in markets without prices for days.
+- **Funding over price gaps.** A gap of more than 14 days between valid prices is never charged (FA-02, FA-03), however the position ends. A shorter silence (a night, a weekend, a relay outage of days) is still charged at the rate in force and the new price at the next accrual, as before: at most 3.36% of the price, which keeps a side that was above maintenance solvent at that accrual but can make it liquidatable at once. The live clock measures gaps between *recorded* prices: the relay records every push, but on a Chainlink market a feed nobody records for more than 14 days looks like a dead gap even if rounds kept arriving, so a market with open positions needs a keeper that calls `poke` or `advanceFunding` at least every few days (Phase 4 risk workers do so constantly).
 - **Out-of-bounds answers are followed (IA-06).** An answer outside the bounds now moves the reported price toward the bound at the rate limit, and liquidations follow it; before, it froze the market (and, after 14 days, settled forced exits at the entry price). So a feed stuck at a wrong extreme (for example a circuit-breaker floor) is treated like any wrong price: at most 1% per minute, refusing opens and closes while it lags. When the source stays outside the bounds, a matured forced exit settles at the bound. Relative to the true price that favours the losing side (the winner's gain stops at the bound). It is the price of never leaving a market stuck; choose bounds wide enough that only a broken feed or an unhandled corporate action can leave them.
 - **Close fee on maker-requested forced exits (IA-01 residual).** A maker's request charges no close fee. A self-paired position (one owner on both sides, where the close spread is irrelevant) can therefore skip the 0.06% close fee by having its maker address request a forced exit, at the cost of keeping 40% of the notional locked for 7 days, the bond and funding; the open fee is paid regardless. Accepted: an honest taker forced out by its maker should not pay an exit fee it did not choose.
 - **Spot pools are public AMMs in Phase 3.** Trades can be sandwiched; `minOut` and the deadline are the protection. The first LP sets the starting price.

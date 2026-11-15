@@ -196,6 +196,56 @@ contract Round2PoC is VelumBase {
         }
     }
 
+    /// @notice FA-01 (final audit) worst case for the same bound. An open whose read sees the same source value at an
+    ///         unchanged price no longer restarts the rate-limit clock, so the clock may have started up to OPEN_MAX_AGE
+    ///         (10 s) before the open: the relay pushes at t, the open comes at t + 10 (the oldest price an open
+    ///         accepts), then the fastest rise. Insolvency comes 10 s sooner than when the open restarted the clock
+    ///         (787 s and 1,093 s before the fix), still well over 12 and 18 minutes.
+    function test_R2_01_fixed_worstCaseInsolvencyTimeOpenTenSecondsAfterThePush() public {
+        uint16[2] memory spreads = [uint16(500), uint16(2)];
+        uint256[2] memory expected = [uint256(777), uint256(1083)];
+        for (uint256 k; k < 2; ++k) {
+            uint256 snap = vm.snapshotState();
+            uint256 offer = _offerAs(bob, 100_000 * USD, spreads[k], 5);
+            _fund(alice, usdg, 31_000 * USD);
+            _pushPrice(address(tsla), TSLA_PRICE); // the clock starts here
+            uint256 pushedAt = block.timestamp;
+            vm.warp(pushedAt + perps.OPEN_MAX_AGE());
+            uint256 id = _open(alice, offer, false, 30_000 * USD, 10);
+            (, uint256 clockAt) = _band();
+            assertEq(clockAt, pushedAt, "the open did not restart the clock");
+            uint256 t0 = block.timestamp;
+            while (perps.takerClaimAt(id, _effectivePrice(address(tsla))) >= 0) {
+                _pushPrice(address(tsla), MAX_RAW);
+            }
+            emit log_named_uint("seconds from open to insolvency, open 10 s after the push", block.timestamp - t0);
+            assertEq(block.timestamp - t0, expected[k], "10 s sooner than with the clock restarted at the open");
+            assertGe(block.timestamp - t0, k == 0 ? 12 minutes : 18 minutes);
+            vm.revertToState(snap);
+        }
+    }
+
+    /// @notice FA-01 worst case for the compromised-relay-key bound (test_R2_01_fixed_relayerExtractionPerMinuteBounded:
+    ///         526 s before the fix): with the open 10 s after the relay's last push, an honest 5x maker still cannot be
+    ///         made liquidatable within 8.5 minutes.
+    function test_R2_01_fixed_relayerLiquidatableTimeOpenTenSecondsAfterThePush() public {
+        uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
+        _fund(mallory2, usdg, 2100 * USD);
+        _pushPrice(address(tsla), TSLA_PRICE);
+        vm.warp(block.timestamp + perps.OPEN_MAX_AGE());
+        vm.prank(mallory2);
+        uint256 id = perps.open(offer, address(tsla), true, 10_000 * USD, 10, type(uint256).max);
+        uint256 t0 = block.timestamp;
+        while (!perps.isLiquidatable(id)) {
+            _pushPrice(address(tsla), MAX_RAW);
+        }
+        emit log_named_uint(
+            "seconds until the honest maker is liquidatable, open 10 s after the push", block.timestamp - t0
+        );
+        assertEq(block.timestamp - t0, 516, "10 s sooner than with the clock restarted at the open (526 s)");
+        assertGe(block.timestamp - t0, 8.5 minutes);
+    }
+
     /// @notice Keeper window: a side that is not liquidatable at a recorded price is still solvent at the
     ///         next recording, whatever the source reports and however long it was silent (one recording
     ///         moves at most 5%; the maintenance cushion is 10%).

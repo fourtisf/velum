@@ -7,9 +7,11 @@ import {PerpsLiquidation} from "./PerpsLiquidation.sol";
 /// @notice Either side of a pair can request a forced exit with a refundable 0.001 ETH bond. Seven days later
 ///         anyone may settle it. The bond is refunded to the requester when the position closes for any reason.
 ///
-///         Settlement price: the oracle price (at most 60 s old). If the oracle is dead (no valid price for
-///         14 days) the entry price. If the source is outside the oracle's fixed bounds and the effective price
-///         has reached the bound, the bound (independent audit IA-06); any other lagging price is refused.
+///         Settlement price: the oracle price, at most 10 s old (OPEN_MAX_AGE, final audit FA-04: the settler
+///         picks the moment, so the price must be as fresh as for an open; liquidations keep 60 s through
+///         `liquidate`). If the oracle is dead (no valid price for 14 days) the entry price. If the source is
+///         outside the oracle's fixed bounds and the effective price has reached the bound, the bound
+///         (independent audit IA-06); any other lagging price is refused.
 ///         A position that is liquidatable at settlement is liquidated instead (internal audit F-08): the
 ///         penalty applies, the settler receives the liquidator reward, and the sequencer rule of
 ///         `liquidate` applies.
@@ -49,7 +51,10 @@ abstract contract PerpsForcedExit is PerpsLiquidation {
             _accrueDead(p.market); // IA-02: no funding over the dead period
         } else {
             bool lagging;
-            (price, lagging) = _accrue(p.market, MAX_PRICE_AGE);
+            // FA-04: whoever settles chooses when; a 60 s window would let them pick among a minute of stale
+            // prices. 10 s, as for an open (the relay pushes every 5-8 s); a liquidatable position can always be
+            // liquidated at 60 s through `liquidate`.
+            (price, lagging) = _accrue(p.market, OPEN_MAX_AGE);
             (bool liquidatable, bool allowed) = _liquidationState(p, price);
             if (liquidatable) {
                 if (!allowed) revert SequencerDown();

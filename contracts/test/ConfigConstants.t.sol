@@ -16,6 +16,16 @@ contract ConfigConstantsTest is VelumBase {
 
     function setUp() public override {
         super.setUp();
+        // A clear failure instead of a bare file-not-found error when contracts/ is used outside the monorepo
+        // (final audit): this check is the only tie between the contracts and the shared config.
+        bool found;
+        try vm.isFile(CONFIG) returns (bool isFile) {
+            found = isFile;
+        } catch {}
+        require(
+            found,
+            "ConfigConstants: ../packages/config/robinhood-testnet.json not found. Run forge test from contracts/ inside the velum monorepo (packages/config is the shared constants file this test checks the contracts against)."
+        );
         json = vm.readFile(CONFIG);
     }
 
@@ -125,14 +135,14 @@ contract ConfigConstantsTest is VelumBase {
     }
 
     /// @notice The config's oracleMaxAgeSeconds (60) is the oracle's freshness cap and the age the perps engine
-    ///         accepts for closes, liquidations, forced exits and funding. Opens (F-06) and margin removal (IA-03)
-    ///         deliberately need a fresher price, 10 s: that stricter limit is a contract-only safety parameter,
-    ///         not a §5 number, and must stay below the config's 60 s.
+    ///         accepts for closes, liquidations and funding. Opens (F-06), margin removal (IA-03) and forced-exit
+    ///         settlement (FA-04) deliberately need a fresher price, 10 s: that stricter limit is a contract-only
+    ///         safety parameter, not a §5 number, and must stay below the config's 60 s.
     function test_RC02_oracleAgesMatchConfig() public view {
         uint256 maxAge = _uint("oracleMaxAgeSeconds");
         assertEq(oracle.MAX_AGE(), maxAge, "oracle freshness cap");
-        assertEq(perps.MAX_PRICE_AGE(), maxAge, "closes, liquidations, forced exits, funding");
-        assertEq(perps.OPEN_MAX_AGE(), 10, "opens and margin removal: 10 s");
+        assertEq(perps.MAX_PRICE_AGE(), maxAge, "closes, liquidations, funding");
+        assertEq(perps.OPEN_MAX_AGE(), 10, "opens, margin removal and forced-exit settlement: 10 s");
         assertLt(perps.OPEN_MAX_AGE(), maxAge, "the open freshness is stricter than the config's");
         assertEq(oracle.DEAD_AFTER(), _uint("oracleDeadAfterDays") * 1 days, "dead after");
     }

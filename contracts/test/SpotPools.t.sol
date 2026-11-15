@@ -19,8 +19,8 @@ contract SpotPoolsTest is VelumBase {
 
     function _seed() internal {
         vm.startPrank(carol);
-        pools.addLiquidity(address(tsla), 100 * TOKEN, 39_165 * USD, 0, DL); // 391.65 USDG per TSLA
-        pools.addLiquidity(address(amzn), 100 * TOKEN, 23_340 * USD, 0, DL); // 233.40 USDG per AMZN
+        pools.addLiquidity(address(tsla), 100 * TOKEN, 39_165 * USD, 1, DL); // 391.65 USDG per TSLA
+        pools.addLiquidity(address(amzn), 100 * TOKEN, 23_340 * USD, 1, DL); // 233.40 USDG per AMZN
         vm.stopPrank();
     }
 
@@ -53,7 +53,7 @@ contract SpotPoolsTest is VelumBase {
 
     function test_firstLiquidity_locksMinimum() public {
         vm.prank(carol);
-        (uint256 shares, uint256 sIn, uint256 uIn) = pools.addLiquidity(address(tsla), 100 * TOKEN, 39_165 * USD, 0, DL);
+        (uint256 shares, uint256 sIn, uint256 uIn) = pools.addLiquidity(address(tsla), 100 * TOKEN, 39_165 * USD, 1, DL);
         uint256 root = _sqrt(100 * TOKEN * 39_165 * USD);
         assertEq(shares, root - 1000);
         assertEq(sIn, 100 * TOKEN);
@@ -71,7 +71,7 @@ contract SpotPoolsTest is VelumBase {
         _seed();
         (uint256 sr, uint256 ur, uint256 ts) = _reserves(address(tsla));
         vm.prank(alice);
-        (uint256 shares, uint256 sIn, uint256 uIn) = pools.addLiquidity(address(tsla), 1 * TOKEN, 1000 * USD, 0, DL);
+        (uint256 shares, uint256 sIn, uint256 uIn) = pools.addLiquidity(address(tsla), 1 * TOKEN, 1000 * USD, 1, DL);
         assertEq(shares, (1 * TOKEN * ts) / sr);
         assertLe(sIn, 1 * TOKEN);
         assertLe(uIn, 1000 * USD);
@@ -82,21 +82,21 @@ contract SpotPoolsTest is VelumBase {
     function test_addLiquidity_guards() public {
         vm.startPrank(carol);
         vm.expectRevert(abi.encodeWithSelector(SpotPools.UnknownPool.selector, address(usdg)));
-        pools.addLiquidity(address(usdg), 1, 1, 0, DL);
+        pools.addLiquidity(address(usdg), 1, 1, 1, DL);
         vm.expectRevert(SpotPools.ZeroAmount.selector);
-        pools.addLiquidity(address(tsla), 0, 1, 0, DL);
+        pools.addLiquidity(address(tsla), 0, 1, 1, DL);
         vm.expectRevert(SpotPools.ZeroAmount.selector); // sqrt(1000*1) <= MIN_LIQUIDITY
-        pools.addLiquidity(address(tsla), 1000, 1, 0, DL);
+        pools.addLiquidity(address(tsla), 1000, 1, 1, DL);
         vm.expectRevert(SpotPools.Expired.selector);
         pools.addLiquidity(address(tsla), 1, 1, 0, block.timestamp - 1);
-        pools.addLiquidity(address(tsla), 100 * TOKEN, 39_165 * USD, 0, DL);
+        pools.addLiquidity(address(tsla), 100 * TOKEN, 39_165 * USD, 1, DL);
         (,, uint256 ts) = _reserves(address(tsla));
         (uint256 sr,,) = _reserves(address(tsla));
         uint256 wouldGet = (1 * TOKEN * ts) / sr;
         vm.expectRevert(abi.encodeWithSelector(SpotPools.Slippage.selector, wouldGet, wouldGet + 1));
         pools.addLiquidity(address(tsla), 1 * TOKEN, 1000 * USD, wouldGet + 1, DL);
         vm.expectRevert(SpotPools.ZeroAmount.selector); // rounds to zero shares
-        pools.addLiquidity(address(tsla), 1, 1, 0, DL);
+        pools.addLiquidity(address(tsla), 1, 1, 1, DL);
         vm.stopPrank();
     }
 
@@ -106,22 +106,22 @@ contract SpotPoolsTest is VelumBase {
         (uint256 sr, uint256 ur, uint256 ts) = _reserves(address(tsla));
         uint256 beforeS = _bal(carol, tsla);
         vm.prank(carol);
-        (uint256 sOut, uint256 uOut) = pools.removeLiquidity(address(tsla), mine / 2, 0, 0, DL);
+        (uint256 sOut, uint256 uOut) = pools.removeLiquidity(address(tsla), mine / 2, 1, 1, DL);
         assertEq(sOut, (mine / 2) * sr / ts);
         assertEq(uOut, (mine / 2) * ur / ts);
         assertEq(_bal(carol, tsla), beforeS + sOut);
 
         vm.startPrank(carol);
         vm.expectRevert(abi.encodeWithSelector(SpotPools.InsufficientShares.selector, mine - mine / 2, mine));
-        pools.removeLiquidity(address(tsla), mine, 0, 0, DL);
+        pools.removeLiquidity(address(tsla), mine, 1, 1, DL);
         vm.expectRevert(SpotPools.ZeroAmount.selector);
-        pools.removeLiquidity(address(tsla), 0, 0, 0, DL);
+        pools.removeLiquidity(address(tsla), 0, 1, 1, DL);
         (sr, ur, ts) = _reserves(address(tsla));
         uint256 next = (mine / 2) * sr / ts;
         vm.expectRevert(abi.encodeWithSelector(SpotPools.Slippage.selector, next, type(uint256).max));
-        pools.removeLiquidity(address(tsla), mine / 2, type(uint256).max, 0, DL);
+        pools.removeLiquidity(address(tsla), mine / 2, type(uint256).max, 1, DL);
         // everything except the locked minimum comes back
-        pools.removeLiquidity(address(tsla), mine - mine / 2, 0, 0, DL);
+        pools.removeLiquidity(address(tsla), mine - mine / 2, 1, 1, DL);
         vm.stopPrank();
         (sr, ur, ts) = _reserves(address(tsla));
         assertEq(ts, 1000);
@@ -148,7 +148,7 @@ contract SpotPoolsTest is VelumBase {
         _seed();
         (uint256 sr, uint256 ur,) = _reserves(address(tsla));
         vm.prank(alice);
-        uint256 out = pools.swap(address(tsla), address(usdg), 2 * TOKEN, 0, DL);
+        uint256 out = pools.swap(address(tsla), address(usdg), 2 * TOKEN, 1, DL);
         assertEq(out, _ref(2 * TOKEN, sr, ur));
     }
 
@@ -171,11 +171,11 @@ contract SpotPoolsTest is VelumBase {
     function test_swap_guards() public {
         vm.startPrank(alice);
         vm.expectRevert(abi.encodeWithSelector(SpotPools.NoLiquidity.selector, address(tsla)));
-        pools.swap(address(usdg), address(tsla), 1 * USD, 0, DL);
+        pools.swap(address(usdg), address(tsla), 1 * USD, 1, DL);
         vm.expectRevert(SpotPools.SameToken.selector);
-        pools.swap(address(usdg), address(usdg), 1, 0, DL);
+        pools.swap(address(usdg), address(usdg), 1, 1, DL);
         vm.expectRevert(SpotPools.ZeroAmount.selector);
-        pools.swap(address(usdg), address(tsla), 0, 0, DL);
+        pools.swap(address(usdg), address(tsla), 0, 1, DL);
         vm.expectRevert(SpotPools.Expired.selector);
         pools.swap(address(usdg), address(tsla), 1, 0, block.timestamp - 1);
         vm.expectRevert(SpotPools.SameToken.selector);
@@ -187,7 +187,7 @@ contract SpotPoolsTest is VelumBase {
         pools.swap(address(usdg), address(tsla), 1000 * USD, 100 * TOKEN, DL);
         vm.prank(alice);
         vm.expectRevert(SpotPools.ZeroAmount.selector); // output rounds to zero
-        pools.swap(address(tsla), address(usdg), 1, 0, DL);
+        pools.swap(address(tsla), address(usdg), 1, 1, DL);
     }
 
     function testFuzz_swapNeverDecreasesK(uint256 amountIn, bool buy) public {
@@ -198,7 +198,7 @@ contract SpotPoolsTest is VelumBase {
         amountIn = buy ? bound(amountIn, 10, 1_000_000 * USD) : bound(amountIn, 1e9, 1000 * TOKEN);
         vm.prank(alice);
         try pools.swap(
-            buy ? address(usdg) : address(tsla), buy ? address(tsla) : address(usdg), amountIn, 0, DL
+            buy ? address(usdg) : address(tsla), buy ? address(tsla) : address(usdg), amountIn, 1, DL
         ) returns (
             uint256 out
         ) {

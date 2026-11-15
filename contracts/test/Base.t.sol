@@ -71,7 +71,7 @@ abstract contract VelumBase is Test {
             mins[i] = 1e18;
             maxs[i] = 100_000e18;
         }
-        oracle.setup(stocks, feeds, mins, maxs, relayer, address(0));
+        oracle.setup(stocks, feeds, mins, maxs, relayer, _sequencerFeed());
         pools.setup(stocks);
         book.setup(address(perps), stocks);
         uint256[] memory caps = new uint256[](2);
@@ -85,6 +85,12 @@ abstract contract VelumBase is Test {
 
     function _oiCap() internal view virtual returns (uint256) {
         return OI_CAP;
+    }
+
+    /// @dev The L2 sequencer-uptime feed given to the oracle (none, as the testnet deploy does). The invariant suites
+    ///      override it with a mock feed whose state the handler moves between down, grace and up.
+    function _sequencerFeed() internal virtual returns (address) {
+        return address(0);
     }
 
     function _stocks() internal view returns (address[] memory s) {

@@ -4,8 +4,9 @@
 name: CI
 
 on:
+  # Pushes to the development branch, and pull requests (Dependabot's included) once each.
   push:
-    branches: ['**']
+    branches: ['claude/new-session-93ke66', 'main']
   pull_request:
   workflow_dispatch:
 

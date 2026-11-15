@@ -147,8 +147,9 @@ lets another user's code near its terminal (R3-01):
 
 **Per-app environment** (audit M5, R2-L3). Each PM2 app gets only the variables it reads
 (`deploy/ecosystem.config.cjs`): the web gets `NEXT_PUBLIC_*`, `PUBLIC_SITE_URL`, `PORT_WEB`,
-`NODE_ENV` (from `web.env`); api and workers get their own lists from `.env`;
-`PRICE_RELAY_PRIVATE_KEY` reaches only the workers and no other hot key reaches any Phase 2 process.
+`NODE_ENV` (from `web.env`); api and workers get their own lists from `.env`. No hot key reaches any
+Phase 2 process: `PRICE_RELAY_PRIVATE_KEY` stays in `.env` for Phase 3 and is not passed to the workers
+until the relay that uses it exists (backend audit I-6).
 PM2 also passes the environment of the `pm2` command itself to every app (on start, and merged in on
 every reload), and cluster workers inherit the PM2 daemon's own environment. PM2's `filter_env`
 does not prevent that (`filter_env: true` is ignored by PM2 6.0.14, and no form filters reloads or
@@ -159,8 +160,8 @@ secret; `deploy.sh` restarts a daemon whose environment holds one. Verified from
 each app has its own list plus those names. Do not run `pm2 reload`/`restart` by hand from a shell
 with secrets exported; always use `deploy.sh`.
 
-**The web runs as its own user** (audit R2-M3). Next 14 is end-of-life (frontend M5), so the web is
-the most exposed process. As `velum-web` it cannot read `.env` or its backups, the api/workers
+**The web runs as its own user** (audit R2-M3). The web is the most exposed process (it ran an
+end-of-life Next 14 until the move to Next 15, frontend M5). As `velum-web` it cannot read `.env` or its backups, the api/workers
 `/proc/<pid>/environ`, `velum`'s PM2 home or `dump.pm2`, the proxy-secret snippet, or reach the API
 socket, and it cannot write release files. It needs no writable cache: `next start` writes nothing at
 runtime (checked: no ISR or fetch cache in the app). `velum-web` is not in the `velum` group (setup
@@ -182,7 +183,8 @@ still proxies `/api/` to TCP (older template: re-run setup).
 
 Residual risks, stated plainly:
 - api and workers still share the `velum` uid: a compromised api can read the workers' environment
-  (`PRICE_RELAY_PRIVATE_KEY`) and `.env`. Splitting them is a Phase 3 item, when real hot keys arrive.
+  and `.env` (which holds `PRICE_RELAY_PRIVATE_KEY` once it is created). Splitting them is a Phase 3
+  item, when real hot keys arrive.
 - A compromised `velum` can change the release files the web runs (it builds them), so it can take
   over the web too; that adds nothing it does not already have. It can also break its own deploys
   (health checks, builds); it cannot reach root through them.
@@ -331,9 +333,8 @@ To remove it for good afterwards: `rm /etc/systemd/system/velum-redis.service /e
 `systemctl daemon-reload`, then `rm -r /etc/velum-redis /var/lib/velum-redis /run/velum-redis`.
 
 Notes:
-- `server-setup.sh` checks Redis over TCP (`redis-cli -h/-p` from `REDIS_URL`), so while `REDIS_URL`
-  names the socket it stops at "Cannot reach Redis". To re-run setup: `redis-velum.sh --rollback`,
-  `server-setup.sh`, then `redis-velum.sh` and `deploy.sh` again.
+- `server-setup.sh` checks Redis with the `REDIS_URL` in `.env`, over TCP or over the socket, so it can be
+  re-run as it is after this switch.
 - `deploy.sh --rollback` to a release older than `redis-velum.sh` would start code that only knows
   `redis://` URLs: roll Redis back first.
 - The PM2 units (`pm2-velum`, `pm2-velum-web`) want and start after `postgresql`, `redis-server` and
@@ -576,9 +577,12 @@ The script above does all of this; the steps are here for reference. Run them as
 ```bash
 apt update
 apt -y install git nginx certbot python3-certbot-nginx postgresql redis-server tmux logrotate
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt -y install nodejs
-npm i -g pm2
+# Node 22 from the NodeSource apt repository (what server-setup.sh does; see "Moving to Node 22")
+install -d -m 755 /etc/apt/keyrings
+curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /etc/apt/keyrings/nodesource.asc
+echo "deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list
+apt update && apt -y install nodejs
+npm i -g pm2@6.0.14
 ufw allow OpenSSH && ufw allow 'Nginx Full' && ufw --force enable
 ```
 

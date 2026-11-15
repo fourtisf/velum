@@ -16,7 +16,7 @@ colors, copy and interactions. Do not redesign.
 1. **Match the prototype.** Port it to React components faithfully. Every color, radius,
    font size and label in `prototype/index.html` and `design/tokens.css` is intentional.
 2. **Use the house stack** (do not substitute):
-   - Frontend: **Next.js 14** (App Router, TypeScript, React 18)
+   - Frontend: **Next.js 15** (App Router, TypeScript, React 19)
    - API: **Fastify** (TypeScript)
    - DB: **PostgreSQL** via **Prisma**
    - Cache/queues: **Redis** (BullMQ for jobs)
@@ -69,7 +69,7 @@ velum/
 Create these as you build:
 
 ```
-apps/web/        Next.js 14 app (landing + /app/*)
+apps/web/        Next.js 15 app (landing + /app/*)
 apps/api/        Fastify read API, quotes, candles, relay queue
 apps/workers/    price relay, indexer, funding, risk workers (BullMQ)
 packages/sdk/    TS SDK: key derivation, note encryption, proving (noir_js + bb.js)
@@ -77,7 +77,7 @@ contracts/       Foundry project
 circuits/        Noir circuits
 ```
 
-Use **pnpm workspaces**. Node 20 LTS.
+Use **pnpm workspaces**. Node 22 LTS (still runs on Node 20.11+).
 
 ---
 

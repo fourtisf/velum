@@ -269,13 +269,32 @@ fi
 [ "$(psql_ -tAc "SELECT 1 FROM pg_database WHERE datname = 'velum'")" = "1" ] || psql_ -c "CREATE DATABASE velum OWNER velum;"
 
 echo "› Redis check"
-read -r R_HOST R_PORT R_DB < <(VELUM_V="${REDIS_URL}" node -e '
-  const u = new URL(process.env.VELUM_V);
-  console.log(u.hostname || "127.0.0.1", u.port || "6379", u.pathname.replace(/^\//, "") || "0");') || die "REDIS_URL in .env is not a valid URL."
-R_PASS="$(url_password "${REDIS_URL}")" || die "REDIS_URL in .env is not a valid URL."
+# REDIS_URL is TCP (redis://, the shared Redis) or a unix socket (unix://:PASSWORD@/run/…/redis.sock[?db=N],
+# the dedicated Redis of deploy/redis-velum.sh). Lines: socket path or "-", host, port, db, password.
+mapfile -t R < <(VELUM_V="${REDIS_URL}" node -e '
+  const s = process.env.VELUM_V || "";
+  const dec = (v) => decodeURIComponent(v || "");
+  const m = /^(?:redis\+)?unix:\/\/(?:([^/?#]*)@)?(\/[^?#]*)(?:\?([^#]*))?$/i.exec(s);
+  let out;
+  if (m) {
+    const q = new URLSearchParams(m[3] || "");
+    const auth = m[1] || "";
+    const pass = auth.includes(":") ? dec(auth.slice(auth.indexOf(":") + 1)) : (q.get("password") || "");
+    out = [m[2], "-", "-", q.get("db") || "0", pass];
+  } else {
+    const u = new URL(s);
+    if (!/^rediss?:$/.test(u.protocol)) throw new Error();
+    out = ["-", u.hostname || "127.0.0.1", u.port || "6379", u.pathname.replace(/^\//, "") || "0", dec(u.password)];
+  }
+  if (out.some((v) => v.includes("\n")) || !/^\d{1,2}$/.test(out[3])) throw new Error();
+  process.stdout.write(out.join("\n") + "\n");' 2>/dev/null)
+[ "${#R[@]}" -eq 5 ] || die "REDIS_URL in .env is not a valid redis:// or unix:// URL."
+R_SOCK="${R[0]}" R_HOST="${R[1]}" R_PORT="${R[2]}" R_DB="${R[3]}" R_PASS="${R[4]}"
 rcli() {
-  if [ -n "${R_PASS}" ]; then REDISCLI_AUTH="${R_PASS}" redis-cli -h "${R_HOST}" -p "${R_PORT}" -n "${R_DB}" "$@"
-  else env -u REDISCLI_AUTH redis-cli -h "${R_HOST}" -p "${R_PORT}" -n "${R_DB}" "$@"; fi
+  local where=(-h "${R_HOST}" -p "${R_PORT}")
+  [ "${R_SOCK}" = "-" ] || where=(-s "${R_SOCK}")
+  if [ -n "${R_PASS}" ]; then REDISCLI_AUTH="${R_PASS}" redis-cli "${where[@]}" -n "${R_DB}" "$@"
+  else env -u REDISCLI_AUTH redis-cli "${where[@]}" -n "${R_DB}" "$@"; fi
 }
 REDIS_PONG="$(rcli ping 2>/dev/null || true)"
 [ "${REDIS_PONG}" = "PONG" ] || die "Cannot reach Redis with REDIS_URL from .env (${REDIS_PONG:-no answer}). Fix REDIS_URL, then re-run."

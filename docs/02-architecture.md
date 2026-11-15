@@ -3,7 +3,7 @@
 ## 1. System overview
 
 ```
- Browser (Next.js 14 app)
+ Browser (Next.js 15 app)
  ├─ wagmi/viem  ── public txs (shield, approve) ──────────────► Robinhood Chain
  ├─ @velum/sdk  ── keys, note decrypt, Noir proofs (WASM)          ▲
  │                                                                  │
@@ -27,7 +27,7 @@
 
 ```
 apps/
-  web/            Next.js 14 App Router, TS
+  web/            Next.js 15 App Router, TS
     app/(landing)/page.tsx
     app/app/layout.tsx           app shell (nav tabs, bottom bar ≤960px)
     app/app/trade/[symbol]/page.tsx

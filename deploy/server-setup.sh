@@ -83,7 +83,7 @@ fi
 echo "› Packages (installs missing ones only; installed packages are never upgraded)"
 HAD_REDIS=0
 if pkg_installed redis-server || command -v redis-server >/dev/null || ! port_free "${REDIS_PORT}"; then HAD_REDIS=1; fi
-want=(git curl ca-certificates nginx certbot python3-certbot-nginx postgresql dnsutils openssl)
+want=(git curl ca-certificates nginx certbot python3-certbot-nginx postgresql dnsutils openssl logrotate)
 [ "${HAD_REDIS}" = "1" ] || want+=(redis-server)
 missing=()
 for p in "${want[@]}"; do pkg_installed "${p}" || missing+=("${p}"); done

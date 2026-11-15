@@ -114,6 +114,14 @@ Third pass (round 3, deploy scripts at `b67db0f`). Verified as root on a scratch
 | I-3 | Info | The docs' `pg_dump` ran as the postgres superuser against a database owned by a possibly compromised role (CVE-2024-7348 class) | **Fixed**: `deploy/backup-db.sh` dumps and restores as the role from `DATABASE_URL`, password through a temporary root-only `PGPASSFILE` (never argv); upgrade step 3 and the nightly backup use it |
 | I-4 | Info | Fresh-install docs cloned `--branch main`; the only branch is `claude/new-session-93ke66` | **Fixed** in docs/05 and README |
 
+Re-review of the round-3 fixes (`9e5fe06`), by the round-3 reviewer: the docs/05 upgrade (steps 1–5) from a reproduced `96c4864` layout with an out-of-unit PM2 daemon holding a secret and a pre-existing PM2-generated `pm2-velum.service`, in an interactive root pty with TIOCSTI enabled and the payloads planted, then routine deploy, rollback, `set-network.sh` (success and forced failure), `new-key.sh` and the move to new users. Every round-3 PoC was re-run; none reproduces (payload log empty across all scenarios). Verdict: the upgrade is safe to run. Residuals:
+
+| ID | Sev | Finding | Status |
+|---|---|---|---|
+| R4-01 | Low | `server-setup.sh` did not install `logrotate`, which the PM2 log rules now rely on (Ubuntu ships it, so rare) | **Fixed**: added to the package list |
+| R4-02 | Info | Output redirected to a file keeps app-written escape sequences byte for byte | **Documented** (docs/05: read such files with `less` or `cat -v`) |
+| R4-03 | Info | The first release's switch from TCP to the API socket gives a ~4 s `/api/` 502 window | Accepted; docs/05 step 4 states a few seconds of downtime |
+
 ## Frontend
 
 | ID | Sev | Finding | Status |

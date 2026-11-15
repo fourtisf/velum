@@ -48,7 +48,10 @@ if VELUM_ENV_RESTORE="${backup}" bash "${BASE}/deploy/deploy.sh"; then exit 0; f
 if [ "$(readlink "${BASE}/current" 2>/dev/null || true)" = "${before}" ]; then
   if ! cmp -s "${backup}" "${ENV_FILE}"; then
     restore_env_backup "${backup}"
-    [ "${SEPARATE}" != 1 ] || render_web_env "${ENV_FILE}" | install_file "${BASE}/web.env" 640 "root:${WEB_GROUP}"
+    if [ "${SEPARATE}" = 1 ]; then
+      render_web_env "${ENV_FILE}" | install_file "${BASE}/web.env" 640 "root:${WEB_GROUP}"
+      render_signer_env "${ENV_FILE}" | install_file "${BASE}/signer.env" 640 "root:${SIGNER_GROUP}"
+    fi
   fi
   die "Switching to ${NET} failed; ${ENV_FILE} is back to its previous network (${backup##*/}) and the running release is unchanged. See the messages above."
 fi

@@ -1,6 +1,6 @@
 # shellcheck shell=bash disable=SC2015,SC2034 # "A && B || die" is intended (die exits); globals are read by the sourcing scripts.
 # Shared helpers for the Velum deploy scripts. Sourced (never executed) by deploy.sh, release.sh,
-# server-setup.sh, import-env.sh, set-network.sh and new-key.sh.
+# server-setup.sh, import-env.sh, set-network.sh, new-key.sh, redis-velum.sh and as-user.sh.
 #
 # .env format (audit L4): one KEY=VALUE per line, read as data and never evaluated by a shell.
 #   - KEY is [A-Za-z_][A-Za-z0-9_]*, optionally prefixed by "export "; spaces around KEY are ignored.
@@ -9,14 +9,19 @@
 #   - Blank lines and lines starting with # are ignored. The last assignment of a key wins.
 # deploy/ecosystem.config.cjs parses the file with the same rules.
 #
-# Who may do what (audit M4, R2-H1, R2-M3), when run as root:
+# Who may do what (audit M4, R2-H1, R2-M3, on-chain audit M-2), when run as root:
 #   - root runs only root-owned files from the base (git checkout), runs git with hooks and fsmonitor
-#     disabled (root_git), and writes only paths it owns (the base, /etc/nginx, systemd units);
+#     disabled (root_git), and writes only paths it owns (the base, /etc/nginx, /etc/velum, systemd units);
 #   - the app user (APP_USER, default velum) builds releases and runs api + workers;
 #   - the web user (WEB_USER, default velum-web) only runs the web, from read-only release files,
 #     with a root-rendered web.env that holds no secret, in its own PM2 daemon;
+#   - the signer user (SIGNER_USER, default velum-signer) runs only the price relayer and the keeper, the only
+#     code that holds hot keys, in its own PM2 daemon, from its OWN build of the same commit in its own 0700 home
+#     (never the app user's release files, which the app user could rewrite), with a root-rendered signer.env (no
+#     secrets) and the keys in SIGNER_KEYS_FILE (root:<signer group> 640). It is in no other group: it cannot read
+#     .env, the API socket's directory, the other users' homes or PM2 files, and they cannot read its own;
 #   - anything under a user's home, PM2 home or release directory is touched only as that user
-#     (as_app / as_web), so a symbolic link planted there can never redirect a root write;
+#     (as_app / as_web / as_signer), so a symbolic link planted there can never redirect a root write;
 #   - every switch to another user goes through run_isolated (audit R3-01): a new session without a
 #     controlling terminal and never the operator's terminal itself, so code the user controls (its
 #     ~/.node_modules, ~/.npmrc, release files) cannot type into root's shell (TIOCSTI), read its
@@ -318,26 +323,36 @@ user_home() {
 }
 
 # velum_mode BASE — decides who runs what. Sets APP_USER/APP_GROUP/APP_HOME/PM2_DIR, WEB_USER/WEB_HOME,
-# APP_SCOPE, SEPARATE and VELUM_BASE_DIR.
-# As root: velum builds and runs api + workers, velum-web runs the web (audit R2-M3); root only runs git
-# and the root-owned scripts, and refuses to start if the base is not safe (assert_root_owned_tree).
+# SIGNER_USER/SIGNER_GROUP/SIGNER_HOME, APP_SCOPE, SEPARATE and VELUM_BASE_DIR.
+# As root: velum builds and runs api + workers, velum-web runs the web (audit R2-M3), velum-signer runs the price
+# relayer and the keeper (on-chain audit M-2); root only runs git and the root-owned scripts, and refuses to start if
+# the base is not safe (assert_root_owned_tree).
 # Not root: allowed only on a checkout you own (local or single-user setups); everything runs as you.
 velum_mode() {
-  local base="$1" owner rec_app rec_web
+  local base="$1" owner rec_app rec_web rec_signer u
   VELUM_BASE_DIR="${base}"
   if [ "$(id -u)" -eq 0 ]; then
     # The users server-setup.sh installed this base with (audit R3-05). Only server-setup.sh changes
     # them, so a later run without APP_USER never falls back to an old (possibly compromised) user.
     rec_app="$(recorded_user "${base}" APP_USER)"
     rec_web="$(recorded_user "${base}" WEB_USER)"
+    rec_signer="$(recorded_user "${base}" SIGNER_USER)"
     if [ "${2:-}" != setup ] && [ -n "${rec_app}" ]; then
       { [ -z "${APP_USER:-}" ] || [ "${APP_USER}" = "${rec_app}" ]; } && { [ -z "${WEB_USER:-}" ] || [ "${WEB_USER}" = "${rec_web}" ]; } ||
         die "This base runs as ${rec_app} and ${rec_web} (${base}/${VELUM_USERS_FILE}, written by server-setup.sh), not ${APP_USER:-${rec_app}} and ${WEB_USER:-${rec_web}}. To move it to other users, run server-setup.sh with APP_USER=… WEB_USER=… (docs/05-deploy-vps.md, \"Compromise suspected\")."
+      # A base set up before the signer split (on-chain audit M-2) has no signer user yet: server-setup.sh creates it
+      # and moves the hot keys out of .env. Until then nothing else runs, so the keys never stay readable by the app user
+      # while a release of this version goes live.
+      [ -n "${rec_signer}" ] || die "This base was set up before the price relayer and keeper moved to their own user (on-chain audit M-2). Re-run server-setup.sh once (DOMAIN=… EMAIL=… bash ${base}/deploy/server-setup.sh): it creates ${SIGNER_USER:-velum-signer}, moves the hot keys out of .env into ${SIGNER_KEYS_FILE} and runs the release (docs/05-deploy-vps.md, \"Upgrading to the separate signer\")."
+      [ -z "${SIGNER_USER:-}" ] || [ "${SIGNER_USER}" = "${rec_signer}" ] ||
+        die "This base runs its signer as ${rec_signer} (${base}/${VELUM_USERS_FILE}), not ${SIGNER_USER}. To move it, run server-setup.sh with SIGNER_USER=… (docs/05-deploy-vps.md, \"Compromise suspected\")."
     fi
     APP_USER="${APP_USER:-${rec_app:-velum}}"
     WEB_USER="${WEB_USER:-${rec_web:-velum-web}}"
-    [ "${APP_USER}" != root ] && [ "${WEB_USER}" != root ] || die "APP_USER and WEB_USER must not be root."
+    SIGNER_USER="${SIGNER_USER:-${rec_signer:-velum-signer}}"
+    [ "${APP_USER}" != root ] && [ "${WEB_USER}" != root ] && [ "${SIGNER_USER}" != root ] || die "APP_USER, WEB_USER and SIGNER_USER must not be root."
     [ "${APP_USER}" != "${WEB_USER}" ] || die "APP_USER and WEB_USER must be different users."
+    [ "${SIGNER_USER}" != "${APP_USER}" ] && [ "${SIGNER_USER}" != "${WEB_USER}" ] || die "SIGNER_USER must be a user of its own, neither ${APP_USER} nor ${WEB_USER}."
     SEPARATE=1
     APP_SCOPE=backend
     assert_root_owned_tree "${base}"
@@ -347,20 +362,33 @@ velum_mode() {
     [ -z "${APP_USER:-}" ] || [ "${APP_USER}" = "$(id -un)" ] || die "Only root can act as another user."
     APP_USER="$(id -un)"
     WEB_USER="${APP_USER}"
+    SIGNER_USER="${APP_USER}"
     SEPARATE=0
     APP_SCOPE=all
   fi
   id -u "${APP_USER}" >/dev/null 2>&1 || die "User ${APP_USER} does not exist (deploy/server-setup.sh creates it)."
   id -u "${WEB_USER}" >/dev/null 2>&1 || die "User ${WEB_USER} does not exist (deploy/server-setup.sh creates it)."
+  id -u "${SIGNER_USER}" >/dev/null 2>&1 || die "User ${SIGNER_USER} does not exist (deploy/server-setup.sh creates it)."
   APP_GROUP="$(id -gn "${APP_USER}")"
   WEB_GROUP="$(id -gn "${WEB_USER}")"
+  SIGNER_GROUP="$(id -gn "${SIGNER_USER}")"
   APP_HOME="$(user_home "${APP_USER}")"
   WEB_HOME="$(user_home "${WEB_USER}")"
+  SIGNER_HOME="$(user_home "${SIGNER_USER}")"
   PM2_DIR="${APP_HOME}/.pm2"
   WEB_PM2_DIR="${WEB_HOME}/.pm2"
+  SIGNER_PM2_DIR="${SIGNER_HOME}/.pm2"
   if [ "${SEPARATE}" = 1 ]; then
     # The web user must not share the app group: that group can read .env (audit R2-M3).
     if id -nG "${WEB_USER}" | tr ' ' '\n' | grep -qxF "${APP_GROUP}"; then die "${WEB_USER} is in group ${APP_GROUP}, which can read .env. Remove it: gpasswd -d ${WEB_USER} ${APP_GROUP}"; fi
+    # The signer is in its own group only (M-2): no app group (.env, the API socket's directory, the status files of the
+    # others), no web group (the release files it must never run), nothing else; and nobody else is in its group,
+    # which can read the hot keys.
+    [ "$(id -G "${SIGNER_USER}")" = "$(id -g "${SIGNER_USER}")" ] || die "${SIGNER_USER} is in other groups ($(id -nG "${SIGNER_USER}")); it must be in its own group only. Remove it from the others: gpasswd -d ${SIGNER_USER} <group>"
+    [ "${SIGNER_GROUP}" != "${APP_GROUP}" ] && [ "${SIGNER_GROUP}" != "${WEB_GROUP}" ] || die "${SIGNER_USER} must have a group of its own (useradd --user-group), not ${SIGNER_GROUP}."
+    for u in "${APP_USER}" "${WEB_USER}"; do
+      if id -nG "${u}" | tr ' ' '\n' | grep -qxF "${SIGNER_GROUP}"; then die "${u} is in group ${SIGNER_GROUP}, which can read the hot keys. Remove it: gpasswd -d ${u} ${SIGNER_GROUP}"; fi
+    done
   fi
 }
 
@@ -554,6 +582,8 @@ as_user() {
 as_app() { as_user "${APP_USER}" "${APP_HOME}" "${APP_SCOPE}" "$@"; }
 # as_web CMD… — as the web user (web PM2 only). Same as as_app without root.
 as_web() { if [ "${SEPARATE}" = "1" ]; then as_user "${WEB_USER}" "${WEB_HOME}" web "$@"; else as_app "$@"; fi; }
+# as_signer CMD… — as the signer user (its own build, its PM2, key addresses). Same as as_app without root.
+as_signer() { if [ "${SEPARATE}" = "1" ]; then as_user "${SIGNER_USER}" "${SIGNER_HOME}" signer "$@"; else as_app "$@"; fi; }
 
 # remove_release DIR — deletes an app-owned release directory: its contents as the app user (so root
 # never walks a tree another user controls), then the now empty directory as root (releases/ is
@@ -574,6 +604,153 @@ remove_release() {
   else
     rm -rf -- "${d}"
   fi
+}
+
+# ── The signer (on-chain audit M-2) ──────────────────────────────────────────
+# The hot keys live in SIGNER_KEYS_FILE (root:<signer group> 640, in a root-owned directory), never in .env: only root
+# writes it (new-key.sh, the one-time migration in server-setup.sh) and only the signer user can read it. The signer's
+# settings are rendered by root into <base>/signer.env (root:<signer group> 640, no secrets). Its status for /v1/health
+# goes to SIGNER_STATUS_FILE (.env; the API reads the same value; default /run/velum-signer/status.json): a directory
+# root creates at boot (tmpfiles.d), owned by the signer and readable, not writable, by the app user's group (the API).
+# VELUM_ETC is overridable for tests only.
+VELUM_ETC="${VELUM_ETC:-/etc/velum}"
+SIGNER_KEYS_FILE="${SIGNER_KEYS_FILE:-${VELUM_ETC}/signer-keys.env}"
+SIGNER_STATUS_DEFAULT=/run/velum-signer/status.json
+SIGNER_HOT_KEYS='PRICE_RELAY_PRIVATE_KEY KEEPER_PRIVATE_KEY'
+# Settings the signer may see (keep in sync with ALLOW['velum-signer'] in deploy/ecosystem.config.cjs): none is a
+# secret except RPC_URL_SEND's provider path, which only the signer uses. Root adds the paths below.
+SIGNER_ENV_KEYS='NODE_ENV VELUM_NETWORK CHAIN_ID RPC_URL RPC_URL_SEND LOG_LEVEL ONCHAIN_WORKERS ONCHAIN_MAINNET_CONFIRMED PRICE_PUSH_INTERVAL_MS RELAYER_MAX_GWEI KEEPER_MAX_GWEI RELAYER_MIN_BALANCE_ETH KEEPER_MIN_BALANCE_ETH KEEPER_ETH_PRICE_USD KEEPER_INTERVAL_MS FUNDING_EPOCH_SECONDS CONFIRMATIONS INDEXER_CHUNK_BLOCKS'
+plain_abs_path() { [[ "$1" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "/$1/" != *"/../"* ]] && [[ "/$1/" != *"/./"* ]] && [ "${#1}" -le 200 ]; }
+plain_abs_path "${SIGNER_KEYS_FILE}" || die "SIGNER_KEYS_FILE must be a plain absolute path."
+
+# signer_status_file ENV_FILE — the signer's status file: SIGNER_STATUS_FILE from ENV_FILE (the API reads the same
+# value), default /run/velum-signer/status.json. Must be /run/<dir>/<name>.json; its directory is the signer's own.
+signer_status_file() {
+  local f d
+  f="$(env_get "$1" SIGNER_STATUS_FILE)"
+  f="${f:-${SIGNER_STATUS_DEFAULT}}"
+  d="${f%/*}"
+  [[ "${f}" =~ ^/run/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\.json$ ]] && [ "${#f}" -le 100 ] && [ "${d##*/}" != . ] && [ "${d##*/}" != .. ] ||
+    die "SIGNER_STATUS_FILE in $1 must look like /run/<dir>/<name>.json (default ${SIGNER_STATUS_DEFAULT})."
+  printf '%s' "${f}"
+}
+
+# onchain_on ENV_FILE — true when ENV_FILE has the literal ONCHAIN_WORKERS=true (ecosystem.config.cjs and the apps decide
+# the same way).
+onchain_on() { [ "$(env_get "$1" ONCHAIN_WORKERS | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" = true ]; }
+
+# render_signer_env ENV_FILE — prints the signer's settings file (root renders it to <base>/signer.env,
+# root:<signer group> 640; the signer cannot read .env). Values double-quoted like web.env.
+render_signer_env() {
+  local env_file="$1" k v
+  printf '# Generated from .env by deploy/deploy.sh (and server-setup.sh) for the signer only. Do not edit. No secrets: the\n'
+  printf '# hot keys are in SIGNER_KEYS_FILE, and the signer gets no DATABASE_URL, REDIS_URL or PROXY_SECRET.\n'
+  for k in ${SIGNER_ENV_KEYS}; do
+    v="$(env_get "${env_file}" "${k}")"
+    if [ -n "${v}" ]; then printf '%s="%s"\n' "${k}" "${v}"; fi
+  done
+  printf 'SIGNER_KEYS_FILE="%s"\nSIGNER_STATUS_FILE="%s"\n' "${SIGNER_KEYS_FILE}" "$(signer_status_file "${env_file}")"
+}
+
+# env_unset FILE KEY… — removes every assignment of the KEYs from FILE, atomically (same owner and mode).
+env_unset() {
+  local file="$1" tmp
+  shift
+  [ -f "${file}" ] && [ ! -L "${file}" ] || die "${file} does not exist (or is a symbolic link)."
+  tmp="$(mktemp "${file}.tmp.XXXXXX")"
+  if ! VELUM_UNSET_KEYS="$*" awk '
+      BEGIN { n = split(ENVIRON["VELUM_UNSET_KEYS"], ks, " "); for (j = 1; j <= n; j++) drop[ks[j]] = 1 }
+      {
+        line = $0
+        sub(/\r$/, "", line)
+        if (line !~ /^[[:space:]]*#/) {
+          k = line
+          sub(/^[[:space:]]*(export[[:space:]]+)?/, "", k)
+          p = index(k, "=")
+          if (p > 1) { k = substr(k, 1, p - 1); sub(/[[:space:]]+$/, "", k); if (k in drop) next }
+        }
+        print $0
+      }' "${file}" >"${tmp}"; then
+    rm -f "${tmp}"
+    die "Could not rewrite ${file}."
+  fi
+  chmod --reference="${file}" "${tmp}"
+  chown --reference="${file}" "${tmp}" 2>/dev/null || true
+  mv -f "${tmp}" "${file}"
+}
+
+# hot_keys_in FILE — prints the hot keys FILE assigns a non-empty value (names only).
+hot_keys_in() {
+  local k
+  for k in ${SIGNER_HOT_KEYS}; do
+    if [ -n "$(env_get "$1" "${k}")" ]; then printf '%s\n' "${k}"; fi
+  done
+}
+
+# ensure_signer_keys_file — creates VELUM_ETC (root:root 755) and SIGNER_KEYS_FILE (root:<signer group> 640) when
+# missing, and puts their owner and mode right. Never follows a symbolic link; never prints a key.
+ensure_signer_keys_file() {
+  local dir="${SIGNER_KEYS_FILE%/*}"
+  [ ! -L "${dir}" ] || die "${dir} is a symbolic link; refusing to use it."
+  if [ -e "${dir}" ]; then [ -d "${dir}" ] && [ "$(stat -c %u "${dir}")" = 0 ] || die "${dir} exists but is not a root-owned directory."; fi
+  install -d -o root -g root -m 755 "${dir}"
+  [ ! -L "${SIGNER_KEYS_FILE}" ] || die "${SIGNER_KEYS_FILE} is a symbolic link; refusing to use it."
+  if [ ! -e "${SIGNER_KEYS_FILE}" ]; then
+    printf '# The signer'"'"'s hot keys (on-chain audit M-2). Written by deploy/new-key.sh; root:%s 640. Never copy them into .env.\n' "${SIGNER_GROUP}" |
+      install_file "${SIGNER_KEYS_FILE}" 640 "root:${SIGNER_GROUP}"
+  fi
+  [ -f "${SIGNER_KEYS_FILE}" ] && [ "$(stat -c %u "${SIGNER_KEYS_FILE}")" = 0 ] && [ "$(stat -c %h "${SIGNER_KEYS_FILE}")" = 1 ] || die "${SIGNER_KEYS_FILE} must be a regular root-owned file with one link."
+  chown "root:${SIGNER_GROUP}" "${SIGNER_KEYS_FILE}"
+  chmod 640 "${SIGNER_KEYS_FILE}"
+  env_backups_tidy "${SIGNER_KEYS_FILE}"
+}
+
+# migrate_signer_keys ENV_FILE — the one-time move of the hot keys out of .env (which the app user can read) into
+# SIGNER_KEYS_FILE. A key already in the keys file with the same value is just removed from .env; a different value
+# is a conflict nothing resolves automatically. Both files are backed up first (root:root 600), every .env backup is
+# rewritten without the keys (so no backup restore puts them back where the app user can read them), and both results
+# are read back. Prints names and outcomes, never values.
+migrate_signer_keys() {
+  local env_file="$1" k v have moved="" backup
+  ensure_signer_keys_file
+  for k in $(hot_keys_in "${env_file}"); do
+    [ "$(grep -c -E "^[[:space:]]*(export[[:space:]]+)?${k}[[:space:]]*=" "${env_file}" || true)" = 1 ] || die "${k} is set on more than one line in ${env_file}. Keep the right one, delete the others by hand, then re-run. Nothing was moved."
+    v="$(env_get "${env_file}" "${k}")"
+    [[ "${v}" =~ ^0x[0-9a-fA-F]{64}$ ]] || die "${k} in ${env_file} is not a private key (0x + 64 hex digits). Fix or empty it by hand, then re-run. Nothing was moved."
+    have="$(env_get "${SIGNER_KEYS_FILE}" "${k}")"
+    if [ -n "${have}" ] && [ "${have}" != "${v}" ]; then
+      die "${k} is set both in ${env_file} and in ${SIGNER_KEYS_FILE}, with different values. Decide which one is right, delete the other by hand (keep a copy as root), then re-run. Nothing was moved."
+    fi
+    if [ -z "${have}" ]; then
+      backup="$(env_backup "${SIGNER_KEYS_FILE}")"
+      env_set "${SIGNER_KEYS_FILE}" "${k}" "${v}"
+      [ "$(env_get "${SIGNER_KEYS_FILE}" "${k}")" = "${v}" ] || die "Writing ${SIGNER_KEYS_FILE} failed; restore ${backup}. .env was not changed."
+    fi
+    moved="${moved} ${k}"
+  done
+  unset v have
+  if [ -n "${moved}" ]; then
+    backup="$(env_backup "${env_file}")"
+    # shellcheck disable=SC2086 # names only
+    env_unset "${env_file}" ${moved}
+    [ -z "$(hot_keys_in "${env_file}")" ] || die "Removing the hot keys from ${env_file} failed; restore ${backup}."
+    say "Moved${moved} from .env to ${SIGNER_KEYS_FILE} (root:${SIGNER_GROUP} 640; previous .env kept as ${backup##*/}, without the keys)"
+  fi
+  scrub_env_backups "${env_file}"
+}
+
+# scrub_env_backups ENV_FILE — rewrites every ENV_FILE.bak.* (root:root 600) without the hot keys.
+scrub_env_backups() {
+  local b
+  while IFS= read -r b; do
+    [ -n "${b}" ] || continue
+    b="${1%/*}/${b}"
+    [ -f "${b}" ] && [ ! -L "${b}" ] || continue
+    if [ -n "$(hot_keys_in "${b}")" ]; then
+      # shellcheck disable=SC2086 # names only
+      env_unset "${b}" ${SIGNER_HOT_KEYS}
+    fi
+  done < <(find "${1%/*}" -maxdepth 1 -type f -name "${1##*/}.bak.*" -printf '%f\n')
 }
 
 # lock_deploy BASE — one deploy/server-setup/set-network/new-key/import-env at a time (flock on fd 9).
@@ -689,25 +866,38 @@ nginx_user_group() {
   [[ "${g}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || return 1
   printf '%s %s' "${u}" "${g}"
 }
-render_tmpfiles() { # SOCKET APP_USER NGINX_GROUP
+render_tmpfiles() { # SOCKET APP_USER NGINX_GROUP [SIGNER_USER APP_GROUP SIGNER_STATUS_DIR]
   printf '# Generated by deploy/server-setup.sh: the directory of the API socket (audit R3-03).\n'
   printf '# Only %s (the API) and Nginx'"'"'s group %s may enter it.\n' "$2" "$3"
   printf 'd %s 2750 %s %s -\n' "${1%/*}" "$2" "$3"
+  if [ -n "${4:-}" ]; then
+    printf '# The signer'"'"'s status (on-chain audit M-2): written by %s only, read by the API (group %s), nobody else.\n' "$4" "$5"
+    printf 'd %s 2750 %s %s -\n' "$6" "$4" "$5"
+  fi
 }
-# apply_tmpfiles SOCKET — (re)creates the socket directory from the tmpfiles.d entry, then checks it
-# belongs to APP_USER and that others (the web user among them) cannot enter it.
+# apply_tmpfiles SOCKET [SIGNER_STATUS_DIR] — (re)creates the socket directory (and the signer's status directory) from
+# the tmpfiles.d entries, then checks the socket directory belongs to APP_USER and that others (the web user and the
+# signer among them) cannot enter it, and that the signer's status directory belongs to SIGNER_USER, its group (the app
+# user's) may only read it and others cannot enter it.
 apply_tmpfiles() {
-  local d="${1%/*}" owner group mode
+  local d="${1%/*}" sd="${2:-}" owner group mode path
   [ -f "${TMPFILES_CONF}" ] || die "${TMPFILES_CONF} is missing. Re-run deploy/server-setup.sh (it creates the API socket directory)."
   if command -v systemd-tmpfiles >/dev/null; then
     systemd-tmpfiles --create "${TMPFILES_CONF}" || die "systemd-tmpfiles could not create ${d}."
   else
-    read -r _ _ mode owner group _ < <(grep -m1 '^d ' "${TMPFILES_CONF}")
-    install -d -o "${owner}" -g "${group}" -m "${mode}" "${d}"
+    while read -r _ path mode owner group _; do
+      [ ! -L "${path}" ] || die "${path} is a symbolic link."
+      install -d -o "${owner}" -g "${group}" -m "${mode}" "${path}"
+    done < <(grep '^d ' "${TMPFILES_CONF}")
   fi
   [ -d "${d}" ] && [ ! -L "${d}" ] && [ "$(stat -c %U "${d}")" = "${APP_USER}" ] && [ -z "$(find "${d}" -maxdepth 0 -perm /0007)" ] ||
     die "${d} must be a directory owned by ${APP_USER} that others cannot enter. Re-run deploy/server-setup.sh."
   [ "$(stat -c %G "${d}")" != "${WEB_GROUP:-}" ] || die "${d} has the web user's group; re-run deploy/server-setup.sh."
+  if [ -n "${sd}" ]; then
+    grep -q "^d ${sd} " "${TMPFILES_CONF}" || die "${TMPFILES_CONF} has no entry for the signer's status directory ${sd} (SIGNER_STATUS_FILE). Re-run deploy/server-setup.sh."
+    [ -d "${sd}" ] && [ ! -L "${sd}" ] && [ "$(stat -c %U:%G "${sd}")" = "${SIGNER_USER}:${APP_GROUP}" ] && [ -z "$(find "${sd}" -maxdepth 0 -perm /0027)" ] ||
+      die "${sd} must be a directory owned by ${SIGNER_USER}:${APP_GROUP} that the group cannot write and others cannot enter. Re-run deploy/server-setup.sh."
+  fi
 }
 # render_api_upstream MODE — the server line of Nginx's velum_api upstream: "socket" (the API's unix
 # socket) or "tcp" (127.0.0.1:PORT_API; only for the apps of an older layout before the first release).
@@ -767,4 +957,9 @@ restore_env_backup() {
   [ -f "${b}" ] && [ ! -L "${b}" ] || die "${b} is missing or not a regular file."
   if [ "$(id -u)" -eq 0 ]; then [ "$(stat -c %u "${b}")" = 0 ] || die "${b} is not owned by root."; fi
   install_file "${env_file}" 640 "root:${APP_GROUP}" <"${b}"
+  # The hot keys live in SIGNER_KEYS_FILE (on-chain audit M-2): a backup never brings one back into .env.
+  if [ -n "$(hot_keys_in "${env_file}")" ]; then
+    # shellcheck disable=SC2086 # names only
+    env_unset "${env_file}" ${SIGNER_HOT_KEYS}
+  fi
 }

@@ -1,28 +1,36 @@
 /**
- * End-to-end test of the on-chain workers against a local anvil, run by apps/workers/e2e/onchain-e2e.sh
- * (skipped without VELUM_E2E_RPC). The script starts anvil, a scratch Postgres and Redis, and deploys the
- * contracts with forge script; this file then runs the real relayer, keeper and indexer (startOnchain, on
- * BullMQ) and checks, in order:
+ * End-to-end test of the on-chain roles against a local anvil, run by apps/workers/e2e/onchain-e2e.sh (skipped without
+ * VELUM_E2E_RPC). The script starts anvil, a scratch Postgres and Redis, deploys the contracts with forge script and
+ * builds apps/workers. This file then runs the indexer in-process (startOnchain, on BullMQ, as the workers do) and the
+ * price relayer and keeper as the real, separate signer process (`node dist/signer.js`, on-chain audit M-2): its own
+ * keys file, state directory and status file, no DATABASE_URL, no REDIS_URL, its quotes from a fake Robinhood API on
+ * 127.0.0.1 (the test-only SIGNER_TEST_* settings, honoured on anvil only), its positions from the chain. It checks:
  *  1. the ABIs in packages/config match the forge artifacts;
- *  2. the relayer pushes an authenticated real-source price and never a demo one;
+ *  2. the signer pushes its own Robinhood quote (once confirmed by a change), never a market it has no quote for;
  *  3. positions open, the price falls (anvil time warps let the rate limit walk it), the keeper liquidates the
  *     5x long, the indexer records it (position, trade, activity), and no log line ever holds a hot key;
- *  4. a push stuck in the mempool is replaced with bumped fees and fresh prices, and the replacement mines;
+ *  4. a push stuck in the mempool is replaced with bumped fees and fresh prices, and the replacement mines (seen from
+ *     outside the signer, in anvil's transaction pool);
  *  5. a reorg (anvil snapshot / revert) rewinds the index to the common ancestor;
- *  6. a forced exit matures (7-day warp) and the keeper settles it.
+ *  6. a forced exit matures (7-day warp) and the keeper settles it;
+ *  7. /v1/health's on-chain summary combines the workers' status and the signer's status file.
  * It writes what the API test needs (apps/api/src/onchain-e2e.test.ts) to VELUM_E2E_OUT.
  * Only anvil's public test accounts sign, with keys derived from anvil's public test mnemonic.
  */
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { cacheKeys, parseRedisUrl, type MarketSnapshot } from '@velum/config';
+import { MAINNET_CHAIN_ID, MAINNET_TOKEN_ADDRESSES, parseRedisUrl } from '@velum/config';
 import { createCacheMac } from '@velum/config/src/cache-mac';
 import { readDeploymentFile } from '@velum/config/src/deployment-file';
-import type { Deployment } from '@velum/config/src/onchain';
+import { ONCHAIN_STATUS_KEY, parseOnchainStatus, parseSignerStatus, type Deployment, type SignerStatus } from '@velum/config/src/onchain';
 import { PrismaClient } from '@velum/db';
 import { Redis } from 'ioredis';
 import {
   createWalletClient,
+  decodeFunctionData,
   encodeFunctionData,
   http,
   parseAbi,
@@ -38,6 +46,7 @@ import {
 } from 'viem';
 import { mnemonicToAccount } from 'viem/accounts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { onchainSummary } from '../../../api/src/routes/health';
 import type { Logger } from '../lib/log';
 import { abis, chainFor, publicClientFor } from './chain';
 import { loadOnchainEnv } from './env';
@@ -63,6 +72,7 @@ const MAX = 2n ** 256n - 1n;
 const OPEN = Date.UTC(2026, 10, 16, 15, 0, 0);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const SIGNER_JS = path.resolve(__dirname, '../../dist/signer.js');
 async function waitFor<T>(what: string, fn: () => Promise<T | null | undefined | false>, timeoutMs = 60_000, everyMs = 500): Promise<T> {
   const until = Date.now() + timeoutMs;
   let last: unknown;
@@ -104,8 +114,13 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
   const lines: string[] = [];
   const t0 = Date.now();
   const clock = () => OPEN + (Date.now() - t0);
-  const target: Record<string, string> = { TSLA: '391.65', AMZN: '233.40' };
-  let feeder: NodeJS.Timeout | undefined;
+  // The fake Robinhood API's quotes. TSLA starts one cent lower: the signer confirms a quote only once it has seen it
+  // change (audit F-6), so its first push is the quote it moved to. AMZN has no quote at all.
+  const target: Record<string, string> = { TSLA: '391.64' };
+  let quoteServer: Server | undefined;
+  let signer: ChildProcess | undefined;
+  const signerOut: string[] = [];
+  let home = '';
   const relayKey = keyOf(1);
   const keeperKey = keyOf(2);
   const keeper = mnemonicToAccount(MNEMONIC, { addressIndex: 2 }).address;
@@ -128,18 +143,79 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
   const band = async (sym: string) => (await client.readContract({ address: d.contracts.oracle, abi: abis.oracle, functionName: 'bands', args: [d.tokens[sym]!] })) as readonly [bigint, bigint, bigint];
   const position = (id: bigint) => prisma.perpPosition.findUnique({ where: { chainId_perps_positionId: { chainId: CHAIN_ID, perps: d.contracts.perpsMarkets, positionId: id } } });
 
-  function writeSnapshots(): Promise<unknown> {
-    const now = clock();
-    const pipe = redis.pipeline();
-    const mac = createCacheMac(DB, 'testnet');
-    for (const [symbol, price] of Object.entries(target)) {
-      const snap: MarketSnapshot = { symbol, price, mark: price, open24h: price, spark: [price], source: symbol === 'AMZN' ? 'demo' : 'robinhood', updatedAt: now, checkedAt: now };
-      pipe.set(cacheKeys.price(symbol), mac.seal(cacheKeys.price(symbol), JSON.stringify(snap)));
+  /** The signer's status file (written every 5 s by the signer process). */
+  const status = (): SignerStatus => {
+    const s = parseSignerStatus(readFileSync(path.join(home, 'run', 'status.json'), 'utf8'), Date.now());
+    if (!s) throw new Error('no signer status');
+    return s;
+  };
+  const freshStatus = async (): Promise<SignerStatus> => {
+    const before = Date.now();
+    return waitFor('a fresh signer status', async () => {
+      const s = status();
+      return s.at >= before ? s : null;
+    }, 20_000, 200);
+  };
+
+  /** A fake of api.robinhood.com/rhj/prices/<SYM>: the token's own bid/ask, dated with the signer's (shifted) clock. */
+  function startQuotes(): Promise<number> {
+    quoteServer = createServer((req, res) => {
+      const sym = decodeURIComponent((req.url ?? '').split('/').pop() ?? '');
+      const price = target[sym];
+      if (!req.url?.startsWith('/prices/') || !price) {
+        res.statusCode = 404;
+        return res.end('{}');
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          quotes: [{ tokenSymbol: sym, deployments: [{ chainId: MAINNET_CHAIN_ID, contractAddress: MAINNET_TOKEN_ADDRESSES[sym] }], tokenBid: price, tokenAsk: price, isTradingHalt: false, generatedAt: new Date(clock()).toISOString() }],
+        }),
+      );
+    });
+    return new Promise((resolve) => quoteServer!.listen(0, '127.0.0.1', () => resolve((quoteServer!.address() as { port: number }).port)));
+  }
+
+  /** Starts `node dist/signer.js` as the separate signer process, with only the signer's settings (no Postgres, no Redis). */
+  function startSigner(port: number): void {
+    mkdirSync(path.join(home, 'run'), { recursive: true });
+    const keys = path.join(home, 'signer-keys.env');
+    writeFileSync(keys, `PRICE_RELAY_PRIVATE_KEY=${relayKey}\nKEEPER_PRIVATE_KEY=${keeperKey}\n`, { mode: 0o600 });
+    chmodSync(keys, 0o600);
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      HOME: home,
+      NODE_ENV: 'production',
+      LOG_LEVEL: 'debug',
+      CHAIN_ID: String(CHAIN_ID),
+      RPC_URL: RPC,
+      ONCHAIN_WORKERS: 'true',
+      CONFIRMATIONS: '1',
+      KEEPER_INTERVAL_MS: '1000',
+      PRICE_PUSH_INTERVAL_MS: '8000',
+      FUNDING_EPOCH_SECONDS: '60',
+      RELAYER_MAX_GWEI: '5',
+      KEEPER_ETH_PRICE_USD: '100',
+      SIGNER_KEYS_FILE: keys,
+      SIGNER_STATUS_FILE: path.join(home, 'run', 'status.json'),
+      SIGNER_STATE_DIR: path.join(home, 'state'),
+      SIGNER_DEPLOYMENTS_DIR: DIR,
+      SIGNER_TEST_PRICES_URL: `http://127.0.0.1:${port}/prices`,
+      SIGNER_TEST_ASSETS_URL: `http://127.0.0.1:${port}/assets`,
+      SIGNER_TEST_CLOCK_OFFSET_MS: String(OPEN - t0),
+    };
+    signer = spawn(process.execPath, ['--enable-source-maps', SIGNER_JS], { cwd: path.dirname(path.dirname(SIGNER_JS)), env, stdio: ['ignore', 'pipe', 'pipe'] });
+    for (const stream of [signer.stdout!, signer.stderr!]) {
+      stream.setEncoding('utf8');
+      stream.on('data', (chunk: string) => {
+        signerOut.push(chunk);
+        for (const l of chunk.split('\n')) if (/"level":"(warn|error)"/.test(l) && !/robinhood quote failed/.test(l)) process.stderr.write(`signer: ${l}\n`);
+      });
     }
-    return pipe.exec();
   }
 
   beforeAll(async () => {
+    if (!existsSync(SIGNER_JS)) throw new Error(`${SIGNER_JS} is missing: build apps/workers first (onchain-e2e.sh does)`);
     const read = readDeploymentFile(DIR, CHAIN_ID);
     if (read.status !== 'ok') throw new Error(`deployment file: ${read.status}`);
     d = read.deployment;
@@ -150,18 +226,29 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
     redis = new Redis({ ...parsed.options, maxRetriesPerRequest: null });
     await redis.flushdb();
     client = publicClientFor(CHAIN_ID, RPC!);
-    await writeSnapshots();
-    feeder = setInterval(() => void writeSnapshots(), 1000);
+    home = mkdtempSync(path.join(tmpdir(), 'velum-signer-e2e-'));
+    chmodSync(home, 0o700);
+    startSigner(await startQuotes());
+    // The quote moves after a few polls: from then on it is confirmed (and stays so while unchanged).
+    setTimeout(() => (target.TSLA = '391.65'), 5000).unref();
   }, 60_000);
 
   afterAll(async () => {
-    if (feeder) clearInterval(feeder);
     await handle?.writeStatus();
     await handle?.stop();
+    if (signer && signer.exitCode === null) {
+      signer.kill('SIGTERM');
+      await new Promise((r) => signer!.once('exit', r));
+    }
+    quoteServer?.close();
+    lines.push(...signerOut.join('').split('\n').filter(Boolean));
+    // The API's end-to-end test reads the signer's last status (as the API reads the status file in production).
+    if (OUT && home && existsSync(path.join(home, 'run', 'status.json'))) writeFileSync(`${OUT}.signer-status.json`, readFileSync(path.join(home, 'run', 'status.json')));
     if (OUT) {
       writeFileSync(OUT, JSON.stringify(result, null, 2));
       writeFileSync(`${OUT}.workers.log`, lines.join('\n'));
     }
+    if (home) rmSync(home, { recursive: true, force: true });
     await prisma?.$disconnect();
     await redis?.quit();
   }, 60_000);
@@ -181,36 +268,32 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
     }
   });
 
-  it('starts from the env gate and pushes the authenticated real-source price, never the demo one', async () => {
-    const env = loadOnchainEnv({
-      ONCHAIN_WORKERS: 'true',
-      DEPLOYMENTS_DIR: DIR,
-      PRICE_RELAY_PRIVATE_KEY: relayKey,
-      KEEPER_PRIVATE_KEY: keeperKey,
-      CONFIRMATIONS: '1',
-      INDEXER_POLL_MS: '500',
-      KEEPER_INTERVAL_MS: '1000',
-      PRICE_PUSH_INTERVAL_MS: '8000',
-      FUNDING_EPOCH_SECONDS: '60',
-      RELAYER_MAX_GWEI: '5',
-      KEEPER_ETH_PRICE_USD: '100',
-    });
-    expect(JSON.stringify(env, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v))).not.toContain(relayKey.slice(2));
-    const started = await startOnchain({ env, chainId: CHAIN_ID, rpcUrl: RPC!, prisma, redis, mac: createCacheMac(DB, 'testnet'), log: captureLogger(lines), now: clock, relayStuckAfterMs: 4000 });
+  it('the workers run the indexer only; the separate signer process pushes its own Robinhood quote, nothing it has no quote for', async () => {
+    const env = loadOnchainEnv({ ONCHAIN_WORKERS: 'true', DEPLOYMENTS_DIR: DIR, CONFIRMATIONS: '1', INDEXER_POLL_MS: '500' });
+    const started = await startOnchain({ env, chainId: CHAIN_ID, rpcUrl: RPC!, prisma, redis, mac: createCacheMac(DB, 'testnet'), log: captureLogger(lines), now: clock });
     expect(started).not.toBeNull();
     handle = started!;
+    expect(handle.status().relayer.enabled).toBe(false);
+    expect(handle.status().keeper.enabled).toBe(false);
     const [price, at] = await waitFor('the first TSLA push', async () => {
       const r = await relayed('TSLA');
       return r[1] > 0n ? r : null;
-    });
+    }, 90_000);
+    // Its first push is the quote it confirmed by seeing it change (never the first, unconfirmed one).
     expect(price).toBe(39165n * 10n ** 16n);
     expect(at).toBeGreaterThan(0n);
     expect((await relayed('AMZN'))[1]).toBe(0n);
-    expect(handle.status().relayer.markets.AMZN).toBe('demo');
-    expect(handle.status().relayer.sending).toBe(true);
+    const st = await freshStatus();
+    expect(st).toMatchObject({ requested: true, error: null, deployment: d.contracts.perpsMarkets });
+    expect(st.relayer.markets.AMZN).toBe('no-snapshot');
+    expect(st.prices.markets).toMatchObject({ TSLA: 'live', AMZN: 'none' });
+    expect(st.relayer.sending).toBe(true);
+    expect(st.relayer.address?.toLowerCase()).toBe(mnemonicToAccount(MNEMONIC, { addressIndex: 1 }).address.toLowerCase());
+    expect(statSync(path.join(home, 'run', 'status.json')).mode & 0o777).toBe(0o640);
+    expect(statSync(path.join(home, 'state')).mode & 0o777).toBe(0o700);
     // The push gas limit (estimated calldata part + 25%, plus the execution bound, audit L-4) leaves room over what a
     // push uses, and the execution bound alone covers the push's execution.
-    const tx = await waitFor('the push receipt', async () => handle.senders.relay!.status().lastTx);
+    const tx = await waitFor('the push receipt', async () => status().relayer.lastTx);
     const [receipt, sent] = await Promise.all([client.getTransactionReceipt({ hash: tx as Hex }), client.getTransaction({ hash: tx as Hex })]);
     const used = receipt.gasUsed;
     const intrinsic = await client.estimateGas({ account: sent.from, to: sent.from, data: sent.input });
@@ -279,8 +362,8 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
       if ((await band('TSLA'))[0] <= 34465n * 10n ** 16n) break;
     }
     expect((await band('TSLA'))[0]).toBe(34465n * 10n ** 16n);
-    // The relayer reads the receipt of its last push on its next tick.
-    await waitFor('the relayer to see its push land exactly', async () => handle.status().relayer.markets.TSLA === 'pushed', 30_000, 200);
+    // The relayer reads the receipt of its last push on its next tick (and reports it within 5 s).
+    await waitFor('the relayer to see its push land exactly', async () => status().relayer.markets.TSLA === 'pushed', 30_000, 500);
 
     const liquidated = await waitFor('the keeper liquidates position 1', async () => {
       const p = await position(1n);
@@ -298,42 +381,46 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
     expect(await prisma.accountActivity.count({ where: { chainId: CHAIN_ID, account: keeper.toLowerCase(), kind: 'liquidation_reward' } })).toBe(1);
     expect(await prisma.fundingPoint.count({ where: { chainId: CHAIN_ID, market: tsla } })).toBeGreaterThan(0);
     expect(await prisma.spotPoolState.count({ where: { chainId: CHAIN_ID, stock: tsla } })).toBe(1);
-    expect(handle.status().keeper.liquidations).toBe(1);
+    // The keeper found position 1 on the chain itself (the signer has no database).
+    await waitFor('the keeper to report it', async () => status().keeper.liquidations === 1, 15_000, 500);
     Object.assign(result, { liquidatedId: '1', liquidateTx: liquidated.closeTx });
   }, 300_000);
 
   it('replaces a push stuck in the mempool with bumped fees, and the replacement mines', async () => {
-    const sender = handle.senders.relay!;
+    const relayAddr = mnemonicToAccount(MNEMONIC, { addressIndex: 1 }).address.toLowerCase();
+    type PoolTx = { hash: Hex; nonce: Hex; maxFeePerGas: Hex; maxPriorityFeePerGas: Hex; input: Hex };
+    /** The relay key's transactions in anvil's pool (the signer is another process: its pool entries are what we see). */
+    const pooled = async (): Promise<PoolTx[]> => {
+      const pool = await rpc<{ pending: Record<string, Record<string, PoolTx>> }>('txpool_content');
+      const mine = Object.entries(pool.pending).find(([a]) => a.toLowerCase() === relayAddr)?.[1] ?? {};
+      return Object.values(mine);
+    };
     await rpc('evm_setAutomine', [false]);
     try {
       // Without mining the block time stands still: one block 10 s later makes the next push due.
       await rpc('evm_increaseTime', [10]);
       await rpc('evm_mine');
-      // A push still in the mempool (not the previous one, mined just before automine went off but not polled yet).
-      const first = await waitFor('a pending push', async () => {
-        const p = sender.pending();
-        if (!p) return null;
-        return (await client.getTransactionReceipt({ hash: p.hashes[0]! }).catch(() => null)) ? null : p;
+      const first = await waitFor('a pending push', async () => (await pooled())[0] ?? null, 30_000, 200);
+      expect(decodeFunctionData({ abi: abis.oracle, data: first.input }).functionName).toBe('pushPrices');
+      // Not mined after 6 s: replaced at the same nonce (anvil drops the replaced one from its pool).
+      const repl = await waitFor('its replacement', async () => {
+        const p = (await pooled()).find((t) => t.nonce === first.nonce);
+        return p && p.hash !== first.hash ? p : null;
       }, 30_000, 200);
-      // anvil drops a replaced transaction from its pool: read the original while it is there.
-      const orig = await client.getTransaction({ hash: first.hashes[0]! });
-      expect(first.label).toBe('push:TSLA');
-      const replaced = await waitFor('its replacement', async () => {
-        const p = sender.pending();
-        return p && p.nonce === first.nonce && p.hashes.length >= 2 ? p : null;
-      }, 30_000, 200);
-      // The replacement carries the prices of the moment (a fresh push), not a cancellation.
-      expect(replaced.label).toBe('push:TSLA');
-      const repl = await client.getTransaction({ hash: replaced.hashes.at(-1)! });
-      expect(repl.nonce).toBe(orig.nonce);
-      expect(repl.maxFeePerGas! >= bump(orig.maxFeePerGas!)).toBe(true);
-      expect(repl.maxPriorityFeePerGas! >= bump(orig.maxPriorityFeePerGas!)).toBe(true);
+      // The replacement carries the prices of the moment (a fresh push), not a cancellation, with bumped fees.
+      expect(decodeFunctionData({ abi: abis.oracle, data: repl.input }).functionName).toBe('pushPrices');
+      expect(BigInt(repl.maxFeePerGas) >= bump(BigInt(first.maxFeePerGas))).toBe(true);
+      expect(BigInt(repl.maxPriorityFeePerGas) >= bump(BigInt(first.maxPriorityFeePerGas))).toBe(true);
+      // Mine the newest version in the pool (the signer may have replaced it again meanwhile).
       await rpc('evm_mine');
-      const mined = await waitFor('the replacement mined', async () => client.getTransactionReceipt({ hash: replaced.hashes.at(-1)! }).catch(() => null), 30_000);
-      expect(mined.status).toBe('success');
-      await expect(client.getTransactionReceipt({ hash: replaced.hashes[0]! })).rejects.toThrow();
-      await waitFor('the sender saw it', async () => sender.pending() === null || sender.pending()!.nonce !== first.nonce, 30_000, 200);
-      result.replacement = { nonce: first.nonce, original: replaced.hashes[0], replacement: replaced.hashes.at(-1) };
+      const minedHash = await waitFor('a version mined', async () => {
+        for (const h of [repl.hash, first.hash]) if (await client.getTransactionReceipt({ hash: h }).catch(() => null)) return h;
+        const n = await client.getTransactionCount({ address: relayAddr as Address, blockTag: 'latest' });
+        return n > Number(BigInt(first.nonce)) ? ('other' as Hex) : null;
+      }, 30_000);
+      expect(minedHash).not.toBe(first.hash);
+      await expect(client.getTransactionReceipt({ hash: first.hash })).rejects.toThrow();
+      result.replacement = { nonce: Number(BigInt(first.nonce)), original: first.hash, replacement: repl.hash };
     } finally {
       await rpc('evm_setAutomine', [true]);
     }
@@ -379,11 +466,11 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
   }, 120_000);
 
   it('advances funding for a market with open interest once its funding is older than the epoch', async () => {
-    const before = handle.status().keeper.fundingAdvances;
+    const before = (await freshStatus()).keeper.fundingAdvances;
     const points = await prisma.fundingPoint.count({ where: { chainId: CHAIN_ID } });
     await rpc('evm_increaseTime', [120]); // FUNDING_EPOCH_SECONDS is 60 here; position 2 is open
     await rpc('evm_mine');
-    await waitFor('the keeper advances funding', async () => handle.status().keeper.fundingAdvances > before, 90_000);
+    await waitFor('the keeper advances funding', async () => status().keeper.fundingAdvances > before, 90_000, 500);
     await waitFor('the FundingAdvanced event indexed', async () => (await prisma.fundingPoint.count({ where: { chainId: CHAIN_ID } })) > points);
   }, 120_000);
 
@@ -399,7 +486,8 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
     }, 120_000);
     expect(p.exitRequester).toBe(makerAcc.address.toLowerCase());
     expect(p.exitAtEntry).toBe(false);
-    expect(handle.status().keeper.forcedExits).toBe(1);
+    // The keeper saw the request and its maturity on the chain (getPosition's exitRequestedAt), not in the index.
+    await waitFor('the keeper to report it', async () => status().keeper.forcedExits === 1, 15_000, 500);
     Object.assign(result, {
       chainId: CHAIN_ID,
       deploymentsDir: DIR,
@@ -407,14 +495,27 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
       taker2: taker2Acc.address,
       maker: makerAcc.address,
       keeper,
-      relayer: handle.senders.relay!.address,
+      relayer: status().relayer.address,
       forcedExitId: '2',
     });
   }, 180_000);
 
-  it('never logged a hot key', () => {
-    const all = lines.join('\n').toLowerCase();
+  it("/v1/health combines the workers' status (indexer) and the signer's status file (relayer, keeper)", async () => {
+    await handle.writeStatus();
+    const workers = parseOnchainStatus(createCacheMac(DB, 'testnet').open(ONCHAIN_STATUS_KEY, await redis.get(ONCHAIN_STATUS_KEY), 16 * 1024), Date.now());
+    expect(workers?.relayer.enabled).toBe(false);
+    const s = onchainSummary(workers, Date.now(), () => false, await freshStatus())!;
+    expect(s.reasons).toEqual([]);
+    expect(s).toMatchObject({ ok: true, relayer: { enabled: true, sending: true }, keeper: { enabled: true, liquidations: 1, forcedExits: 1 }, indexer: { error: null } });
+    expect(s.signerAge).toBeLessThanOrEqual(6);
+    // Without the signer's status the summary says so.
+    expect(onchainSummary(workers, Date.now(), () => false, null)!.reasons).toEqual([expect.stringMatching(/^signer: no status from velum-signer/)]);
+  });
+
+  it('never logged a hot key (the workers and the signer process)', () => {
+    const all = `${lines.join('\n')}\n${signerOut.join('')}`.toLowerCase();
     for (const k of [relayKey, keeperKey]) expect(all).not.toContain(k.slice(2).toLowerCase());
+    expect(signerOut.join('')).toMatch(/signer started/);
     expect(lines.length).toBeGreaterThan(0);
   });
 });

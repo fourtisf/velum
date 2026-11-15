@@ -1,8 +1,7 @@
-import { TOKENS, cacheKeys, type MarketSnapshot } from '@velum/config';
+import { TOKENS, type MarketSnapshot } from '@velum/config';
 import { parseDeployment, type Deployment } from '@velum/config/src/onchain';
 import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, type Address, type Hex } from 'viem';
 import { describe, expect, it } from 'vitest';
-import { testMac } from '../__fixtures__/mac';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
 import { PriceRelayer, snapshotEligibility, type RelayClient, type RelayerDeps } from './relayer';
@@ -94,11 +93,12 @@ function setup(chainId: number, tokens: Record<string, Address>, snaps: MarketSn
   const d: Deployment = r.deployment;
   const chain = new FakeChain();
   const sender = new FakeSender();
-  const store = new Map(snaps.map((s) => [cacheKeys.price(s.symbol), testMac.seal(cacheKeys.price(s.symbol), JSON.stringify(s))]));
-  const redis = { mget: async (...keys: string[]) => keys.map((k) => store.get(k) ?? null) } as unknown as RelayerDeps['redis'];
+  // The signer's own price feed (signer/prices.ts) in memory: the relayer reads nothing else.
+  const store = new Map(snaps.map((s) => [s.symbol, s]));
+  const prices: RelayerDeps['prices'] = { snapshots: async (symbols) => new Map(symbols.filter((x) => store.has(x)).map((x) => [x, store.get(x)!])) };
   let wall = Number(chain.block.timestamp) * 1000;
-  const relayer = new PriceRelayer({ client: chain.client, sender: sender as unknown as TxSender, redis, mac: testMac, deployment: d, chainId, intervalMs: 9000, log: silent, now: () => clock, wallNow: () => wall });
-  return { d, chain, sender, relayer, store, setWall: (ms: number) => (wall = ms), seal: (s: MarketSnapshot) => store.set(cacheKeys.price(s.symbol), testMac.seal(cacheKeys.price(s.symbol), JSON.stringify(s))) };
+  const relayer = new PriceRelayer({ client: chain.client, sender: sender as unknown as TxSender, prices, deployment: d, chainId, intervalMs: 9000, log: silent, now: () => clock, wallNow: () => wall });
+  return { d, chain, sender, relayer, store, setWall: (ms: number) => (wall = ms), seal: (s: MarketSnapshot) => store.set(s.symbol, s) };
 }
 
 const pushed = (req: TxRequest) => decodeFunctionData({ abi: abis.oracle, data: req.data }).args as unknown as readonly [readonly Address[], readonly bigint[], bigint];

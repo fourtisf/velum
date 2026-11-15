@@ -291,7 +291,10 @@ answer="$(as_app "${REDIS_CLI}" -s "${SOCK}" ping 2>&1 || true)"
 grep -q NOAUTH <<<"${answer}" || die "${APP_USER} cannot connect to ${SOCK} (REDIS_URL was not changed)."
 answer="$(as_web "${REDIS_CLI}" -s "${SOCK}" ping 2>&1 || true)"
 if grep -q -e NOAUTH -e PONG <<<"${answer}"; then die "${WEB_USER} can connect to ${SOCK}; it must not (REDIS_URL was not changed)."; fi
-echo "  ${UNIT} answers on ${SOCK}: no TCP, noeviction, maxmemory ${MAXMEMORY}; ${APP_USER} can connect, ${WEB_USER} cannot"
+# The signer uses no Redis (on-chain audit M-2) and must not reach it either.
+answer="$(as_signer "${REDIS_CLI}" -s "${SOCK}" ping 2>&1 || true)"
+if grep -q -e NOAUTH -e PONG <<<"${answer}"; then die "${SIGNER_USER} can connect to ${SOCK}; it must not (REDIS_URL was not changed)."; fi
+echo "  ${UNIT} answers on ${SOCK}: no TCP, noeviction, maxmemory ${MAXMEMORY}; ${APP_USER} can connect, ${WEB_USER} and ${SIGNER_USER} cannot"
 
 # ── Point REDIS_URL at it ────────────────────────────────────────────────────
 NEW_URL="unix://:${PASS}@${SOCK}"

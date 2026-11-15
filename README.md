@@ -15,7 +15,7 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 | `prototype/index.html` | Approved UI (Phase 1 serves it as-is). Visual source of truth |
 | `apps/web` | Next.js 15 port of the prototype: landing + `/app/*` (wagmi v3 + viem) |
 | `apps/api` | Fastify read API: health, markets, candles, pools, stats, quote |
-| `apps/workers` | BullMQ workers: price relay + candles |
+| `apps/workers` | BullMQ workers: price relay + candles + the Phase 3 indexer; and the signer program (`src/signer.ts`: the on-chain price relayer and keeper, run as their own user) |
 | `packages/config` | Verified chain constants, tokens, markets, protocol numbers, session calendar, Redis contract |
 | `packages/math` | 1e18 fixed-point money math and every formula in docs/01 §6 |
 | `packages/db` | Prisma schema, migrations, generated client |
@@ -49,10 +49,13 @@ port), and issues HTTPS. `www.` is included only if its DNS points at the server
 apps/web      Next.js 15   127.0.0.1:3000             (PM2 cluster ×2 as velum-web; next free port if taken)
 apps/api      Fastify      /run/velum-api/api.sock    (PM2 cluster ×2 as velum; Nginx /api/ → the socket)
 apps/workers  BullMQ       no port                    (PM2 fork ×1 as velum)
+velum-signer  (workers)    no port                    (PM2 fork ×1 as velum-signer, only with ONCHAIN_WORKERS=true:
+                                                       the price relayer and keeper, its own build, no Redis/Postgres)
 PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password), or Velum's own Redis on a socket
 ```
-Each user's PM2 daemon runs under its own systemd unit (`pm2-velum`, `pm2-velum-web`), started after
-PostgreSQL and Redis at boot. On a shared server, give Velum its own Redis (a unix socket only `velum`
+Each user's PM2 daemon runs under its own systemd unit (`pm2-velum`, `pm2-velum-web`, `pm2-velum-signer`), started
+after PostgreSQL and Redis at boot. The hot keys live in `/etc/velum/signer-keys.env` (root:velum-signer 640), never in
+`.env` (`sudo bash /srv/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY`; docs/05, "The signer"). On a shared server, give Velum its own Redis (a unix socket only `velum`
 can reach, its own password): `sudo bash /srv/velum/deploy/redis-velum.sh`, then `deploy.sh`
 (docs/05, "Dedicated Redis for Velum").
 
@@ -194,6 +197,18 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   cached for a second and has its own budget; secret values are redacted from logs; demo numbers carry
   `"demo": true` on testnet and are null on mainnet; `/v1/health` checks the RPC's chain id and always
   reports `demoMode: true`; the workers no longer receive a hot key in Phase 2.
+
+- **On-chain audit M-2 (November 2026): the signer runs as its own user.** The price relayer and the keeper, the only
+  code holding hot keys, moved out of `velum-workers` (same user as the internet-facing API) into `velum-signer`, a
+  separate process and Unix user in no other group, with its own PM2 daemon and unit, its own private home, and its
+  own build of each release (the signer user builds the commit itself; it never runs a file the app user wrote). The
+  keys moved out of `.env` into `/etc/velum/signer-keys.env` (root:velum-signer 640, read by the signer at start, in no
+  environment or PM2 dump); `server-setup.sh` moves existing keys once and rewrites `.env` backups and the PM2 dumps
+  without them. The signer reads nothing the app user can write: prices straight from Robinhood with price-relay's
+  guards, positions and cover claims straight from the chain, no Redis, no Postgres. It reports through
+  `/run/velum-signer/status.json`, which `/v1/health` combines with the workers' status (`signer`,
+  `onchain.signerAge`); `deploy.sh` checks it after every release that runs the signer. Upgrade a server on the
+  two-user layout with docs/05, "Upgrading to the separate signer".
 
 ## Stack
 

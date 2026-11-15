@@ -102,6 +102,8 @@ cat <<EOF
 Check above all: DOMAIN, PUBLIC_SITE_URL, NEXT_PUBLIC_* (compiled into the web), RPC_URL, CORS_ORIGIN,
 PORT_WEB/PORT_API (must match what the old apps use) and DATABASE_URL/REDIS_URL hosts. Edit as root:
   nano ${ENV_FILE}
+Hot keys (PRICE_RELAY_PRIVATE_KEY, KEEPER_PRIVATE_KEY) do not stay in .env: server-setup.sh moves them into
+${SIGNER_KEYS_FILE}, which only the signer user can read (on-chain audit M-2).
 If ${APP_USER} may have been compromised, rotating these secrets alone does not help: ${APP_USER} can read
 this .env (and every new secret in it) as long as it exists. Follow docs/05-deploy-vps.md, "Compromise
 suspected": stop and lock ${APP_USER}, install with new users, then rotate.

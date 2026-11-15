@@ -45,9 +45,11 @@ DOMAIN=velum.example EMAIL=you@example.com bash /srv/velum/deploy/server-setup.s
 ```
 (`claude/new-session-93ke66` is the repository's only branch.) Idempotent and safe on a VPS that
 already hosts other sites:
-- runs api + workers as the `velum` system user and the web as its own `velum-web` user, each with
-  its own PM2 daemon running under its own systemd unit (`pm2-velum`, `pm2-velum-web`; written,
-  enabled and started by `deploy.sh`, never started from your shell);
+- runs api + workers as the `velum` system user, the web as its own `velum-web` user and, with
+  `ONCHAIN_WORKERS=true`, the price relayer and the keeper (the only code holding hot keys) as their own
+  `velum-signer` user (see "The signer"), each with its own PM2 daemon running under its own systemd unit
+  (`pm2-velum`, `pm2-velum-web`, `pm2-velum-signer`; written, enabled and started by `deploy.sh`, never started
+  from your shell);
 - the API listens on a unix socket, `/run/velum-api/api.sock`, in a directory only `velum` and
   Nginx's user can enter (recreated at boot by `/etc/tmpfiles.d/velum.conf`); the web listens on
   127.0.0.1 (3000, or the next free port);
@@ -60,7 +62,9 @@ already hosts other sites:
   Redis password only when it installed Redis itself;
 - creates its own Postgres role and database (`PG_PORT` if Postgres does not listen on 5432). The
   password reaches `psql` on stdin as a variable (never on a command line), with statement logging off;
-- rotates both users' PM2 logs with logrotate (`/etc/logrotate.d/velum`: daily, 14 kept, as each
+- keeps the hot keys out of `.env`: they live in `/etc/velum/signer-keys.env` (root:velum-signer 640), and a key an
+  older layout left in `.env` is moved there once (see "Upgrading to the separate signer");
+- rotates the three users' PM2 logs with logrotate (`/etc/logrotate.d/velum`: daily, 14 kept, as each
   user, copytruncate). It no longer installs the pm2-logrotate module (audit R3-02).
 
 `www.DOMAIN` always answers with a 301 to `https://DOMAIN` (HTTP and HTTPS), so the app has a
@@ -72,10 +76,11 @@ It builds `.env` atomically (temp file with mode 600, values written by awk with
 character is safe, the Redis password URL-encoded, everything read back and validated, then moved
 into place). On re-runs it keeps `.env` and only generates a database password if it is empty or
 `CHANGE_ME`. It generates `PROXY_SECRET` once (see "Client addresses" below), sets `API_SOCKET`,
-renders `web.env`, writes the Nginx site plus three snippets, issues or re-installs HTTPS, records the
-users in `/srv/velum/.velum-users` and runs the first release. Check it with
-`bash /srv/velum/deploy/as-user.sh velum pm2 status` and
-`bash /srv/velum/deploy/as-user.sh velum-web pm2 status`.
+renders `web.env` and `signer.env`, writes the Nginx site plus three snippets, issues or re-installs HTTPS, records
+the users in `/srv/velum/.velum-users` and runs the first release. Check it with
+`bash /srv/velum/deploy/as-user.sh velum pm2 status`,
+`bash /srv/velum/deploy/as-user.sh velum-web pm2 status` and (with `ONCHAIN_WORKERS=true`)
+`bash /srv/velum/deploy/as-user.sh velum-signer pm2 status`.
 
 **Re-running setup never drops HTTPS** (audit R2-M1). It holds the deploy lock while it rewrites
 `.env` and the Nginx files. It backs up `sites-available/velum.conf` and the snippets to
@@ -99,19 +104,24 @@ installs it. Hosts without IPv6 get the template without its `listen [::]` lines
 | Path | Owner, mode | Why |
 |---|---|---|
 | `/srv/velum` (git clone, `deploy/`, `.git`) | `root:velum`, 751 | root runs these scripts; no other user may change them. Others may traverse (the web user reaches `web.env` and `current/`), not list |
-| `/srv/velum/.velum-users` | `root`, 644 | the app and web users setup installed with; every script uses them from here, only `server-setup.sh` changes them |
-| `/srv/velum/.env` | `root:velum 640` | root writes it, api/workers (and the build) read it; edit it as root |
-| `/srv/velum/.env.bak.*` | `root:root 600`, newest 3 | written before every change (setup, `set-network.sh`, `new-key.sh`, `import-env.sh`) |
+| `/srv/velum/.velum-users` | `root`, 644 | the app, web and signer users setup installed with (`APP_USER`, `WEB_USER`, `SIGNER_USER`); every script uses them from here, only `server-setup.sh` changes them |
+| `/srv/velum/.env` | `root:velum 640` | root writes it, api/workers (and the build) read it; edit it as root. **Never holds a hot key** (on-chain audit M-2): `deploy.sh` and `new-key.sh` refuse to run while one is there |
+| `/srv/velum/.env.bak.*` | `root:root 600`, newest 3 | written before every change (setup, `set-network.sh`, `import-env.sh`); rewritten without the hot keys when they move, and a restore never brings one back |
 | `/srv/velum/web.env` | `root:velum-web 640` | the web's only settings (`NEXT_PUBLIC_*`, `PUBLIC_SITE_URL`, `PORT_WEB`, `NODE_ENV`), rendered from `.env` by root on every release; no secrets |
+| `/srv/velum/signer.env` | `root:velum-signer 640` | the signer's only settings (chain, RPC endpoints, on-chain settings, its paths), rendered from `.env` by root on every release; no `DATABASE_URL`, `REDIS_URL`, `PROXY_SECRET` or key |
+| `/etc/velum/` | `root`, 755 | |
+| `/etc/velum/signer-keys.env` | `root:velum-signer 640` | the hot keys (`PRICE_RELAY_PRIVATE_KEY`, `KEEPER_PRIVATE_KEY`): root writes it (`new-key.sh`, the one-time move out of `.env`), only `velum-signer` reads it, and the signer reads it itself at start (the keys never sit in an environment or a PM2 dump). Backups `signer-keys.env.bak.*` root:root 600, newest 3 |
 | `/srv/velum/releases/` | `root`, 751 | |
 | `/srv/velum/releases/<time>-<commit>/` | `velum:velum-web`, 2750, files 644/755 | one fresh build per release by `velum`; the web user can read, not write |
 | `/srv/velum/releases/<time>-<commit>.build-env` | `root`, 600 | the settings the release was built with (`VELUM_NETWORK`, `CHAIN_ID`, `NEXT_PUBLIC_*`); a release only runs with an `.env` that matches (audit R3-04) |
 | `/srv/velum/current`, `previous` | `root` symlinks → `releases/…` | `current` is switched atomically; PM2 runs every app from it; `previous` is the `--rollback` target |
 | `/srv/velum/backups/` | `root`, 700 | Nginx file backups, the PM2 process list saved before a first release over an older layout |
 | `/run/velum-api/` | `velum:www-data`, 2750 | the API socket's directory (`api.sock`, 660). Only `velum` and Nginx's user can enter it; nobody else can take the API's address and receive the proxy secret (audit R3-03). Created by root at boot from `/etc/tmpfiles.d/velum.conf` |
-| `/home/velum/.pm2`, `/home/velum-web/.pm2` | owner only, 700 | PM2 logs and `dump.pm2` / `dump.pm2.bak` (each app's environment), 600 |
-| `/home/velum/.tmp`, `/home/velum-web/.tmp` | owner only, 700 | each user's `TMPDIR`: nothing Velum runs uses the shared `/tmp` (R3-02); the PM2 units also get a private `/tmp` |
-| `/etc/systemd/system/pm2-velum.service`, `pm2-velum-web.service` | `root`, 644 | the PM2 daemons' units, written by `deploy.sh` (`NoNewPrivileges`, `PrivateTmp`, umask 027, a fixed environment without secrets) |
+| `/run/velum-signer/` | `velum-signer:velum`, 2750 | the signer's status for `/v1/health` (`status.json`, 640, no secrets, written atomically every 5 s). Only the signer writes; the API (group `velum`) reads; nobody else enters. Created by root at boot from `/etc/tmpfiles.d/velum.conf` |
+| `/home/velum-signer` | owner only, 700 | the signer's own copy of each release (`releases/<id>`, built by the signer from the commit, and `current`), its state (`state/`: last quote per market, the cover-claim scan position, the instance lock), `.pm2`, `.tmp` |
+| `/home/velum/.pm2`, `/home/velum-web/.pm2`, `/home/velum-signer/.pm2` | owner only, 700 | PM2 logs and `dump.pm2` / `dump.pm2.bak` (each app's environment), 600 |
+| `/home/velum/.tmp`, `/home/velum-web/.tmp`, `/home/velum-signer/.tmp` | owner only, 700 | each user's `TMPDIR`: nothing Velum runs uses the shared `/tmp` (R3-02); the PM2 units also get a private `/tmp` |
+| `/etc/systemd/system/pm2-velum.service`, `pm2-velum-web.service`, `pm2-velum-signer.service` | `root`, 644 | the PM2 daemons' units, written by `deploy.sh` (`NoNewPrivileges`, `PrivateTmp`, umask 027, a fixed environment without secrets); the signer's is enabled only while `ONCHAIN_WORKERS=true` |
 | `/etc/logrotate.d/velum` | `root`, 644 | PM2 log rotation, done as each user (`su velum velum`), symlinks refused |
 | `/etc/nginx/snippets/velum-security-headers.conf` | `root`, 644 | security headers and CSP, regenerated on every release |
 | `/etc/nginx/snippets/velum-api-upstream.conf` | `root`, 644 | `server unix:/run/velum-api/api.sock;` for the API upstream |
@@ -147,9 +157,9 @@ lets another user's code near its terminal (R3-01):
 
 **Per-app environment** (audit M5, R2-L3). Each PM2 app gets only the variables it reads
 (`deploy/ecosystem.config.cjs`): the web gets `NEXT_PUBLIC_*`, `PUBLIC_SITE_URL`, `PORT_WEB`,
-`NODE_ENV` (from `web.env`); api and workers get their own lists from `.env`. No hot key reaches any
-Phase 2 process: `PRICE_RELAY_PRIVATE_KEY` stays in `.env` for Phase 3 and is not passed to the workers
-until the relay that uses it exists (backend audit I-6).
+`NODE_ENV` (from `web.env`); api and workers get their own lists from `.env`; the signer its own from `signer.env`.
+No hot key reaches any app's environment (on-chain audit M-2): the signer reads its keys from
+`/etc/velum/signer-keys.env` itself, and the PM2 file refuses to load if a key is on any app's list.
 PM2 also passes the environment of the `pm2` command itself to every app (on start, and merged in on
 every reload), and cluster workers inherit the PM2 daemon's own environment. PM2's `filter_env`
 does not prevent that (`filter_env: true` is ignored by PM2 6.0.14, and no form filters reloads or
@@ -162,8 +172,8 @@ with secrets exported; always use `deploy.sh`.
 
 **The web runs as its own user** (audit R2-M3). The web is the most exposed process (it ran an
 end-of-life Next 14 until the move to Next 15, frontend M5). As `velum-web` it cannot read `.env` or its backups, the api/workers
-`/proc/<pid>/environ`, `velum`'s PM2 home or `dump.pm2`, the proxy-secret snippet, or reach the API
-socket, and it cannot write release files. It needs no writable cache: `next start` writes nothing at
+`/proc/<pid>/environ`, `velum`'s PM2 home or `dump.pm2`, the proxy-secret snippet, the signer's keys, status or
+home, or reach the API socket, and it cannot write release files. It needs no writable cache: `next start` writes nothing at
 runtime (checked: no ISR or fetch cache in the app). `velum-web` is not in the `velum` group (setup
 refuses if it is).
 
@@ -181,13 +191,48 @@ allowlist), so the web user needs no access to the socket and never gets the sec
 to deploy when `PROXY_SECRET` is set but the Nginx site does not include the snippet, or when the site
 still proxies `/api/` to TCP (older template: re-run setup).
 
+### The signer (on-chain audit M-2)
+
+The price relayer and the keeper are the only code that holds hot keys (`PRICE_RELAY_PRIVATE_KEY` can move the
+on-chain price within the oracle's rate limit, `KEEPER_PRIVATE_KEY` pays gas for liquidations). They used to run in
+`velum-workers`, as the same user as the internet-facing API: an API exploit could read the keys from `.env`, the
+workers' `/proc/<pid>/environ` or `dump.pm2`, and feed the relayer prices through Redis or the keeper candidates
+through Postgres. They now run in their own process, `velum-signer` (`apps/workers/src/signer.ts`), as their own
+system user `velum-signer` (`SIGNER_USER`), which is in no group but its own:
+
+| | `velum` (api + workers) | `velum-signer` |
+|---|---|---|
+| hot keys | never: not in `.env`, not in any environment | reads `/etc/velum/signer-keys.env` (root:velum-signer 640) at start |
+| prices it signs | (the workers' own price-relay for the site) | its own reads of Robinhood's public quote API, with the same guards (exact token address, multiplier rules, spread and freshness limits, the jump guard, quote time and confirmation, the session calendar, the frozen-quote rule); never Redis |
+| positions, forced exits, cover claims | the indexer writes Postgres | read from the chain itself (`nextPositionId`/`getPosition`, `CoverClaimFiled` logs + `coverClaims`); never Postgres |
+| Redis, Postgres | yes | none: no `REDIS_URL`, no `DATABASE_URL` |
+| code it runs | its release, `releases/<id>` (which it builds and owns) | **its own copy**: root exports the same commit (`git archive`) into the signer's home, where the signer installs and builds it (`release.sh signer-build`: the workers only, no lifecycle scripts, no Prisma). It never runs a file `velum` wrote |
+| deployment file | its release's | its own copy's, refused when on a path another user could change |
+| status | Redis (MAC'd) | `/run/velum-signer/status.json` (the API reads it) |
+
+Why its own copy: `velum` owns the release files and builds them, so it could rewrite them (`dist/*.js`,
+`node_modules`, `ecosystem.config.cjs`, `release.sh`) and the signer would run that code with its keys at the next
+restart. No group or permission change on the releases can prevent that, so the signer gets no access to them at all.
+
+A compromised `velum` therefore cannot read a key, cannot choose a price or an action the signer signs, cannot write
+its status, signal it or read its memory or environment. At worst it degrades the signer's liveness (load on the
+server, the shared RPC endpoint), which `/v1/health` shows (`onchain.reasons`, `signer`, `onchain.signerAge`). Gating is
+unchanged: nothing runs unless `ONCHAIN_WORKERS=true` and the deployment file exists, nothing is signed on Robinhood
+Chain mainnet (4663) without `ONCHAIN_MAINNET_CONFIRMED=yes`, `RPC_URL_SEND` works as before (only the signer gets
+it). The indexer stays in `velum-workers` (it holds no key). One signer runs at a time (a lock socket in its home).
+Without `ONCHAIN_WORKERS=true`, `deploy.sh` stops and disables `pm2-velum-signer`.
+
 Residual risks, stated plainly:
-- api and workers still share the `velum` uid: a compromised api can read the workers' environment
-  and `.env` (which holds `PRICE_RELAY_PRIVATE_KEY` once it is created). Splitting them is a Phase 3
-  item, when real hot keys arrive.
+- api and workers still share the `velum` uid: a compromised api can read the workers' environment and `.env`
+  (database and Redis passwords, `PROXY_SECRET`, `RPC_URL_SEND`), but no hot key any more (on-chain audit M-2).
+- Keys that sat in `.env` before this version were readable by `velum` until they moved; rotate them if `velum` may
+  have been compromised before (see "Upgrading to the separate signer").
+- The signer's own build installs npm packages as `velum-signer` (the same lockfile and registry as `velum`'s build);
+  a malicious package version in the lockfile would run as the signer. That is the supply-chain risk every build
+  has; the split does not add to it.
 - A compromised `velum` can change the release files the web runs (it builds them), so it can take
   over the web too; that adds nothing it does not already have. It can also break its own deploys
-  (health checks, builds); it cannot reach root through them.
+  (health checks, builds); it cannot reach root or the signer through them.
 - A compromised web can still serve the site's pages and JavaScript (deface it, phish wallet users),
   open localhost connections (Redis and Postgres need passwords it does not have) and use the API like
   any visitor. It cannot read secrets.
@@ -209,8 +254,8 @@ sudo bash /srv/velum/deploy/deploy.sh --rollback     # switch back to the releas
 ```
 1. Takes a lock (`flock` on `/srv/velum/.deploy.lock`): deploys, `server-setup.sh`,
    `set-network.sh`, `new-key.sh` and `import-env.sh` never overlap; the second one stops with a
-   message. Ignores SIGHUP. Checks the base (see the security model) and recreates the API socket's
-   directory from its tmpfiles.d entry.
+   message. Ignores SIGHUP. Checks the base (see the security model), refuses to go on while `.env` holds a hot key,
+   and recreates the API socket's and the signer's status directories from their tmpfiles.d entries.
 2. Pulls as root (hooks and fsmonitor off), then re-runs the freshly pulled `deploy.sh`.
 3. Exports the commit into a new `releases/<time>-<commit>/` and, as `velum`, installs with the
    frozen lockfile, builds every app (the web build sees only `NEXT_PUBLIC_*` and
@@ -218,21 +263,26 @@ sudo bash /srv/velum/deploy/deploy.sh --rollback     # switch back to the releas
    readable for the web user. The live release is never touched: **a failed build leaves the running
    site exactly as it was** and the half-built directory is removed. It records the settings the
    release was built with in `releases/<id>.build-env` (and stops if they change during the build).
+   With `ONCHAIN_WORKERS=true` it then exports the same commit into `velum-signer`'s home
+   (`~/releases/<id>`), where the signer user installs and builds its own copy; a failure there also leaves
+   everything as it was.
 4. First release in a base while `velum`'s PM2 still runs Velum apps from elsewhere (an older
    in-place layout): saves that process list (`pm2 save` as `velum`) and keeps a root-only copy in
    `backups/pm2-dump-before-first-release.<time>.json` (audit R2-M2).
-5. Renders `web.env`, switches `current` atomically, refreshes the Nginx snippets from `.env` (the
-   CSP's `connect-src` follows `NEXT_PUBLIC_RPC_URL`; WalletConnect hosts appear only with
-   `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`; `/api/` on the socket, with the proxy secret) and reloads
-   PM2 with zero downtime: api + workers as `velum`, web as `velum-web`, each daemon under its unit.
+5. Renders `web.env` and `signer.env`, switches `current` (and, as the signer, the signer's `~/current`)
+   atomically, refreshes the Nginx snippets from `.env` (the CSP's `connect-src` follows `NEXT_PUBLIC_RPC_URL`;
+   WalletConnect hosts appear only with `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`; `/api/` on the socket, with the proxy
+   secret) and reloads PM2 with zero downtime: api + workers as `velum`, web as `velum-web`, and with
+   `ONCHAIN_WORKERS=true` the signer as `velum-signer` (a single process, restarted), each daemon under its unit.
    When the app definitions or the set of env keys changed, it does a clean `pm2 delete` + `start` of
    that user's apps instead, so a removed secret never lingers in a running process; an app that is
    not online or runs from another directory is deleted and started on its own while the healthy
    ones reload (crash-looping workers never take the API down).
 6. Health check (audit R2-L5): API `/v1/health` on its socket (30 s), web root (60 s), then a workers
-   liveness heartbeat written **after** the switch (`workers` in `/v1/health`, 60 s), then it watches
+   liveness heartbeat written **after** the switch (`workers` in `/v1/health`, 60 s), then, when the signer runs,
+   a signer status written after the switch (`signer` in `/v1/health`, 60 s), then it watches
    for `HEALTH_SETTLE_SECONDS` (default 20): every app online in PM2 with unchanged restart counts, and
-   API, web and a fresh heartbeat again. A crash-looping worker or an API that dies after PM2 said
+   API, web, a fresh heartbeat and (signer) a fresh status again. A crash-looping worker or an API that dies after PM2 said
    "online" fails the check. On failure it switches back to the previous release, but only to one
    built by the current app user with the settings `.env` has now; otherwise the failed release stays
    active and the message says why. On a first release over an older layout it restores those apps
@@ -244,7 +294,10 @@ backward-compatible (add columns first, drop them a release later). `--rollback`
 that was built with other `VELUM_NETWORK`, `CHAIN_ID` or `NEXT_PUBLIC_*` values than `.env` has now
 (audit R3-04: its web bundle would target one network while web.env, the API and the CSP follow the
 other) and lists the differences; put those values back (the `.env.bak.*` files keep earlier versions)
-or deploy a new release. It also refuses releases another app user built (R3-05).
+or deploy a new release. It also refuses releases another app user built (R3-05), and, with
+`ONCHAIN_WORKERS=true`, a release the signer has no copy of (built while `ONCHAIN_WORKERS` was off): the relayer and
+keeper would stop. The automatic switch-back after a failed release takes the signer back too when it has a copy of
+that release, and otherwise stops it (it signs nothing) until the next healthy release.
 
 `NEXT_PUBLIC_*` values are compiled into the web build, so run a release after changing them.
 Ctrl-C stops a release cleanly (the step running as `velum` is terminated too), but only before the
@@ -268,12 +321,20 @@ The public mainnet RPC rate-limits; for real traffic put a provider URL in `RPC_
 
 ### Hot-wallet keys
 ```bash
-sudo bash /srv/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY
+sudo bash /srv/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY    # or KEEPER_PRIVATE_KEY (a separate key)
+sudo bash /srv/velum/deploy/deploy.sh                             # the signer restarts with it
 ```
-Generates the key with Node's CSPRNG, backs up `.env`, writes it atomically and prints only the
-address (derived as `velum`, isolated like every other user command). A valid existing key is kept;
-any other existing value (or a duplicated line) is refused, never replaced. Run a release afterwards so
-the workers get it.
+Generates the key with Node's CSPRNG, backs up the keys file (`/etc/velum/signer-keys.env.bak.*`, root only),
+writes it atomically into `/etc/velum/signer-keys.env` (root:velum-signer 640, never `.env`) and prints only the
+address, derived as `velum-signer` with viem from the signer's own build (isolated like every other user command;
+before the first release with `ONCHAIN_WORKERS=true` it asks you to run one first and run it again). A valid existing
+key is kept; any other existing value (or a duplicated line) is refused, never replaced. It refuses to run while
+`.env` still holds a key (run `server-setup.sh` first: it moves them). The price-relay key must be the address the
+`OracleAdapter` was deployed with (`PRICE_RELAYER`); the keeper key must be another one.
+
+Rotating: the keeper key can be replaced at any time (delete its line in the keys file as root, run `new-key.sh
+KEEPER_PRIVATE_KEY`, fund the new address, `deploy.sh`). The oracle's relayer address is fixed at deployment, so a new
+price-relay key needs a new deployment of the contracts (testnet), with `PRICE_RELAYER` set to its address.
 
 ## Dedicated Redis for Velum (strongly recommended on a shared server)
 
@@ -357,10 +418,67 @@ Notes:
   re-run as it is after this switch.
 - `deploy.sh --rollback` to a release older than `redis-velum.sh` would start code that only knows
   `redis://` URLs: roll Redis back first.
-- The PM2 units (`pm2-velum`, `pm2-velum-web`) want and start after `postgresql`, `redis-server` and
-  `velum-redis` at boot. `Wants=` starts an installed unit even when it is disabled (a missing one is
+- The signer uses no Redis: `velum-signer` cannot reach the socket (the script checks it), like `velum-web`.
+- The PM2 units (`pm2-velum`, `pm2-velum-web`, `pm2-velum-signer`) want and start after `postgresql`, `redis-server`
+  and `velum-redis` at boot (the signer needs neither; the shared template keeps all three alike). `Wants=` starts an installed unit even when it is disabled (a missing one is
   skipped): to keep the system Redis off on a server where nothing else uses it, `systemctl mask
   redis-server`.
+
+## Upgrading to the separate signer (on-chain audit M-2)
+
+For a server already on the two-user layout (`velum` + `velum-web`, `/srv/velum`, optionally Velum's own Redis):
+the live server runs commit 191c2a7's layout. This version adds the third user and moves the hot keys out of
+`.env`. Until it is done, `deploy.sh` (and `set-network.sh`, `new-key.sh`, `redis-velum.sh`) stop with a message
+pointing here, after pulling but **before building or switching anything**: the site keeps running as it was.
+Run as root, in tmux:
+
+```bash
+# U1. Backups (root only).
+BK=/root/velum-signer-upgrade-$(date -u +%Y%m%d%H%M%S); install -d -m 700 "$BK"
+cp -p /srv/velum/.env "$BK/env"                         # may hold PRICE_RELAY_PRIVATE_KEY / KEEPER_PRIVATE_KEY
+bash /srv/velum/deploy/backup-db.sh "$BK/velum.pgdump"  # optional: nothing here changes the database schema
+```
+
+```bash
+# U2. Pull, then setup once: it creates velum-signer (own group only, no login), records it in .velum-users,
+#     creates /etc/velum/signer-keys.env (root:velum-signer 640), MOVES any hot key from .env into it (both files
+#     backed up first, every .env.bak.* rewritten without the keys), renders signer.env, adds the signer's status
+#     directory (tmpfiles.d) and its log rotation, then runs the release. With ONCHAIN_WORKERS=true the release
+#     builds the signer's own copy and starts pm2-velum-signer; velum-workers restarts without any key (its
+#     variables changed) and release.sh removes velum's previous PM2 list (dump.pm2.bak) that still held them.
+#     (SIGNER_USER=… names another user; the default is velum-signer.)
+bash /srv/velum/deploy/deploy.sh      # checks the base, pulls this version, then stops: "Re-run server-setup.sh once"
+DOMAIN=velumtrade.com EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
+```
+The first command builds and switches nothing (the running release stays as it was); it only brings the new
+scripts. With Velum's own Redis, setup's Redis check passes as before (the socket still admits `velum`).
+
+```bash
+# U3. Verify.
+U=/srv/velum/deploy/as-user.sh
+grep -E '^(PRICE_RELAY|KEEPER)_PRIVATE_KEY=.' /srv/velum/.env   # prints nothing
+ls -l /etc/velum/signer-keys.env                          # -rw-r----- root velum-signer
+bash "$U" velum cat /etc/velum/signer-keys.env            # must say: Permission denied
+bash "$U" velum ls /home/velum-signer                     # must say: Permission denied
+bash "$U" velum-signer cat /srv/velum/.env                # must say: Permission denied
+bash "$U" velum-signer ls /run/velum-api                  # must say: Permission denied
+bash "$U" velum sh -c 'grep -c PRIVATE_KEY ~/.pm2/dump.pm2 ~/.pm2/dump.pm2.bak'   # 0 (or no such file)
+curl -s --unix-socket /run/velum-api/api.sock http://velum-api/v1/health | cat -v; echo   # "signer":<a few s> with ONCHAIN_WORKERS=true
+```
+With `ONCHAIN_WORKERS=true` also: `bash "$U" velum-signer pm2 status` (velum-signer online), `systemctl is-active
+pm2-velum-signer`, and in `/v1/health` `onchain.relayer.address` / `onchain.keeper.address` are the keys' addresses.
+
+```bash
+# U4. The keys were readable by velum before this upgrade. If velum may ever have been compromised, rotate them:
+#     the keeper key at once (see "Hot-wallet keys"), the price-relay key with the next contracts deployment.
+#     Root-only copies that may still hold them: $BK/env and, from an older layout's upgrade,
+#     /srv/velum/backups/pm2-dump-before-first-release.*.json. Delete them once no longer needed:
+rm -f /srv/velum/backups/pm2-dump-before-first-release.*.json
+rm -rf "$BK"                                              # after a few days of stable operation
+```
+Rolling back to a release from before this version (`deploy.sh --rollback`) is refused while `ONCHAIN_WORKERS=true`
+(the signer has no copy of it); with `ONCHAIN_WORKERS=false` it works, and the older code finds no key in `.env`, so
+it signs nothing.
 
 ## Upgrading a server set up before the November 2026 hardening
 
@@ -507,7 +625,7 @@ of its step 4 if you suspect the compromise before upgrading; the base needs `.e
 
 ```bash
 # C1. Stop the old users and everything they run, and lock them.
-for u in velum velum-web; do
+for u in velum velum-web velum-signer; do
   systemctl disable --now "pm2-$u"
   usermod --lock --expiredate 1 --shell /usr/sbin/nologin "$u"
   crontab -r -u "$u" 2>/dev/null; loginctl disable-linger "$u" 2>/dev/null
@@ -515,16 +633,19 @@ for u in velum velum-web; do
   rm -f "/etc/systemd/system/pm2-$u.service"
 done
 systemctl daemon-reload
-ps -u velum,velum-web -o pid,user,args          # nothing left
+ps -u velum,velum-web,velum-signer -o pid,user,args   # nothing left
 atq 2>/dev/null                                 # remove any at job of theirs with atrm
 ```
 
 ```bash
 # C2. Rotate everything they could read. With the Redis owner: change the Redis password (it is
 #     shared). Then edit .env as root: DATABASE_URL password → CHANGE_ME (setup generates a new one and
-#     updates the role), REDIS_URL → the new Redis password, PROXY_SECRET → empty, PRICE_RELAY_PRIVATE_KEY
-#     → empty (move any funds off the old address).
+#     updates the role), REDIS_URL → the new Redis password, PROXY_SECRET → empty. The hot keys: velum could not
+#     read /etc/velum/signer-keys.env (unless they were in .env before the signer split). If velum-signer may have
+#     been compromised, or the keys predate the split, empty the keys file (move any funds off the old addresses
+#     first; a new price-relay key needs a new contracts deployment).
 nano /srv/velum/.env
+nano /etc/velum/signer-keys.env                 # only if the keys must change: delete their lines
 ```
 
 ```bash
@@ -533,18 +654,18 @@ nano /srv/velum/.env
 #     recorded in /srv/velum/.velum-users: later runs of every script use them without APP_USER.
 #     With Velum's own Redis (REDIS_URL=unix://…), setup stops at its Redis check: run the
 #     redis-velum.sh line (new password; the socket follows velum2), then the setup line again.
-APP_USER=velum2 WEB_USER=velum2-web DOMAIN=velumtrade.com EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
+APP_USER=velum2 WEB_USER=velum2-web SIGNER_USER=velum2-signer DOMAIN=velumtrade.com EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
 bash /srv/velum/deploy/redis-velum.sh --rotate                 # only with Velum's own Redis, then setup again
-bash /srv/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY      # then fund the new address
-bash /srv/velum/deploy/deploy.sh                               # the workers get the new key
+bash /srv/velum/deploy/new-key.sh KEEPER_PRIVATE_KEY           # only for keys you emptied in C2; then fund the address
+bash /srv/velum/deploy/deploy.sh                               # the signer restarts with its keys (ONCHAIN_WORKERS=true)
 ```
 
 ```bash
 # C4. Remove what is left of them. Keep the locked accounts: a deleted uid is handed to the next new
 #     user, who would then own every file the old one left anywhere. Delete them only once the find
 #     below prints nothing (outside /opt/velum, which step 7 removes).
-rm -rf --one-file-system /home/velum /home/velum-web
-find / /tmp /var/tmp /dev/shm /run -xdev \( -user velum -o -user velum-web \) -print 2>/dev/null
+rm -rf --one-file-system /home/velum /home/velum-web /home/velum-signer
+find / /tmp /var/tmp /dev/shm /run -xdev \( -user velum -o -user velum-web -o -user velum-signer \) -print 2>/dev/null
 find /srv/velum/releases -mindepth 1 -maxdepth 1 -user velum -exec rm -rf --one-file-system {} +
 ```
 If the database itself may have been changed (the old role owned it), restore a dump taken before the
@@ -567,7 +688,7 @@ as root, only once you know what else depends on it.
    grep -rlE '(^|/)(node|npm|npx|pm2)( |$)' /etc/systemd/system /lib/systemd/system /etc/cron* 2>/dev/null
    ```
    Anything other than Velum's own processes (`velum-api` and `velum-workers` under `velum`,
-   `velum-web` under `velum-web`, their `pm2-velum*` units) belongs to someone else: agree the upgrade
+   `velum-web` under `velum-web`, `velum-signer` under `velum-signer`, their `pm2-velum*` units) belongs to someone else: agree the upgrade
    with its owner first, or stay on Node 20, which Velum supports. If `apt-cache policy nodejs` shows
    Ubuntu's own package or Node came from nvm or a tarball, upgrade it that way instead; do not mix
    sources.
@@ -588,7 +709,7 @@ as root, only once you know what else depends on it.
    sudo bash /srv/velum/deploy/deploy.sh
    ```
    The PM2 daemons themselves keep running on the old Node until their next restart. To move them now
-   (a few seconds of downtime): `systemctl restart pm2-velum pm2-velum-web`, then check
+   (a few seconds of downtime): `systemctl restart pm2-velum pm2-velum-web pm2-velum-signer`, then check
    `bash /srv/velum/deploy/as-user.sh velum pm2 status` and the same for `velum-web`. Other users' PM2
    daemons move only when their owners restart them.
 
@@ -624,12 +745,15 @@ Postgres and Redis listen on localhost only (defaults). Do not open 5432/6379 in
 ```bash
 useradd --system --create-home --shell /bin/bash velum
 useradd --system --create-home --user-group --shell /usr/sbin/nologin velum-web
+useradd --system --create-home --user-group --shell /usr/sbin/nologin velum-signer   # own group only, in no other
 git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --branch claude/new-session-93ke66 https://github.com/fourtisf/velum.git /srv/velum
 bash /srv/velum/deploy/as-user.sh velum sh -c 'mkdir -p ~/.pm2 ~/.tmp && chmod 700 ~/.pm2 ~/.tmp'
 bash /srv/velum/deploy/as-user.sh velum-web sh -c 'mkdir -p ~/.pm2 ~/.tmp && chmod 700 ~/.pm2 ~/.tmp'
+bash /srv/velum/deploy/as-user.sh velum-signer sh -c 'chmod 700 ~ && mkdir -p ~/.pm2 ~/.tmp ~/state ~/releases && chmod 700 ~/.pm2 ~/.tmp ~/state ~/releases'
 chgrp velum /srv/velum && chmod 751 /srv/velum
-printf 'APP_USER=velum\nWEB_USER=velum-web\n' > /srv/velum/.velum-users
+printf 'APP_USER=velum\nWEB_USER=velum-web\nSIGNER_USER=velum-signer\n' > /srv/velum/.velum-users
 install -m 640 -o root -g velum /srv/velum/.env.example /srv/velum/.env
+install -d -m 755 /etc/velum && install -m 640 -o root -g velum-signer /dev/null /etc/velum/signer-keys.env   # deploy/new-key.sh fills it
 nano /srv/velum/.env                                    # fill every value (URL-encode special characters in URLs);
                                                         # PROXY_SECRET: openssl rand -hex 32; API_SOCKET=/run/velum-api/api.sock
 ```
@@ -638,9 +762,9 @@ nano /srv/velum/.env                                    # fill every value (URL-
 The snippets are rendered from `.env`, which only root can read, so this runs as root (audit R2-I5):
 ```bash
 cd /srv/velum && . deploy/lib/common.sh
-render_tmpfiles /run/velum-api/api.sock velum www-data > /etc/tmpfiles.d/velum.conf
-systemd-tmpfiles --create /etc/tmpfiles.d/velum.conf    # /run/velum-api, velum:www-data 2750
-render_logrotate velum velum-web > /etc/logrotate.d/velum
+render_tmpfiles /run/velum-api/api.sock velum www-data velum-signer velum /run/velum-signer > /etc/tmpfiles.d/velum.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/velum.conf    # /run/velum-api velum:www-data 2750, /run/velum-signer velum-signer:velum 2750
+render_logrotate velum velum-web velum-signer > /etc/logrotate.d/velum
 install -d /etc/nginx/snippets
 install -d -m 755 /var/cache/nginx                      # parent of the /api/v1/markets micro-cache (nginx -t needs it)
 render_security_headers .env > /etc/nginx/snippets/velum-security-headers.conf
@@ -660,25 +784,32 @@ IPv6, delete its `listen [::]` lines.
 ### 5. First release and PM2 on boot
 ```bash
 bash /srv/velum/deploy/deploy.sh                        # builds as velum; writes, enables and starts pm2-velum
-                                                        # (api + workers) and pm2-velum-web (web)
+                                                        # (api + workers) and pm2-velum-web (web); with
+                                                        # ONCHAIN_WORKERS=true also builds the signer's copy as
+                                                        # velum-signer and starts pm2-velum-signer
 ```
 
 ## Operations
-- Status: `sudo bash /srv/velum/deploy/as-user.sh velum pm2 status` (api, workers) and
-  `sudo bash /srv/velum/deploy/as-user.sh velum-web pm2 status` (web);
-  `systemctl status pm2-velum pm2-velum-web` (the daemons).
+- Status: `sudo bash /srv/velum/deploy/as-user.sh velum pm2 status` (api, workers),
+  `sudo bash /srv/velum/deploy/as-user.sh velum-web pm2 status` (web) and
+  `sudo bash /srv/velum/deploy/as-user.sh velum-signer pm2 status` (the relayer and keeper, with `ONCHAIN_WORKERS=true`);
+  `systemctl status pm2-velum pm2-velum-web pm2-velum-signer` (the daemons).
 - Logs: `sudo bash /srv/velum/deploy/as-user.sh velum pm2 logs velum-api --lines 200 --nostream`,
-  `sudo bash /srv/velum/deploy/as-user.sh velum-web pm2 logs velum-web --lines 200 --nostream`.
+  `sudo bash /srv/velum/deploy/as-user.sh velum-web pm2 logs velum-web --lines 200 --nostream`,
+  `sudo bash /srv/velum/deploy/as-user.sh velum-signer pm2 logs velum-signer --lines 200 --nostream`.
   logrotate rotates them daily (`/etc/logrotate.d/velum`, 14 kept, as each user; check it with
   `logrotate -d /etc/logrotate.d/velum`).
 - Never `runuser -u velum …`, `su velum` or `sudo -u velum …` from a root shell: use `as-user.sh`.
 - Health: `curl -s https://$DOMAIN/api/v1/health | cat -v` (rate limited per client:
   `RATE_LIMIT_HEALTH_PER_MIN`, default 60). `lag` = seconds since the last price tick, `workers` =
   seconds since the workers process last reported alive (a few seconds when healthy, whether or not the
-  market has quotes). From the server: `curl -s --unix-socket /run/velum-api/api.sock http://velum-api/v1/health`.
+  market has quotes), `signer` = seconds since the signer last wrote its status file (null without one); `onchain`
+  combines the indexer (from the workers) with the relayer and keeper (from the signer's status) and lists in
+  `reasons` why it is not ok. From the server: `curl -s --unix-socket /run/velum-api/api.sock http://velum-api/v1/health`.
 - Releases on disk: `ls -l /srv/velum/releases /srv/velum/current`.
 - Backups: nightly from root's crontab, as the velum database role (never as postgres, audit I-3):
   `17 3 * * * bash /srv/velum/deploy/backup-db.sh /var/backups/velum-$(date +\%F).pgdump`; keep 14 days,
   copy off-box.
-- Relayer hot wallet: keep a small ETH balance, alert below threshold.
+- Relayer and keeper hot wallets: keep a small ETH balance; `/v1/health` reports `balanceLow` below
+  `RELAYER_MIN_BALANCE_ETH` / `KEEPER_MIN_BALANCE_ETH`.
 - Updates: `sudo unattended-upgrades` enabled.

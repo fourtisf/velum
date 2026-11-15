@@ -309,3 +309,72 @@ export function parseOnchainStatus(raw: unknown, now: number): OnchainStatus | n
   }
   return v as unknown as OnchainStatus;
 }
+
+// ---------------------------------------------------------------- signer status (velum-signer -> file -> API)
+//
+// On-chain audit M-2: the price relayer and the keeper hold the hot keys, so they run in their own process
+// (velum-signer, apps/workers/src/signer.ts) as their own Unix user, which the app user (api + workers) can neither
+// read nor signal. That process uses no Redis and no Postgres: it reports to /v1/health through a JSON file (no
+// secrets) in a directory root creates at boot (tmpfiles.d), owned by the signer user and readable, not writable, by
+// the app user's group. Its integrity rests on those permissions (the app user cannot write it), so it has no MAC.
+
+/** The signer's status file (SIGNER_STATUS_FILE). */
+export const SIGNER_STATUS_FILE_DEFAULT = '/run/velum-signer/status.json';
+/** The hot keys (SIGNER_KEYS_FILE): root-owned, readable only by the signer user; deploy/new-key.sh writes it. */
+export const SIGNER_KEYS_FILE_DEFAULT = '/etc/velum/signer-keys.env';
+/** The hot keys the signer reads from SIGNER_KEYS_FILE (never from its environment, never from .env). */
+export const SIGNER_HOT_KEYS = ['PRICE_RELAY_PRIVATE_KEY', 'KEEPER_PRIVATE_KEY'] as const;
+/** Raw JSON larger than this is never parsed. */
+export const MAX_SIGNER_STATUS_BYTES = 16 * 1024;
+/** How often the signer rewrites its status. */
+export const SIGNER_STATUS_EVERY_MS = 5000;
+
+export interface SignerStatus {
+  v: 1;
+  /** Unix ms when the signer wrote this. */
+  at: number;
+  chainId: number;
+  /** The deployment's perps address; empty while the signer signs nothing (`error`, or not requested). */
+  deployment: string;
+  /** Unix ms when the signer process started. */
+  startedAt: number;
+  /** ONCHAIN_WORKERS=true: the signer is meant to run the relayer and the keeper. */
+  requested: boolean;
+  /** Why the signer runs neither role although requested (no deployment file, invalid settings, keys unreadable). */
+  error: string | null;
+  /** PRICE_PUSH_INTERVAL_MS. */
+  pushIntervalMs: number;
+  relayer: RelayerStatus;
+  keeper: KeeperStatus;
+  /** `lockHeld`: this process holds the signer's single-instance lock (a unix socket in its own home). */
+  roles: { relayer: RoleHealth; keeper: RoleHealth };
+  /** The signer's own Robinhood quotes: when it last read them and each market's state ("live", "unconfirmed", ...). */
+  prices: { lastPollAt: number | null; markets: Record<string, string> };
+}
+
+/**
+ * The signer's status read from its file, or null when it is malformed, oversized or dated more than 30 s ahead of
+ * `now` (the same field checks as parseOnchainStatus).
+ */
+export function parseSignerStatus(raw: unknown, now: number): SignerStatus | null {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_SIGNER_STATUS_BYTES) return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(v) || v.v !== 1 || !isNum(v.at) || v.at > now + 30_000 || !isNum(v.chainId) || typeof v.deployment !== 'string' || v.deployment.length > 42) return null;
+  if (!isNum(v.startedAt) || typeof v.requested !== 'boolean' || !strOrNull(v.error, 500) || !isNum(v.pushIntervalMs)) return null;
+  const r = v.relayer;
+  if (!senderOk(r) || !isRecord(r) || !numOrNull(r.lastPushAt) || !numOrNull(r.lastPushBlockTime) || !(r.sequencerUp === null || typeof r.sequencerUp === 'boolean') || !isRecord(r.markets)) return null;
+  if (Object.keys(r.markets).length > MAX_ENTRIES || !Object.values(r.markets).every((s) => typeof s === 'string' && s.length <= 40)) return null;
+  const k = v.keeper;
+  if (!senderOk(k) || !isRecord(k) || !numOrNull(k.lastRunAt) || !isNum(k.liquidations) || !isNum(k.forcedExits) || !isNum(k.fundingAdvances) || !isNum(k.coverPayouts)) return null;
+  const roles = v.roles;
+  if (!isRecord(roles) || !roleOk(roles.relayer) || !roleOk(roles.keeper)) return null;
+  const p = v.prices;
+  if (!isRecord(p) || !numOrNull(p.lastPollAt) || !isRecord(p.markets)) return null;
+  if (Object.keys(p.markets).length > MAX_ENTRIES || !Object.values(p.markets).every((s) => typeof s === 'string' && s.length <= 40)) return null;
+  return v as unknown as SignerStatus;
+}

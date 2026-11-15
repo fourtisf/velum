@@ -13,15 +13,19 @@
 #      builds it there as the app user: install, build every app, migrate. The live release is never
 #      touched, so a failed build leaves the running site exactly as it was.
 #      It records the settings the release was built with (VELUM_NETWORK, CHAIN_ID, NEXT_PUBLIC_*).
+#      With ONCHAIN_WORKERS=true it also builds the signer's own copy (on-chain audit M-2): root exports the same
+#      commit into the signer user's home, where that user installs and builds it; the signer never runs a file the
+#      app user wrote (the app user owns and could rewrite its release).
 #   4. First release in this base while the app user's PM2 still runs Velum apps from elsewhere (an
 #      older in-place layout): keeps a root-only copy of that PM2 process list (R2-M2).
-#   5. Renders web.env and the Nginx snippets from .env (headers + CSP, the API's unix socket, the
-#      proxy secret), switches `current` atomically and reloads PM2 with zero downtime: api + workers
-#      as the app user, the web as the web user (R2-M3), each daemon under its systemd unit (I-2).
-#   6. Checks health: API (on its socket), web, a workers heartbeat written after the switch, then
-#      after a settle period again, plus PM2 status and restart counts (R2-L5). On failure it switches
-#      back to the previous release if that release was built with the settings .env has now (R3-04),
-#      or (first release) restores the older layout's apps from step 4.
+#   5. Renders web.env, signer.env and the Nginx snippets from .env (headers + CSP, the API's unix socket, the
+#      proxy secret), switches `current` (and the signer's own pointer) atomically and reloads PM2 with zero
+#      downtime: api + workers as the app user, the web as the web user (R2-M3), the price relayer and keeper as the
+#      signer user (M-2, only with ONCHAIN_WORKERS=true), each daemon under its systemd unit (I-2).
+#   6. Checks health: API (on its socket), web, a workers heartbeat written after the switch, the signer's status
+#      written after the switch (when it runs), then after a settle period again, plus PM2 status and restart counts
+#      (R2-L5). On failure it switches back to the previous release if that release was built with the settings
+#      .env has now (R3-04), or (first release) restores the older layout's apps from step 4.
 #   7. Keeps the newest KEEP_RELEASES (default 3) releases, always including current and previous.
 # Everything that runs as another user starts in a new session without this terminal, and its output
 # reaches the terminal without control characters (run_isolated, audit R3-01).
@@ -48,6 +52,7 @@ NGINX_PROXY_SNIPPET="${NGINX_PROXY_SNIPPET:-/etc/nginx/snippets/velum-proxy-secr
 NGINX_API_SNIPPET="${NGINX_API_SNIPPET:-/etc/nginx/snippets/velum-api-upstream.conf}"
 HEALTH_SETTLE_SECONDS="${HEALTH_SETTLE_SECONDS:-20}"
 WORKERS_WAIT_SECONDS="${WORKERS_WAIT_SECONDS:-60}"
+SIGNER_ENV_FILE="${BASE}/signer.env"
 ACTION=deploy
 case "${1:-}" in
   "") ;;
@@ -73,6 +78,19 @@ fi
 
 cd "${BASE}"
 [ -f "${ENV_FILE}" ] || die "Missing ${ENV_FILE}. Run deploy/server-setup.sh (or deploy/import-env.sh when moving from an older layout)."
+# The hot keys live in SIGNER_KEYS_FILE, never in .env, which the app user (and so a compromised API) can read
+# (on-chain audit M-2). server-setup.sh moves them; nothing deploys while one is still here.
+if [ "${SEPARATE}" = 1 ] && [ -n "$(hot_keys_in "${ENV_FILE}")" ]; then
+  die "${ENV_FILE} still holds $(hot_keys_in "${ENV_FILE}" | tr '\n' ' ')(readable by ${APP_USER}). Run server-setup.sh once: it moves them into ${SIGNER_KEYS_FILE} (docs/05-deploy-vps.md, \"Upgrading to the separate signer\"). Nothing was changed."
+fi
+# The signer runs only with the literal ONCHAIN_WORKERS=true (and as root: in a single-user checkout it is part of
+# scope "all").
+ONCHAIN=0
+if [ "${SEPARATE}" = 1 ] && onchain_on "${ENV_FILE}"; then ONCHAIN=1; fi
+# The signer's status directory (SIGNER_STATUS_FILE in .env, which the API reads too).
+SIGNER_STATUS_DIR=""
+if [ "${SEPARATE}" = 1 ]; then SIGNER_STATUS_DIR="$(dirname "$(signer_status_file "${ENV_FILE}")")"; fi
+if [ "${ONCHAIN}" = 1 ]; then ensure_signer_keys_file; fi
 
 # PM2 daemons under systemd (I-2): as root with systemd running, every pm2 command talks to the
 # daemon its unit started (release.sh never starts one itself). Elsewhere the pm2 command starts it.
@@ -148,8 +166,56 @@ redis_url_ok_for() {
     *) return 0 ;;
   esac
 }
-# drop_release ID-DIR — removes a release and its record.
-drop_release() { remove_release "$1"; rm -f -- "$1.build-env"; }
+# drop_release ID-DIR — removes a release, its record and the signer's copy of it.
+drop_release() { remove_release "$1"; rm -f -- "$1.build-env"; drop_signer_release "${1##*/}"; }
+
+# ── The signer's own copy of a release (on-chain audit M-2) ──────────────────
+# <signer home>/releases/<id>, built by the signer from `git archive` of the commit; <signer home>/current points at
+# the one its PM2 runs. Root never writes, reads or deletes inside the signer's home itself: every step runs as the
+# signer (as_signer), which can only touch its own files.
+signer_rel() { printf '%s/releases/%s' "${SIGNER_HOME}" "$1"; }
+# signer_ready ID — the signer's copy of release ID finished building.
+signer_ready() { [ "${SEPARATE}" = 1 ] && [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && as_signer test -f "$(signer_rel "$1")/.velum-signer-ok" >/dev/null 2>&1; }
+drop_signer_release() {
+  [ "${SEPARATE}" = 1 ] && [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] || return 0
+  # shellcheck disable=SC2016 # expanded by the signer's sh
+  as_signer sh -c 'case "$(readlink "$HOME/current" 2>/dev/null)" in "releases/$1") exit 0 ;; esac; rm -rf -- "$HOME/releases/$1"' sh "$1" >/dev/null 2>&1 || true
+}
+# build_signer ID COMMIT — exports COMMIT into the signer's home and builds it there, as the signer.
+build_signer() {
+  local id="$1" commit="$2" dir
+  dir="$(signer_rel "${id}")"
+  say "Building the signer's own copy of ${id} as ${SIGNER_USER} (from the commit; never from ${APP_USER}'s files)"
+  # shellcheck disable=SC2016 # expanded by the signer's sh
+  as_signer sh -c 'umask 077 && chmod 700 "$HOME" && mkdir -p "$HOME/releases" "$HOME/.pm2" "$HOME/state" && chmod 700 "$HOME/releases" "$HOME/.pm2" "$HOME/state" && rm -rf -- "$HOME/releases/$1" && mkdir -m 700 "$HOME/releases/$1"' sh "${id}" ||
+    die "Could not create ${dir} as ${SIGNER_USER}."
+  root_git archive --format=tar "${commit}" | as_signer tar -x -C "${dir}" || die "Could not export ${commit:0:12} for ${SIGNER_USER}."
+  as_signer bash "${dir}/deploy/release.sh" signer-build || die "The signer's build of ${id} failed (see above). Nothing was switched."
+  signer_ready "${id}" || die "The signer's build of ${id} did not finish."
+}
+# signer_activate ID — points the signer's `current` at its copy of ID (atomically, as the signer).
+signer_activate() {
+  # shellcheck disable=SC2016 # expanded by the signer's sh
+  as_signer sh -c 'ln -sfn "releases/$1" "$HOME/.current.new" && mv -Tf "$HOME/.current.new" "$HOME/current"' sh "$1" || die "Could not switch ${SIGNER_USER}'s current to ${1}."
+}
+# signer_off — the signer runs nothing (ONCHAIN_WORKERS not true, or the live release has no copy for it): its unit is
+# stopped and disabled, so nothing signs; a later release with ONCHAIN_WORKERS=true enables it again.
+signer_off() {
+  [ "${SEPARATE}" = 1 ] || return 0
+  if [ "${PM2_SYSTEMD}" = 1 ]; then
+    if systemctl is-active --quiet "pm2-${SIGNER_USER}" 2>/dev/null || systemctl is-enabled --quiet "pm2-${SIGNER_USER}" 2>/dev/null; then
+      say "The signer runs nothing now: stopping pm2-${SIGNER_USER}"
+      systemctl disable --now --quiet "pm2-${SIGNER_USER}" >/dev/null 2>&1 || warn "Could not stop pm2-${SIGNER_USER}. See: systemctl status pm2-${SIGNER_USER}"
+    fi
+  else
+    run_pm2 "${CURRENT}" signer kill >/dev/null 2>&1 || true
+  fi
+  # Its last status would read as a stale signer in /v1/health: removed (as the signer, in its own directory).
+  if [ -n "${SIGNER_STATUS_DIR}" ]; then as_signer rm -f -- "${SIGNER_STATUS_DIR}/status.json" >/dev/null 2>&1 || true; fi
+}
+# Whether the signer runs with the live release: ONCHAIN_WORKERS=true and its copy of that release exists.
+SIGNER_EXPECTED=0
+signer_expect() { SIGNER_EXPECTED=0; if [ "${ONCHAIN}" = 1 ] && signer_ready "$1"; then SIGNER_EXPECTED=1; fi; }
 port_of() { local p; p="$(env_get "${ENV_FILE}" "$1")"; if valid_port "${p}"; then printf '%s' "${p}"; else printf '%s' "$2"; fi; }
 API_PORT="$(port_of PORT_API 4000)"
 WEB_PORT="$(port_of PORT_WEB 3000)"
@@ -160,6 +226,7 @@ PROXY_SECRET_VALUE="$(env_get "${ENV_FILE}" PROXY_SECRET)"
 logs_hint() {
   local u="${APP_USER}"
   [ "$1" != velum-web ] || u="${WEB_USER}"
+  [ "$1" != velum-signer ] || u="${SIGNER_USER}"
   if [ "${SEPARATE}" = 1 ]; then printf 'bash %s/deploy/as-user.sh %s pm2 logs %s --lines 100 --nostream' "${BASE}" "${u}" "$1"; else printf 'pm2 logs %s --lines 100 --nostream' "$1"; fi
 }
 
@@ -177,12 +244,15 @@ api_get() {
 }
 web_code() { curl -s --noproxy '*' --max-time 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${WEB_PORT}/" || true; }
 workers_age() { api_get /v1/health 2>/dev/null | sed -n 's/.*"workers":\([0-9]\{1,9\}\)[,}].*/\1/p'; }
+# Seconds since the signer last wrote its status file, as the API read it (root never reads the signer's files).
+signer_age() { api_get /v1/health 2>/dev/null | sed -n 's/.*"signer":\([0-9]\{1,9\}\)[,}].*/\1/p'; }
 
 # PM2 state of every Velum app instance in both daemons, "user<TAB>name<TAB>status<TAB>restarts", sorted.
 pm2_snapshot() {
   {
     run_pm2 "${CURRENT}" app status | sed "s/^/${APP_USER}\t/"
     if [ "${SEPARATE}" = 1 ]; then run_pm2 "${CURRENT}" web status | sed "s/^/${WEB_USER}\t/"; fi
+    if [ "${SIGNER_EXPECTED}" = 1 ]; then run_pm2 "${CURRENT}" signer status | sed "s/^/${SIGNER_USER}\t/"; fi
   } 2>/dev/null | tty_sanitize | sort
 }
 # check_snapshot TEXT — every expected app has instances, all online, under the expected user.
@@ -193,9 +263,12 @@ check_snapshot() {
     [[ "${line}" =~ ${re} ]] || { warn "Unexpected PM2 status line: ${line}"; return 1; }
     [ "$(printf '%s' "${line}" | cut -f3)" = online ] || { warn "$(printf '%s' "${line}" | cut -f2) is $(printf '%s' "${line}" | cut -f3) in PM2. See: $(logs_hint "$(printf '%s' "${line}" | cut -f2)")"; return 1; }
   done <<<"${snap}"
-  for app in velum-api velum-workers velum-web; do
+  local apps="velum-api velum-workers velum-web"
+  if [ "${SIGNER_EXPECTED}" = 1 ]; then apps="${apps} velum-signer"; fi
+  for app in ${apps}; do
     user="${APP_USER}"
     [ "${app}" = velum-web ] && user="${WEB_USER}"
+    [ "${app}" = velum-signer ] && user="${SIGNER_USER}"
     printf '%s\n' "${snap}" | awk -F'\t' -v u="${user}" -v a="${app}" '$1 == u && $2 == a' | grep -q . || { warn "${app} is not running under ${user}'s PM2."; return 1; }
   done
 }
@@ -224,6 +297,16 @@ health() {
     sleep 2
   done
   [ -n "${ok}" ] || { warn "The workers did not report alive within ${WORKERS_WAIT_SECONDS}s of the switch. See: $(logs_hint velum-workers)"; return 1; }
+  # 3b. The signer (M-2): a status written after the switch proves the new signer got through start-up.
+  if [ "${SIGNER_EXPECTED}" = 1 ]; then
+    ok=""
+    for _ in $(seq 1 "$(((WORKERS_WAIT_SECONDS + 1) / 2))"); do
+      w="$(signer_age)"
+      if [ -n "${w}" ] && [ "$(($(date +%s) - w))" -ge "$((since - 1))" ]; then ok=1; break; fi
+      sleep 2
+    done
+    [ -n "${ok}" ] || { warn "The signer did not write its status within ${WORKERS_WAIT_SECONDS}s of the switch. See: $(logs_hint velum-signer)"; return 1; }
+  fi
   # 4. Settle: catch an app that crashes or crash-loops after PM2 reported it started.
   s1="$(pm2_snapshot)"
   check_snapshot "${s1}" || return 1
@@ -242,6 +325,10 @@ health() {
   [ "$(web_code)" = 200 ] || { warn "The web stopped answering while settling. See: $(logs_hint velum-web)"; return 1; }
   w="$(workers_age)"
   [ -n "${w}" ] && [ "${w}" -le 15 ] || { warn "The workers heartbeat is stale (${w:-none}s). See: $(logs_hint velum-workers)"; return 1; }
+  if [ "${SIGNER_EXPECTED}" = 1 ]; then
+    w="$(signer_age)"
+    [ -n "${w}" ] && [ "${w}" -le 15 ] || { warn "The signer's status is stale (${w:-none}s). See: $(logs_hint velum-signer)"; return 1; }
+  fi
   # The API's answer is the app user's output: shown without control characters (R3-01).
   { api_get /v1/health | tty_sanitize; } && echo
 }
@@ -253,6 +340,8 @@ health() {
 write_web_env() {
   [ "${SEPARATE}" = 1 ] || return 0
   render_web_env "${ENV_FILE}" | install_file "${WEB_ENV_FILE}" 640 "root:${WEB_GROUP}"
+  # The signer's settings (M-2): no secrets, only what the signer reads, plus its paths.
+  render_signer_env "${ENV_FILE}" | install_file "${SIGNER_ENV_FILE}" 640 "root:${SIGNER_GROUP}"
 }
 snippet_content() {
   case "$1" in
@@ -298,11 +387,16 @@ restore_nginx() {
 }
 forget_nginx_backups() { rm -f "${NGINX_SNIPPET}.prev" "${NGINX_PROXY_SNIPPET}.prev" "${NGINX_API_SNIPPET}.prev" 2>/dev/null || true; }
 
-# run_pm2 RELEASE-DIR app|web ARGS… — release.sh ARGS as the app or web user (isolated, R3-01).
+# run_pm2 RELEASE-DIR app|web|signer ARGS… — release.sh ARGS as the app, web or signer user (isolated, R3-01). The
+# signer always runs its own copy's release.sh (<signer home>/current), never the app user's (M-2).
 run_pm2() {
   local dir="$1" who="$2"
   shift 2
-  if [ "${who}" = web ]; then as_web bash "${dir}/deploy/release.sh" "$@"; else as_app bash "${dir}/deploy/release.sh" "$@"; fi
+  case "${who}" in
+    web) as_web bash "${dir}/deploy/release.sh" "$@" ;;
+    signer) as_signer bash "${SIGNER_HOME}/current/deploy/release.sh" "$@" ;;
+    *) as_app bash "${dir}/deploy/release.sh" "$@" ;;
+  esac
 }
 
 # pm2_daemon_up RELEASE-DIR app|web — with systemd: writes and enables pm2-<user>, moves a daemon of that
@@ -312,7 +406,11 @@ run_pm2() {
 pm2_daemon_up() {
   local dir="$1" who="$2" user home unit main=0 others
   [ "${PM2_SYSTEMD}" = 1 ] || return 0
-  if [ "${who}" = web ]; then user="${WEB_USER}"; home="${WEB_HOME}"; else user="${APP_USER}"; home="${APP_HOME}"; fi
+  case "${who}" in
+    web) user="${WEB_USER}"; home="${WEB_HOME}" ;;
+    signer) user="${SIGNER_USER}"; home="${SIGNER_HOME}" ;;
+    *) user="${APP_USER}"; home="${APP_HOME}" ;;
+  esac
   unit="pm2-${user}"
   ensure_pm2_unit "${user}" "${home}"
   if systemctl is-active --quiet "${unit}"; then main="$(systemctl show -p MainPID --value "${unit}")"; fi
@@ -352,10 +450,12 @@ pm2_daemon_up() {
 pm2_apply() {
   { pm2_daemon_up "${CURRENT}" app && run_pm2 "${CURRENT}" app pm2; } || return 1
   if [ "${SEPARATE}" = 1 ]; then { pm2_daemon_up "${CURRENT}" web && run_pm2 "${CURRENT}" web pm2; } || return 1; fi
+  if [ "${SIGNER_EXPECTED}" = 1 ]; then { pm2_daemon_up "${CURRENT}" signer && run_pm2 "${CURRENT}" signer pm2; } || return 1; else signer_off; fi
 }
 pm2_list() {
   run_pm2 "${CURRENT}" app ls || true
   if [ "${SEPARATE}" = 1 ]; then run_pm2 "${CURRENT}" web ls || true; fi
+  if [ "${SIGNER_EXPECTED}" = 1 ]; then run_pm2 "${CURRENT}" signer ls || true; fi
 }
 
 # ── First release over an older layout (R2-M2) ───────────────────────────────
@@ -385,6 +485,8 @@ restore_legacy() {
   run_pm2 "${REL}" web delete velum-web >/dev/null 2>&1 || true
   run_pm2 "${REL}" web save >/dev/null 2>&1 || true
   if [ "${PM2_SYSTEMD}" = 1 ]; then systemctl disable --now --quiet "pm2-${WEB_USER}" >/dev/null 2>&1 || true; fi
+  SIGNER_EXPECTED=0
+  signer_off
   run_pm2 "${REL}" app delete velum-api velum-workers velum-web >/dev/null 2>&1 || true
   # Written as the app user into its own PM2 home, then resurrected by its own PM2 (under its unit).
   # shellcheck disable=SC2016
@@ -417,10 +519,16 @@ if [ "${ACTION}" = "rollback" ]; then
   # API and the CSP follow the other.
   redis_url_ok_for "${prev}" || die "Not rolling back to ${prev}: it predates the unix-socket REDIS_URL in ${ENV_FILE} (Velum's own Redis) and could not connect to Redis. Run deploy/redis-velum.sh --rollback first, or deploy a new release."
   env_matches "${prev}" || die "Not rolling back to ${prev}: running it with this .env would mix two configurations (web bundle, API and CSP). Put the values it was built with back into ${ENV_FILE} (the .env.bak.* files next to it keep earlier versions; set-network.sh switches the network with a new release) and run --rollback again, or deploy a new release."
+  # With ONCHAIN_WORKERS=true the signer must run with it: only from its own copy of that release (M-2).
+  if [ "${ONCHAIN}" = 1 ] && ! signer_ready "${prev}"; then
+    die "Not rolling back to ${prev}: ONCHAIN_WORKERS=true, but ${SIGNER_USER} has no copy of ${prev} (it was built while ONCHAIN_WORKERS was off, or before the signer split), so the price relayer and keeper would stop. Deploy a new release instead, or set ONCHAIN_WORKERS=false first."
+  fi
   say "Rolling back ${cur} → ${prev}"
-  if [ "${SEPARATE}" = 1 ]; then apply_tmpfiles "${API_SOCKET_PATH}"; fi
+  if [ "${SEPARATE}" = 1 ]; then apply_tmpfiles "${API_SOCKET_PATH}" "${SIGNER_STATUS_DIR}"; fi
   write_web_env
   activate "${prev}"
+  signer_expect "${prev}"
+  if [ "${SIGNER_EXPECTED}" = 1 ]; then signer_activate "${prev}"; fi
   remember_previous ""
   pm2_apply || die "PM2 could not start ${prev}. See: $(logs_hint velum-api)"
   health "$(date +%s)" || die "The previous release ${prev} is not healthy either. See pm2 logs."
@@ -456,7 +564,7 @@ if [ "$(id -u)" -eq 0 ] && [ -f "${NGINX_SITE}" ]; then
 fi
 if [ "${SEPARATE}" = "1" ]; then
   install -d -o root -g root -m 751 "${RELEASES}"
-  apply_tmpfiles "${API_SOCKET_PATH}"
+  apply_tmpfiles "${API_SOCKET_PATH}" "${SIGNER_STATUS_DIR}"
 else
   mkdir -p "${RELEASES}"
 fi
@@ -494,6 +602,7 @@ as_app ${CACHE_FROM:+"VELUM_PREVIOUS=${CACHE_FROM}"} bash "${REL}/deploy/release
 [ -f "${REL}/.velum-release-ok" ] || die "The build did not finish."
 [ "$(build_env_record "${ENV_FILE}")" = "${BUILD_RECORD}" ] || die "VELUM_NETWORK, CHAIN_ID or a NEXT_PUBLIC_* value in .env changed during the build. Run deploy.sh again."
 printf '%s\n' "${BUILD_RECORD}" | install_file "$(record_of "${ID}")" 600 root:root
+if [ "${ONCHAIN}" = 1 ]; then build_signer "${ID}" "${COMMIT}"; fi
 
 capture_legacy
 
@@ -501,6 +610,8 @@ say "Switching current → ${ID}"
 STAGE=switched
 write_web_env
 activate "${ID}"
+signer_expect "${ID}"
+if [ "${SIGNER_EXPECTED}" = 1 ]; then signer_activate "${ID}"; fi
 PM2_OK=1
 # A snippet change Nginx does not apply (H-1) would leave /api/ pointing elsewhere: treat it as a failed release.
 if update_nginx; then pm2_apply || PM2_OK=0; else PM2_OK=0; fi
@@ -523,6 +634,9 @@ else
       warn "Switching back to ${PREV_ID}."
       write_web_env
       activate "${PREV_ID}"
+      # The signer goes back with it when it has a copy of that release; otherwise it stops (it signs nothing).
+      signer_expect "${PREV_ID}"
+      if [ "${SIGNER_EXPECTED}" = 1 ]; then signer_activate "${PREV_ID}"; elif [ "${ONCHAIN}" = 1 ]; then warn "${SIGNER_USER} has no copy of ${PREV_ID}: the price relayer and keeper stay stopped until the next healthy release."; fi
       restore_nginx
       pm2_apply || true
       health "$(date +%s)" >/dev/null || warn "The previous release is not healthy either. See: $(logs_hint velum-api)"
@@ -554,6 +668,12 @@ done
 while IFS= read -r r; do
   [ -d "${RELEASES}/${r%.build-env}" ] || rm -f -- "${RELEASES:?}/${r}"
 done < <(find "${RELEASES}" -maxdepth 1 -type f -name '*.build-env' -printf '%f\n')
+# The signer's copies of releases that are gone (as the signer; never the one its current points at).
+if [ "${SEPARATE}" = 1 ] && id -u "${SIGNER_USER}" >/dev/null 2>&1; then
+  KEEP_IDS="$(releases_sorted | tr '\n' ' ')"
+  # shellcheck disable=SC2016 # expanded by the signer's sh
+  as_signer env KEEP_IDS=" ${KEEP_IDS}" sh -c 'cd "$HOME/releases" 2>/dev/null || exit 0; cur="$(readlink "$HOME/current" 2>/dev/null)"; for d in *; do [ -e "$d" ] || continue; case "$KEEP_IDS" in *" $d "*) continue ;; esac; [ "$cur" = "releases/$d" ] && continue; rm -rf -- "$d"; done' >/dev/null 2>&1 || true
+fi
 
 pm2_list
 echo "✓ Deployed ${ID}${PREV_ID:+ (previous: ${PREV_ID}; roll back with: deploy.sh --rollback)}"

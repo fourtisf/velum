@@ -1,9 +1,12 @@
 /**
- * Starts the Phase 3 on-chain workers inside the workers process: the price relayer, the keeper and the
- * indexer, each on its own BullMQ queue (one job at a time) behind a Redis role lock (one active instance),
- * plus the status the API reports in /v1/health. Off unless ONCHAIN_WORKERS=true and the deployment file of
- * the chain exists; the relayer needs PRICE_RELAY_PRIVATE_KEY, the keeper KEEPER_PRIVATE_KEY (separate keys);
- * on Robinhood Chain mainnet neither sends anything without ONCHAIN_MAINNET_CONFIRMED=yes (they only read).
+ * Starts the Phase 3 indexer inside the workers process, on its own BullMQ queue (one job at a time) behind a Redis
+ * role lock (one active instance), plus the status the API reports in /v1/health. Off unless ONCHAIN_WORKERS=true and
+ * the deployment file of the chain exists.
+ *
+ * The price relayer and the keeper do not run here (on-chain audit M-2): they hold the hot keys, and this process runs
+ * as the same Unix user as the internet-facing API. They run in the signer process (velum-signer, src/signer.ts) as
+ * their own user, reading neither Redis nor Postgres; the API reads that process's status from its status file. This
+ * process never receives a hot key (deploy/ecosystem.config.cjs refuses to pass one), and holds no signing code path.
  *
  * Redis (on-chain workers audit M-3): the role locks and the job schedulers live in Redis, so a tenant of a shared
  * Redis could hold the locks or delete the schedulers and stop every role. The on-chain workers therefore start only
@@ -14,7 +17,6 @@
 import type { CacheMac } from '@velum/config/src/cache-mac';
 import { readDeploymentFile } from '@velum/config/src/deployment-file';
 import {
-  ONCHAIN_MAINNET_CHAIN_ID,
   ONCHAIN_STATUS_KEY,
   deploymentId,
   type Deployment,
@@ -28,23 +30,17 @@ import type { PrismaClient } from '@velum/db';
 import { Queue, Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
 import type { PublicClient } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
 import type { Logger } from '../lib/log';
 import { publicClientFor } from './chain';
 import type { OnchainEnv } from './env';
-import { describeError, throttledWarn } from './errors';
+import { describeError } from './errors';
 import { Indexer } from './indexer';
-import { Keeper } from './keeper';
 import { roleLock, type RoleLock } from './lock';
-import { PriceRelayer } from './relayer';
-import { TxSender, type SendChain, type SenderChain } from './tx-sender';
 
 export const ONCHAIN_QUEUES = { relay: 'velum-onchain-relay', keeper: 'velum-onchain-keeper', indexer: 'velum-onchain-indexer' } as const;
 /** How often the status for /v1/health is written; it expires if the workers stop writing it. */
 export const STATUS_EVERY_MS = 5000;
 const STATUS_TTL_S = 120;
-/** The relay queue ticks every second. */
-const RELAY_EVERY_MS = 1000;
 /** A role whose last successful tick is older than max(this, 10 ticks) gets its job scheduler re-added (once a minute). */
 const SCHEDULER_HEAL_AFTER_MS = 60_000;
 
@@ -64,18 +60,12 @@ export interface StartOnchainOptions {
   now?: () => number;
   /** Test overrides. */
   client?: PublicClient;
-  sendClient?: PublicClient;
-  relayStuckAfterMs?: number;
-  keeperStuckAfterMs?: number;
   deployment?: Deployment;
 }
 
 export interface OnchainHandle {
   deployment: Deployment;
-  relayer: PriceRelayer | null;
-  keeper: Keeper | null;
   indexer: Indexer;
-  senders: { relay: TxSender | null; keeper: TxSender | null };
   status(): OnchainStatus;
   /** Write the status to Redis now (also done every STATUS_EVERY_MS). */
   writeStatus(): Promise<void>;
@@ -190,72 +180,12 @@ export async function startOnchain(o: StartOnchainOptions): Promise<OnchainHandl
   const { env, chainId, log, prisma, redis } = o;
   const startedAt = Date.now();
   const client = o.client ?? publicClientFor(chainId, o.rpcUrl);
-  const chain = client as unknown as SenderChain;
-  // RPC_URL_SEND (audit M-1): broadcasts, nonces and receipts through a trusted endpoint when one is set.
-  const sendUrl = env.sendRpcUrl();
-  const send = (o.sendClient ?? (sendUrl ? publicClientFor(chainId, sendUrl) : undefined)) as unknown as SendChain | undefined;
-  const mainnetLocked = chainId === ONCHAIN_MAINNET_CHAIN_ID && !env.mainnetConfirmed;
-  if (mainnetLocked) log.warn('Robinhood Chain mainnet without ONCHAIN_MAINNET_CONFIRMED=yes: the relayer and keeper only read; the indexer runs');
-
-  // Keys become viem accounts here and nowhere else (the key stays in the account's closure).
-  const relayKey = env.keys.relay();
-  const keeperKey = env.keys.keeper();
-  let relayer: PriceRelayer | null = null;
-  let keeper: Keeper | null = null;
-  let relaySender: TxSender | null = null;
-  let keeperSender: TxSender | null = null;
-  let keeperError: string | null = keeperKey ? null : 'KEEPER_PRIVATE_KEY not set';
-  if (relayKey) {
-    // Each sender verifies the RPC chain id and adopts pending transactions on its first tick (ensureInit
-    // below), so an RPC outage never delays the start of the workers process.
-    const sender = (relaySender = new TxSender(chain, privateKeyToAccount(relayKey), {
-      role: 'relayer',
-      chainId,
-      maxFeeWei: env.relayMaxFeeWei,
-      minBalanceWei: env.relayMinBalanceWei,
-      mainnetConfirmed: env.mainnetConfirmed,
-      stuckAfterMs: o.relayStuckAfterMs ?? 6000,
-      log,
-      send,
-    }));
-    relayer = new PriceRelayer({ client, sender, redis, mac: o.mac, deployment, chainId, intervalMs: env.relayIntervalMs, log, now: o.now });
-  } else log.warn('price relayer off: PRICE_RELAY_PRIVATE_KEY not set');
-  if (keeperKey) {
-    const account = privateKeyToAccount(keeperKey);
-    if (deployment.priceRelayer && account.address.toLowerCase() === deployment.priceRelayer) {
-      keeperError = 'KEEPER_PRIVATE_KEY is the price-relay key: create a separate one';
-      log.error('keeper off: its key is the price-relay key');
-    } else {
-      const sender = (keeperSender = new TxSender(chain, account, {
-        role: 'keeper',
-        chainId,
-        maxFeeWei: env.keeperMaxFeeWei,
-        minBalanceWei: env.keeperMinBalanceWei,
-        mainnetConfirmed: env.mainnetConfirmed,
-        stuckAfterMs: o.keeperStuckAfterMs ?? 15_000,
-        log,
-        send,
-      }));
-      keeper = new Keeper({ client, sender, prisma, deployment, chainId, fundingEpochSeconds: env.fundingEpochSeconds, ethPriceUsd: env.ethPriceUsd, maxFeeWei: env.keeperMaxFeeWei, log });
-    }
-  } else log.warn('keeper off: KEEPER_PRIVATE_KEY not set');
   const indexer = new Indexer({ client, prisma, deployment, chainId, confirmations: env.confirmations, chunkBlocks: env.chunkBlocks, startBlock: env.startBlock, log });
 
-  const initialized = new WeakSet<TxSender>();
-  const ensureInit = async (s: TxSender) => {
-    if (initialized.has(s) && s.refusal() !== 'RPC chain id not verified yet') return;
-    await s.init();
-    initialized.add(s);
-  };
-
   const id = deploymentId(deployment);
-  type Role = 'relay' | 'keeper' | 'indexer';
-  const locks: Record<Role, RoleLock> = {
-    relay: roleLock(redis, `relayer:${chainId}:${id}`),
-    keeper: roleLock(redis, `keeper:${chainId}:${id}`),
-    indexer: roleLock(redis, `indexer:${chainId}:${id}`),
-  };
-  const lockHeld: Record<Role, boolean | null> = { relay: null, keeper: null, indexer: null };
+  type Role = 'indexer';
+  const locks: Record<Role, RoleLock> = { indexer: roleLock(redis, `indexer:${chainId}:${id}`) };
+  const lockHeld: Record<Role, boolean | null> = { indexer: null };
 
   const defaultJobOptions = { removeOnComplete: true, removeOnFail: 100 } as const;
   const queues: Array<{ role: Role; q: Queue; name: string; every: number; healedAt: number }> = [];
@@ -280,27 +210,10 @@ export async function startOnchain(o: StartOnchainOptions): Promise<OnchainHandl
     workers.push(w);
   };
 
-  // A sender that could not initialise (RPC down) is retried every 10 s, with one warning a minute.
-  const warn = throttledWarn(log);
-  const initRetryAt = new WeakMap<TxSender, number>();
-  const tickWith = (component: { tick(): Promise<void> }, sender: TxSender | null) => async () => {
-    if (sender) {
-      if ((initRetryAt.get(sender) ?? 0) > Date.now()) return;
-      try {
-        await ensureInit(sender);
-      } catch (err) {
-        initRetryAt.set(sender, Date.now() + 10_000);
-        warn('sender init failed', { err: describeError(err) });
-        return;
-      }
-    }
-    await component.tick();
-  };
   try {
-    if (relayer) await add('relay', ONCHAIN_QUEUES.relay, RELAY_EVERY_MS, tickWith(relayer, relaySender), locks.relay);
-    else await removeScheduler(redis, ONCHAIN_QUEUES.relay);
-    if (keeper) await add('keeper', ONCHAIN_QUEUES.keeper, env.keeperIntervalMs, tickWith(keeper, keeperSender), locks.keeper);
-    else await removeScheduler(redis, ONCHAIN_QUEUES.keeper);
+    // The relayer and keeper run in velum-signer: their schedulers from an older release are removed.
+    await removeScheduler(redis, ONCHAIN_QUEUES.relay);
+    await removeScheduler(redis, ONCHAIN_QUEUES.keeper);
     await add('indexer', ONCHAIN_QUEUES.indexer, env.indexerPollMs, () => indexer.tick(), locks.indexer);
   } catch (err) {
     // Leave nothing half-started: the caller retries the whole start.
@@ -318,19 +231,20 @@ export async function startOnchain(o: StartOnchainOptions): Promise<OnchainHandl
       chainId,
       deployment: id,
       indexer: idx,
-      relayer: relayer ? relayer.status() : offSender(relayKey ? null : 'PRICE_RELAY_PRIVATE_KEY not set'),
-      keeper: keeper ? keeper.status() : offSender(keeperError),
+      // The relayer and the keeper report from velum-signer (its status file); the API combines both.
+      relayer: offSender(null),
+      keeper: offSender(null),
       startedAt,
       error: null,
       pushIntervalMs: env.relayIntervalMs,
       roles: {
-        relayer: roleHealth('relay', relayer !== null, relayer?.lastOkAt ?? null, RELAY_EVERY_MS),
-        keeper: roleHealth('keeper', keeper !== null, keeper?.lastOkAt ?? null, env.keeperIntervalMs),
+        relayer: { enabled: false, lockHeld: null, lastOkAt: null, everyMs: 0 },
+        keeper: { enabled: false, lockHeld: null, lastOkAt: null, everyMs: 0 },
         indexer: roleHealth('indexer', true, indexer.lastOkAt, env.indexerPollMs),
       },
     };
   };
-  const lastOk: Record<Role, () => number | null> = { relay: () => relayer?.lastOkAt ?? null, keeper: () => keeper?.lastOkAt ?? null, indexer: () => indexer.lastOkAt };
+  const lastOk: Record<Role, () => number | null> = { indexer: () => indexer.lastOkAt };
   /**
    * Refreshes the lock flags from Redis (read only) and re-adds the job scheduler of a role whose last successful
    * tick is overdue (a scheduler someone deleted), at most once a minute per role.
@@ -361,23 +275,16 @@ export async function startOnchain(o: StartOnchainOptions): Promise<OnchainHandl
   const timer = setInterval(() => void writeStatus(), STATUS_EVERY_MS);
   timer.unref?.();
 
-  log.info('on-chain workers started', {
+  log.info('on-chain indexer started (the relayer and keeper run in velum-signer)', {
     chainId,
     deployment: id,
-    relayer: relaySender?.address ?? null,
-    keeper: keeperSender?.address ?? null,
     indexerFrom: indexer.startBlock,
     confirmations: env.confirmations,
-    mainnetLocked,
-    sendEndpoint: send ? 'RPC_URL_SEND' : 'RPC_URL',
   });
 
   return {
     deployment,
-    relayer,
-    keeper,
     indexer,
-    senders: { relay: relaySender, keeper: keeperSender },
     status,
     writeStatus,
     async stop() {

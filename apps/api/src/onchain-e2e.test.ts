@@ -1,7 +1,7 @@
 /**
  * The Phase 3 endpoints over the index the workers' end-to-end test built (apps/workers/e2e/onchain-e2e.sh runs
- * this right after apps/workers/src/onchain/e2e.test.ts, against the same scratch Postgres and Redis). Skipped
- * without VELUM_E2E_OUT.
+ * this right after apps/workers/src/onchain/e2e.test.ts, against the same scratch Postgres and Redis, and the last
+ * status file of the signer process it ran: on-chain audit M-2). Skipped without VELUM_E2E_OUT.
  */
 import { readFileSync } from 'node:fs';
 import { parseRedisUrl } from '@velum/config';
@@ -13,7 +13,7 @@ import { getAddress } from 'viem';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from './app';
 import type { ApiEnv } from './env';
-import { prismaDb, redisCache } from './lib/adapters';
+import { fileSigner, prismaDb, redisCache } from './lib/adapters';
 import { deploymentSource, prismaOnchain, type ActivityItem, type ActivityPage, type PositionView } from './lib/onchain';
 
 const OUT = process.env.VELUM_E2E_OUT;
@@ -69,6 +69,8 @@ describe.skipIf(!OUT)('Phase 3 API over the end-to-end index', () => {
     app = await buildApp({
       env,
       cache: redisCache(redis, { mac: createCacheMac(DB, 'testnet') }),
+      // The relayer and keeper report from velum-signer's status file (the workers' test kept its last one).
+      signer: fileSigner(`${OUT}.signer-status.json`),
       db: prismaDb(prisma),
       chain: { blockNumber: async () => null },
       deployment: deploymentSource(r.deploymentsDir, r.chainId),
@@ -174,7 +176,10 @@ describe.skipIf(!OUT)('Phase 3 API over the end-to-end index', () => {
     expect(h.onchain.chainId).toBe(31337);
     expect(h.onchain.indexer.block).toBeGreaterThan(0);
     expect(h.onchain.relayer).toMatchObject({ enabled: true, address: r.relayer, sending: true, balanceLow: false });
-    expect(h.onchain.relayer.markets).toMatchObject({ AMZN: 'demo' });
+    // The signer had no quote for AMZN (its fake quote API had none), so it never pushed one.
+    expect(h.onchain.relayer.markets).toMatchObject({ AMZN: 'no-snapshot' });
+    expect(h.onchain.reasons).toEqual([]);
+    expect(h.signer).toBeLessThanOrEqual(60);
     expect(h.onchain.keeper).toMatchObject({ enabled: true, address: r.keeper, liquidations: 1, forcedExits: 1 });
     expect(JSON.stringify(h)).not.toMatch(/[0-9a-f]{64}/i); // no keys (nor anything key-shaped)
   });

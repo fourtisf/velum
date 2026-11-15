@@ -4,7 +4,7 @@ import { PrismaClient } from '@velum/db';
 import { Redis } from 'ioredis';
 import { buildApp } from './app';
 import { loadEnv } from './env';
-import { prismaDb, redisCache, viemChain } from './lib/adapters';
+import { fileSigner, prismaDb, redisCache, viemChain } from './lib/adapters';
 import { listenOnSocket } from './lib/listen';
 import { deploymentSource, prismaOnchain } from './lib/onchain';
 import { redact } from './lib/redact';
@@ -45,6 +45,7 @@ async function main(): Promise<void> {
     {
       env,
       cache: redisCache(redis, { mac }),
+      signer: env.signerStatusFile ? fileSigner(env.signerStatusFile) : undefined,
       db: prismaDb(prisma),
       chain,
       deployment: deploymentSource(env.deploymentsDir ?? '', env.chainId),

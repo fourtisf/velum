@@ -9,16 +9,21 @@
 // unit (pm2-<user>, written by deploy.sh) with a fixed environment that holds no secret, and deploy.sh
 // restarts a daemon whose own environment holds one (audit R3-01, I-2).
 //
-// Scopes (VELUM_PM2_SCOPE, audit R2-M3): on a server the web runs as its own user in its own PM2
-// daemon and reads <base>/web.env (rendered by root, no secrets); api and workers run as the app user
-// and read <base>/.env, which the web user cannot read.
-//   backend  velum-api + velum-workers   (app user, .env)
-//   web      velum-web                   (web user, web.env)
-//   all      all three                   (single-user and local setups, .env)
+// Scopes (VELUM_PM2_SCOPE, audit R2-M3, on-chain audit M-2): on a server each user runs its own PM2 daemon.
+//   backend  velum-api + velum-workers   (app user, <base>/.env)
+//   web      velum-web                   (web user, <base>/web.env: rendered by root, no secrets)
+//   signer   velum-signer                (signer user, <base>/signer.env: rendered by root, no secrets; only with
+//                                         ONCHAIN_WORKERS=true, otherwise this scope has no app)
+//   all      all of them                 (single-user and local setups, .env)
+// The signer (the price relayer and the keeper) reads its hot keys from SIGNER_KEYS_FILE itself: no key is on any
+// list below, and this file refuses to load if one is. Its settings file holds no DATABASE_URL, REDIS_URL or
+// PROXY_SECRET: the signer needs neither Postgres nor Redis.
 //
 // Layout: in a release directory (<base>/releases/<id>/deploy/…) the apps run from <base>/current,
-// the symlink deploy.sh switches atomically. Run from a plain checkout (local or manual setups), the
-// apps run from the checkout and the env files sit at its root.
+// the symlink deploy.sh switches atomically. The signer's copy of the release lives in its own home
+// (~/releases/<id>, ~/current, built by the signer user from the same commit: it never runs the app user's files), so
+// there <base> is that home and release.sh passes the settings file as VELUM_ENV_FILE. Run from a plain checkout
+// (local or manual setups), the apps run from the checkout and the env files sit at its root.
 //
 //   node deploy/ecosystem.config.cjs --keys         app names and the variable NAMES each one gets
 //   node deploy/ecosystem.config.cjs --fingerprint  hash of app definitions + variable names (no values)
@@ -34,8 +39,8 @@ const inRelease = path.basename(path.dirname(tree)) === 'releases';
 const base = inRelease ? path.dirname(path.dirname(tree)) : tree;
 const appRoot = inRelease ? path.join(base, 'current') : tree;
 const scope = process.env.VELUM_PM2_SCOPE || 'all';
-if (!['backend', 'web', 'all'].includes(scope)) throw new Error(`VELUM_PM2_SCOPE must be backend, web or all (got ${scope}).`);
-const envFile = process.env.VELUM_ENV_FILE || path.join(base, scope === 'web' ? 'web.env' : '.env');
+if (!['backend', 'web', 'signer', 'all'].includes(scope)) throw new Error(`VELUM_PM2_SCOPE must be backend, web, signer or all (got ${scope}).`);
+const envFile = process.env.VELUM_ENV_FILE || path.join(base, scope === 'web' ? 'web.env' : scope === 'signer' ? 'signer.env' : '.env');
 
 /** KEY=VALUE parser: no expansion, no escapes; one pair of matching outer quotes removed; last wins. */
 function parseEnv(text) {
@@ -55,51 +60,64 @@ function parseEnv(text) {
 const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, 'utf8')) : {};
 
 /**
- * Variables each app reads. Nothing else reaches it (hot keys reach only their worker). The web list
- * must match WEB_ENV_KEYS / WEB_ENV_PREFIX in deploy/lib/common.sh (what root writes to web.env).
- * `gated` keys reach the app only while `when` holds.
+ * Variables each app reads. Nothing else reaches it, and no hot key reaches any app (the signer reads its keys
+ * from SIGNER_KEYS_FILE). The web list must match WEB_ENV_KEYS / WEB_ENV_PREFIX in deploy/lib/common.sh (what root
+ * writes to web.env); the signer list must match SIGNER_ENV_KEYS there (what root writes to signer.env).
  */
-// Phase 3 on-chain workers (apps/workers/src/onchain): the hot keys reach velum-workers only with the literal
-// ONCHAIN_WORKERS=true in .env (the workers apply the same rule), and never reach the API or the web.
+// Phase 3 (on-chain audit M-2): the signer runs only with the literal ONCHAIN_WORKERS=true (the signer and the
+// workers apply the same rule).
 const onchainOn = (fileEnv.ONCHAIN_WORKERS || '').trim().toLowerCase() === 'true';
 const ALLOW = {
   'velum-web': { keys: ['NODE_ENV', 'PORT_WEB', 'PUBLIC_SITE_URL'], prefixes: ['NEXT_PUBLIC_'] },
   'velum-api': {
     // API_SOCKET: on the server the API listens on a unix socket only Nginx can reach (audit R3-03).
     // DEPLOYMENTS_DIR: the Phase 3 reads (/v1/deployment, /v1/accounts/*, funding) use the deployment file.
-    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET', 'DEPLOYMENTS_DIR'],
+    // SIGNER_STATUS_FILE: /v1/health reads the signer's status (no secrets) from it.
+    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET', 'DEPLOYMENTS_DIR', 'SIGNER_STATUS_FILE'],
     prefixes: ['RATE_LIMIT_'],
   },
   'velum-workers': {
     keys: [
       'NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE',
       'PRICE_POLL_MS', 'PRICE_SOURCE', 'PRICE_TICK_RETENTION_DAYS', 'LOG_LEVEL',
-      // Phase 3 on-chain workers (no secrets): off unless ONCHAIN_WORKERS=true and the deployment file exists.
+      // Phase 3 indexer (no secrets): off unless ONCHAIN_WORKERS=true and the deployment file exists. The shared
+      // on-chain settings are validated here too, so the workers and the signer agree on what is valid.
       'ONCHAIN_WORKERS', 'ONCHAIN_MAINNET_CONFIRMED', 'DEPLOYMENTS_DIR', 'PRICE_PUSH_INTERVAL_MS',
       'RELAYER_MAX_GWEI', 'KEEPER_MAX_GWEI', 'RELAYER_MIN_BALANCE_ETH', 'KEEPER_MIN_BALANCE_ETH', 'KEEPER_ETH_PRICE_USD',
       'INDEXER_START_BLOCK', 'CONFIRMATIONS', 'INDEXER_CHUNK_BLOCKS', 'INDEXER_POLL_MS', 'KEEPER_INTERVAL_MS', 'FUNDING_EPOCH_SECONDS',
-      // Optional trusted endpoint for broadcasts, nonces and receipts (audit M-1); may carry a provider key.
-      'RPC_URL_SEND',
     ],
     prefixes: [],
-    // The price-relay and keeper hot keys (deploy/new-key.sh), two separate keys.
-    gated: { when: onchainOn, keys: ['PRICE_RELAY_PRIVATE_KEY', 'KEEPER_PRIVATE_KEY'] },
+  },
+  // The price relayer and the keeper (apps/workers/src/signer.ts): no Postgres, no Redis, no proxy secret; keys from
+  // SIGNER_KEYS_FILE. RPC_URL_SEND (audit M-1, may carry a provider key) is used only for sending, so only here.
+  'velum-signer': {
+    keys: [
+      'NODE_ENV', 'VELUM_NETWORK', 'CHAIN_ID', 'RPC_URL', 'RPC_URL_SEND', 'LOG_LEVEL',
+      'ONCHAIN_WORKERS', 'ONCHAIN_MAINNET_CONFIRMED', 'PRICE_PUSH_INTERVAL_MS',
+      'RELAYER_MAX_GWEI', 'KEEPER_MAX_GWEI', 'RELAYER_MIN_BALANCE_ETH', 'KEEPER_MIN_BALANCE_ETH', 'KEEPER_ETH_PRICE_USD',
+      'KEEPER_INTERVAL_MS', 'FUNDING_EPOCH_SECONDS', 'CONFIRMATIONS', 'INDEXER_CHUNK_BLOCKS',
+      'SIGNER_KEYS_FILE', 'SIGNER_STATUS_FILE', 'SIGNER_STATE_DIR', 'SIGNER_DEPLOYMENTS_DIR',
+    ],
+    prefixes: [],
   },
 };
-// A hot key must never be on the API's or the web's list, nor match a prefix there.
-for (const name of ['velum-web', 'velum-api']) {
-  const { keys, prefixes } = ALLOW[name];
-  if (keys.some((k) => /PRIVATE_KEY|SECRET_KEY|MNEMONIC/.test(k)) || prefixes.some((p) => 'PRICE_RELAY_PRIVATE_KEY'.startsWith(p) || 'KEEPER_PRIVATE_KEY'.startsWith(p))) {
+// No hot key on any list, nor matched by a prefix (on-chain audit M-2: the signer reads its own keys file), and no
+// Postgres, Redis or proxy secret for the signer.
+const HOT = /PRIVATE_KEY|SECRET_KEY|MNEMONIC/;
+for (const [name, { keys, prefixes }] of Object.entries(ALLOW)) {
+  if (keys.some((k) => HOT.test(k)) || prefixes.some((p) => ['PRICE_RELAY_PRIVATE_KEY', 'KEEPER_PRIVATE_KEY'].some((k) => k.startsWith(p)))) {
     throw new Error(`${name} must not receive a hot key`);
   }
 }
+if (ALLOW['velum-signer'].keys.some((k) => ['DATABASE_URL', 'REDIS_URL', 'PROXY_SECRET'].includes(k))) throw new Error('velum-signer must not receive Postgres, Redis or the proxy secret');
 
 function envFor(name, defaults) {
-  const { keys, prefixes, gated } = ALLOW[name];
+  const { keys, prefixes } = ALLOW[name];
   const env = { ...defaults };
   for (const [k, v] of Object.entries(fileEnv)) {
     if (v === '') continue;
-    if (keys.includes(k) || prefixes.some((p) => k.startsWith(p)) || (gated && gated.when && gated.keys.includes(k))) env[k] = v;
+    if (HOT.test(k)) continue;
+    if (keys.includes(k) || prefixes.some((p) => k.startsWith(p))) env[k] = v;
   }
   return env;
 }
@@ -157,9 +175,22 @@ const all = [
     env: envFor('velum-workers', { NODE_ENV: 'production', PATH }),
     max_memory_restart: '500M',
   },
+  {
+    ...common,
+    ...backend,
+    name: 'velum-signer',
+    cwd: path.join(appRoot, 'apps/workers'),
+    script: 'dist/signer.js',
+    instances: 1,
+    exec_mode: 'fork',
+    node_args: '--enable-source-maps',
+    env: envFor('velum-signer', { NODE_ENV: 'production', PATH }),
+    max_memory_restart: '300M',
+  },
 ];
 
-const SCOPES = { backend: ['velum-api', 'velum-workers'], web: ['velum-web'], all: ['velum-web', 'velum-api', 'velum-workers'] };
+const signerApps = onchainOn ? ['velum-signer'] : [];
+const SCOPES = { backend: ['velum-api', 'velum-workers'], web: ['velum-web'], signer: signerApps, all: ['velum-web', 'velum-api', 'velum-workers', ...signerApps] };
 const apps = all.filter((a) => SCOPES[scope].includes(a.name));
 
 module.exports = { apps };

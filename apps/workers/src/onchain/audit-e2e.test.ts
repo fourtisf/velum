@@ -5,14 +5,16 @@
  *  R1, M-1  an RPC that withholds the relayer's transactions and lands an old signed push minutes later: the push
  *           now reverts on chain (PushExpired), the price stays stale, no open goes through; the sender keeps
  *           cancelling the stuck nonce and alerts; a separate send endpoint (RPC_URL_SEND) gets pushes through.
- *  R2, M-3  role locks held by someone else on Velum's Redis: /v1/health's on-chain summary is not ok and says why.
+ *  R2, M-3  the indexer's role lock held by someone else on Velum's Redis: /v1/health's on-chain summary is not ok and
+ *           says why. (The relayer and keeper no longer use Redis at all: they run in velum-signer, on-chain audit M-2.)
  *  R5, L-2  anyone can fill one block with more FundingAdvanced logs than the provider returns: the indexer reads
  *           that block with eth_getBlockReceipts and goes on, with one funding point for the block.
- *  L-3      the keeper liquidates hundreds of liquidatable positions well within the 572 s keeper window.
+ *  L-3      the keeper liquidates hundreds of liquidatable positions well within the 572 s keeper window, finding them on
+ *           the chain itself (M-2: no index, no database).
  * Only anvil's public test accounts sign, with keys derived from anvil's public test mnemonic.
  */
 import { createServer, type Server } from 'node:http';
-import { cacheKeys, parseRedisUrl, type MarketSnapshot } from '@velum/config';
+import { parseRedisUrl, type MarketSnapshot } from '@velum/config';
 import { createCacheMac } from '@velum/config/src/cache-mac';
 import { readDeploymentFile } from '@velum/config/src/deployment-file';
 import { ONCHAIN_STATUS_KEY, parseOnchainStatus, type Deployment } from '@velum/config/src/onchain';
@@ -29,7 +31,7 @@ import { startOnchain } from './index';
 import { Indexer } from './indexer';
 import { Keeper } from './keeper';
 import { lockKey } from './lock';
-import { PriceRelayer } from './relayer';
+import { PriceRelayer, type PriceFeed } from './relayer';
 import { TxSender, type SendChain, type SenderChain } from './tx-sender';
 
 const RPC = process.env.VELUM_E2E_RPC;
@@ -123,11 +125,21 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
   const t0 = Date.now();
   const clock = () => OPEN + (Date.now() - t0);
   const target: Record<string, string> = {};
-  let feeder: NodeJS.Timeout | undefined;
   const relayKey = keyOf(1);
   const relayAcc = privateKeyToAccount(relayKey);
-  const keeperKey = keyOf(2);
   const mac = () => createCacheMac(DB, 'testnet');
+  /** The relayer's quotes, as the signer's own feed gives them (signer/prices.ts): confirmed and fresh, never Redis. */
+  const feed: PriceFeed = {
+    async snapshots(symbols) {
+      const now = clock();
+      const out = new Map<string, MarketSnapshot>();
+      for (const symbol of symbols) {
+        const price = target[symbol];
+        if (price) out.set(symbol, { symbol, price, mark: price, open24h: price, spark: [price], source: 'robinhood', updatedAt: now, checkedAt: now });
+      }
+      return out;
+    },
+  };
 
   const chain = () => chainFor(CHAIN_ID, RPC!);
   const wallet = (account: ReturnType<typeof privateKeyToAccount>) => createWalletClient({ account, chain: chain(), transport: http(RPC!) });
@@ -159,16 +171,6 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     return sendOk(relayAcc, d.contracts.oracle, call(abis.oracle, 'pushPrices', [[d.tokens.TSLA!], [price], ts]));
   }
 
-  function writeSnapshots(): Promise<unknown> {
-    const now = clock();
-    const pipe = redis.pipeline();
-    for (const [symbol, price] of Object.entries(target)) {
-      const snap: MarketSnapshot = { symbol, price, mark: price, open24h: price, spark: [price], source: 'robinhood', updatedAt: now, checkedAt: now };
-      pipe.set(cacheKeys.price(symbol), mac().seal(cacheKeys.price(symbol), JSON.stringify(snap)));
-    }
-    return pipe.exec();
-  }
-
   beforeAll(async () => {
     const read = readDeploymentFile(DIR, CHAIN_ID);
     if (read.status !== 'ok') throw new Error(`deployment file: ${read.status}`);
@@ -183,12 +185,9 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     // Start from the price the earlier tests left on chain, so the first push is not rate-limited.
     const last = await bandLast('TSLA');
     target.TSLA = last > 0n ? (Number(last / 10n ** 14n) / 1e4).toFixed(4) : '391.65';
-    await writeSnapshots();
-    feeder = setInterval(() => void writeSnapshots(), 500);
   }, 60_000);
 
   afterAll(async () => {
-    if (feeder) clearInterval(feeder);
     await prisma?.$disconnect();
     await redis?.quit();
   }, 60_000);
@@ -199,7 +198,7 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     const proxied = publicClientFor(CHAIN_ID, `http://127.0.0.1:${(proxy.server.address() as { port: number }).port}`);
     const sender = new TxSender(proxied as unknown as SenderChain, relayAcc, { role: 'relayer', chainId: CHAIN_ID, maxFeeWei: 50n * GWEI, minBalanceWei: 0n, mainnetConfirmed: false, stuckAfterMs: 1500, log });
     await sender.init();
-    const relayer = new PriceRelayer({ client: proxied, sender, redis, mac: mac(), deployment: d, chainId: CHAIN_ID, intervalMs: 8000, log, now: clock });
+    const relayer = new PriceRelayer({ client: proxied, sender, prices: feed, deployment: d, chainId: CHAIN_ID, intervalMs: 8000, log, now: clock });
     let running = true;
     const loop = (async () => {
       while (running) {
@@ -266,7 +265,7 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     const direct = publicClientFor(CHAIN_ID, RPC!);
     const sender2 = new TxSender(proxied as unknown as SenderChain, relayAcc, { role: 'relayer', chainId: CHAIN_ID, maxFeeWei: 50n * GWEI, minBalanceWei: 0n, mainnetConfirmed: false, stuckAfterMs: 1500, log, send: direct as unknown as SendChain });
     await sender2.init();
-    const relayer2 = new PriceRelayer({ client: proxied, sender: sender2, redis, mac: mac(), deployment: d, chainId: CHAIN_ID, intervalMs: 8000, log, now: clock });
+    const relayer2 = new PriceRelayer({ client: proxied, sender: sender2, prices: feed, deployment: d, chainId: CHAIN_ID, intervalMs: 8000, log, now: clock });
     const at2 = (await relayed('TSLA'))[1];
     running = true;
     const loop2 = (async () => {
@@ -285,10 +284,12 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     }
   }, 300_000);
 
-  it('R2 (M-3): role locks held by someone else on the same Redis: the on-chain summary is not ok and names each role', async () => {
+  it("R2 (M-3): the indexer's role lock held by someone else on the same Redis: the summary is not ok and says why", async () => {
     const id = d.contracts.perpsMarkets;
-    for (const role of ['relayer', 'keeper', 'indexer']) await redis.set(lockKey(`${role}:${CHAIN_ID}:${id}`), 'squatter', 'PX', 3_600_000);
-    const env = loadOnchainEnv({ ONCHAIN_WORKERS: 'true', DEPLOYMENTS_DIR: DIR, PRICE_RELAY_PRIVATE_KEY: relayKey, KEEPER_PRIVATE_KEY: keeperKey, PRICE_PUSH_INTERVAL_MS: '8000', RELAYER_MAX_GWEI: '50', KEEPER_MAX_GWEI: '50', INDEXER_POLL_MS: '500', KEEPER_INTERVAL_MS: '1000' });
+    await redis.set(lockKey(`indexer:${CHAIN_ID}:${id}`), 'squatter', 'PX', 3_600_000);
+    // M-2: the relayer's and keeper's locks are not in Redis any more (the signer holds a socket in its own home).
+    for (const role of ['relayer', 'keeper']) await redis.set(lockKey(`${role}:${CHAIN_ID}:${id}`), 'squatter', 'PX', 3_600_000);
+    const env = loadOnchainEnv({ ONCHAIN_WORKERS: 'true', DEPLOYMENTS_DIR: DIR, INDEXER_POLL_MS: '500' });
     const handle = (await startOnchain({ env, chainId: CHAIN_ID, rpcUrl: RPC!, prisma, redis, mac: mac(), log, now: clock }))!;
     expect(handle).not.toBeNull();
     const summary = async () => {
@@ -300,11 +301,9 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
       await sleep(3000);
       const s = await summary();
       expect(s.ok).toBe(false);
-      for (const role of ['relayer', 'keeper', 'indexer']) expect(s.reasons).toContainEqual(expect.stringMatching(new RegExp(`^${role}: this process does not hold the role's lock`)));
-      // The squatter leaves: the roles take their locks, run, and the summary is ok again.
+      expect(s.reasons).toEqual([expect.stringMatching(/^indexer: this process does not hold the role's lock/)]);
+      // The squatter leaves: the indexer takes its lock, runs, and the summary is ok again.
       for (const role of ['relayer', 'keeper', 'indexer']) await redis.del(lockKey(`${role}:${CHAIN_ID}:${id}`));
-      const at = (await relayed('TSLA'))[1];
-      await waitFor('a push once the relayer holds its lock', async () => (await relayed('TSLA'))[1] > at, 60_000);
       const ok = await waitFor('the summary to be ok', async () => {
         const x = await summary();
         return x.ok ? x : null;
@@ -414,7 +413,7 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     const liquidatable = await Promise.all(Array.from({ length: N }, (_, i) => client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'isLiquidatable', args: [firstId + BigInt(i)] }) as Promise<boolean>));
     expect(liquidatable.every(Boolean)).toBe(true);
 
-    // The keeper, as the workers run it: one transaction in flight, a tick every second. The relay keeps the price
+    // The keeper, as the signer runs it: one transaction in flight, a tick every second. The relay keeps the price
     // fresh meanwhile (liquidations need a price at most 60 s old).
     let refreshing = true;
     const refresher = (async () => {
@@ -425,7 +424,8 @@ describe.skipIf(!RPC)('on-chain workers audit end to end (anvil)', () => {
     })();
     const keeperSender = new TxSender(client as unknown as SenderChain, acc(2), { role: 'keeper', chainId: CHAIN_ID, maxFeeWei: 50n * GWEI, minBalanceWei: 0n, mainnetConfirmed: false, stuckAfterMs: 15_000, log });
     await keeperSender.init();
-    const keeper = new Keeper({ client, sender: keeperSender, prisma, deployment: d, chainId: CHAIN_ID, fundingEpochSeconds: 7 * 86_400, ethPriceUsd: 1n, maxFeeWei: 50n * GWEI, log });
+    // M-2: from the chain itself (nextPositionId, getPosition), as the signer runs it: no index, no database.
+    const keeper = new Keeper({ client, sender: keeperSender, deployment: d, chainId: CHAIN_ID, fundingEpochSeconds: 7 * 86_400, ethPriceUsd: 1n, maxFeeWei: 50n * GWEI, confirmations: 1, chunkBlocks: 2000, log });
     const started = Date.now();
     let closed = 0;
     try {

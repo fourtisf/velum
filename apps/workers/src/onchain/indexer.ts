@@ -23,7 +23,7 @@ import { toHex, type Abi, type AbiEvent, type Hex, type PublicClient } from 'vie
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
 import { contractNames, decodeLog, indexedAddresses, type ChainLogEvent, type RawLog } from './decode';
-import { describeError, errorText, throttledWarn } from './errors';
+import { LOG_CAP_ERROR, describeError, errorText, throttledWarn } from './errors';
 import { applyEvents, rebuildState, type ProjectionContext } from './projections';
 
 export const ZERO_HASH: Hex = '0x0000000000000000000000000000000000000000000000000000000000000000';
@@ -34,12 +34,7 @@ const TICK_BUDGET_MS = 20_000;
 /** Consecutive polls that must see a reorg (hash mismatch, head below the checkpoint) before the index rewinds. */
 export const REORG_CONFIRM_POLLS = 2;
 
-/**
- * Provider texts for "this eth_getLogs asks for too much" (block range or result count): geth/Nitro, Alchemy,
- * Infura, QuickNode, Ankr, Chainstack, BlastAPI, dRPC and others, plus the JSON-RPC codes some of them use.
- */
-export const LOG_CAP_ERROR =
-  /range|too many|limit|exceed|10000|10,000|response size|too big|too large|timeout|timed out|max(imum)? (number of )?(results|logs)|query returned more than|logs matched|result window|-32005|-32602|-32011/;
+export { LOG_CAP_ERROR };
 
 export type IndexerClient = Pick<PublicClient, 'getBlockNumber' | 'getBlock' | 'getLogs' | 'readContract'> & {
   /** eth_getBlockReceipts for one block (any viem client); used only when a single block's logs exceed the cap. */

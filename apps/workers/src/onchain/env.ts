@@ -1,19 +1,12 @@
 /**
- * Environment of the Phase 3 on-chain workers (price relayer, keeper, indexer). Everything is off unless
- * ONCHAIN_WORKERS=true AND contracts/deployments/<CHAIN_ID>.json exists (onchain/index.ts checks the file).
- * The hot keys are never part of the returned settings: they sit behind functions (JSON.stringify and the
- * logger skip functions) and are turned into viem accounts once, at start.
+ * Shared settings of the Phase 3 on-chain roles: the indexer (workers process) and the price relayer and keeper (the
+ * signer process, signer/env.ts). Everything is off unless ONCHAIN_WORKERS=true AND contracts/deployments/<CHAIN_ID>.json
+ * exists. The hot keys are not settings (on-chain audit M-2): only the signer reads them, from its own keys file
+ * (signer/files.ts), never from an environment the workers or the API could see.
  */
 import { defaultDeploymentsDir } from '@velum/config/src/deployment-file';
 import { RELAY_INTERVAL_MS, type Hex } from '@velum/config/src/onchain';
 import { parseWad } from '@velum/math';
-
-export interface OnchainKeys {
-  /** PRICE_RELAY_PRIVATE_KEY (deploy/new-key.sh), or null. */
-  relay(): Hex | null;
-  /** KEEPER_PRIVATE_KEY (deploy/new-key.sh), never the relay key, or null. */
-  keeper(): Hex | null;
-}
 
 export interface OnchainEnv {
   /** ONCHAIN_WORKERS=true. The workers still need the deployment file of CHAIN_ID. */
@@ -48,11 +41,10 @@ export interface OnchainEnv {
   ethPriceUsd: bigint;
   /**
    * RPC_URL_SEND (optional, audit M-1): a second, trusted endpoint the relayer and keeper broadcast through and
-   * read nonces and receipts from; every other read uses RPC_URL. Behind a function like the keys (it may carry a
-   * provider key in its path), so it never reaches a log or the status.
+   * read nonces and receipts from; every other read uses RPC_URL. Behind a function (it may carry a provider key in
+   * its path), so it never reaches a log or the status.
    */
   sendRpcUrl(): string | null;
-  keys: OnchainKeys;
 }
 
 const GWEI = 10n ** 9n;
@@ -103,20 +95,12 @@ export function loadOnchainEnv(e: NodeJS.ProcessEnv = process.env): OnchainEnv {
     return v;
   };
 
-  // Only the literal "true" turns the workers on, exactly as deploy/ecosystem.config.cjs decides whether the
-  // hot keys reach this process: anything else would let the two disagree.
+  // Only the literal "true" turns the on-chain roles on, exactly as deploy/ecosystem.config.cjs and deploy.sh decide
+  // whether the signer runs: anything else would let them disagree.
   const flag = (e.ONCHAIN_WORKERS ?? '').trim().toLowerCase();
   if (flag !== '' && flag !== 'true' && flag !== 'false') problems.push(`ONCHAIN_WORKERS must be true or false (got "${e.ONCHAIN_WORKERS}").`);
   const confirmed = (e.ONCHAIN_MAINNET_CONFIRMED ?? '').trim().toLowerCase();
   if (confirmed !== '' && confirmed !== 'yes' && confirmed !== 'no') problems.push(`ONCHAIN_MAINNET_CONFIRMED must be yes or no (got "${e.ONCHAIN_MAINNET_CONFIRMED}").`);
-
-  const relay = validKey(e.PRICE_RELAY_PRIVATE_KEY);
-  const keeper = validKey(e.KEEPER_PRIVATE_KEY);
-  if (relay === 'invalid') problems.push('PRICE_RELAY_PRIVATE_KEY is not a private key (0x + 64 hex digits). Create one with deploy/new-key.sh.');
-  if (keeper === 'invalid') problems.push('KEEPER_PRIVATE_KEY is not a private key (0x + 64 hex digits). Create one with deploy/new-key.sh.');
-  if (relay && keeper && relay !== 'invalid' && relay.toLowerCase() === (keeper as string).toLowerCase()) {
-    problems.push('KEEPER_PRIVATE_KEY must not be the price-relay key: create a separate one with deploy/new-key.sh KEEPER_PRIVATE_KEY.');
-  }
 
   const sendRpc = (e.RPC_URL_SEND ?? '').trim();
   if (sendRpc && !/^https?:\/\/[^\s]+$/.test(sendRpc)) problems.push('RPC_URL_SEND must be an http(s) URL (or empty).');
@@ -140,10 +124,6 @@ export function loadOnchainEnv(e: NodeJS.ProcessEnv = process.env): OnchainEnv {
     fundingEpochSeconds: int('FUNDING_EPOCH_SECONDS', 3600, 60, 7 * 86_400),
     ethPriceUsd: BigInt(int('KEEPER_ETH_PRICE_USD', 4000, 1, 1_000_000)),
     sendRpcUrl: () => (sendRpc && /^https?:\/\//.test(sendRpc) ? sendRpc : null),
-    keys: {
-      relay: () => (relay && relay !== 'invalid' ? relay : null),
-      keeper: () => (keeper && keeper !== 'invalid' ? keeper : null),
-    },
   };
   if (problems.length) throw new Error(`Invalid on-chain workers environment:\n  - ${problems.join('\n  - ')}`);
   return env;

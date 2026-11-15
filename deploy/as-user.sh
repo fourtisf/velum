@@ -3,6 +3,7 @@
 # instead of runuser, su or sudo -u for anything that runs as Velum's users, as root:
 #   sudo bash /srv/velum/deploy/as-user.sh velum pm2 status
 #   sudo bash /srv/velum/deploy/as-user.sh velum-web pm2 logs velum-web --lines 100 --nostream
+#   sudo bash /srv/velum/deploy/as-user.sh velum-signer pm2 logs velum-signer --lines 100 --nostream
 # `runuser -u` alone keeps your session and controlling terminal, so any process of that user (and its
 # own code runs inside every pm2 or node command: ~/.node_modules, ~/.npmrc, release files) could push
 # keystrokes into your root shell (TIOCSTI). Here the command starts in a new session without a
@@ -24,5 +25,5 @@ shift
 VELUM_BASE_DIR="${BASE}"
 SEPARATE=1
 SCOPE=all
-if [ "${U}" = "$(recorded_user "${BASE}" APP_USER)" ]; then SCOPE=backend; elif [ "${U}" = "$(recorded_user "${BASE}" WEB_USER)" ]; then SCOPE=web; fi
+if [ "${U}" = "$(recorded_user "${BASE}" APP_USER)" ]; then SCOPE=backend; elif [ "${U}" = "$(recorded_user "${BASE}" WEB_USER)" ]; then SCOPE=web; elif [ "${U}" = "$(recorded_user "${BASE}" SIGNER_USER)" ]; then SCOPE=signer; fi
 as_user "${U}" "$(user_home "${U}")" "${SCOPE}" "$@"

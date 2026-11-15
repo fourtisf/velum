@@ -19,8 +19,6 @@ describe('on-chain env', () => {
     expect(e.relayMinBalanceWei).toBe(5n * 10n ** 16n);
     expect(e.keeperMinBalanceWei).toBe(5n * 10n ** 16n);
     expect(e.fundingEpochSeconds).toBe(3600);
-    expect(e.keys.relay()).toBeNull();
-    expect(e.keys.keeper()).toBeNull();
     expect(e.deploymentsDir).toMatch(/contracts[/\\]deployments$/);
   });
 
@@ -61,24 +59,16 @@ describe('on-chain env', () => {
     expect(() => loadOnchainEnv({ CONFIRMATIONS: '-1' })).toThrow(/CONFIRMATIONS/);
   });
 
-  it('validates the hot keys without ever printing them, and refuses one key for both roles', () => {
+  it('never reads a hot key from the environment (on-chain audit M-2: only the signer reads them, from its keys file)', () => {
     const e = loadOnchainEnv({ PRICE_RELAY_PRIVATE_KEY: K1, KEEPER_PRIVATE_KEY: K2 });
-    expect(e.keys.relay()).toBe(K1);
-    expect(e.keys.keeper()).toBe(K2);
-    // The settings serialise without the keys (they sit behind functions).
     expect(JSON.stringify(e, (_k, v: unknown) => (typeof v === 'bigint' ? String(v) : v))).not.toContain(K1.slice(2));
-    let msg = '';
-    try {
-      loadOnchainEnv({ PRICE_RELAY_PRIVATE_KEY: `${K1}zz`, KEEPER_PRIVATE_KEY: K1.toUpperCase().replace('0X', '0x') });
-    } catch (err) {
-      msg = String(err);
-    }
-    expect(msg).toMatch(/PRICE_RELAY_PRIVATE_KEY is not a private key/);
-    expect(msg).not.toContain(K1.slice(2));
-    expect(() => loadOnchainEnv({ PRICE_RELAY_PRIVATE_KEY: K1, KEEPER_PRIVATE_KEY: K1.toUpperCase().replace('0X', '0x') })).toThrow(/must not be the price-relay key/);
+    expect(Object.keys(e)).not.toContain('keys');
+    // A malformed value is not an on-chain setting problem any more: the variable is simply not read.
+    expect(() => loadOnchainEnv({ PRICE_RELAY_PRIVATE_KEY: 'junk' })).not.toThrow();
     expect(validKey(`0x${'0'.repeat(64)}`)).toBe('invalid');
     expect(validKey(`0x${'f'.repeat(64)}`)).toBe('invalid'); // above the group order
     expect(validKey('')).toBeNull();
+    expect(validKey(K2)).toBe(K2);
   });
 
   it('helpers', () => {

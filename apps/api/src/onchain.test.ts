@@ -3,16 +3,20 @@
  * and the on-chain summary in /v1/health, with fakes; the Prisma reader against a real Postgres when
  * TEST_DATABASE_URL points at a migrated scratch database (skipped otherwise).
  */
-import { parseDeployment, type Deployment, type OnchainStatus, type RoleHealth } from '@velum/config/src/onchain';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { parseDeployment, parseSignerStatus, type Deployment, type OnchainStatus, type RoleHealth, type SignerStatus } from '@velum/config/src/onchain';
 import { Prisma, PrismaClient } from '@velum/db';
 import { getAddress } from 'viem';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TEST_DATABASE_URL_FOR_MAC } from './__fixtures__/mac';
 import { buildApp } from './app';
 import type { ApiEnv } from './env';
-import type { AppDeps, CacheReader } from './lib/deps';
+import { fileSigner } from './lib/adapters';
+import type { AppDeps, CacheReader, SignerReader } from './lib/deps';
 import { parseActivityCursor, positionView, prismaOnchain, staticDeployment, type OnchainReader } from './lib/onchain';
-import { onchainSummary } from './routes/health';
+import { onchainSummary, withSigner } from './routes/health';
 
 const A = (n: number) => `0x${n.toString(16).padStart(40, '0')}`;
 const TAKER = '0x15d34aaf54267db7d7c367839aaf71a00a2c6a65';
@@ -79,7 +83,7 @@ function fakeReader() {
   return { reader, calls };
 }
 
-async function make(o: { d?: Deployment | null; s?: OnchainStatus | null; reader?: OnchainReader; rate?: number } = {}) {
+async function make(o: { d?: Deployment | null; s?: OnchainStatus | null; reader?: OnchainReader; rate?: number; signer?: SignerReader } = {}) {
   const cache: CacheReader = {
     ping: async () => true,
     snapshots: async () => new Map(),
@@ -94,6 +98,7 @@ async function make(o: { d?: Deployment | null; s?: OnchainStatus | null; reader
     chain: { blockNumber: async () => 1n },
     deployment: staticDeployment(o.d === undefined ? deployment : o.d),
     onchain: o.reader ?? fakeReader().reader,
+    signer: o.signer,
     now: () => NOW,
   };
   return buildApp(deps);
@@ -201,6 +206,7 @@ describe('/v1/health on-chain summary', () => {
       ok: true,
       reasons: [],
       age: 3,
+      signerAge: null,
       chainId: 46630,
       indexer: { block: 120, head: 123, lag: 3, reorgs: 0, lastRun: 1, error: null },
       relayer: { enabled: true, address: getAddress(raw.priceRelayer), sending: true, lastPush: 4, balanceLow: false, stuck: false, gasCapped: false, sequencerUp: true, markets: { TSLA: 'pushed', AMZN: 'closed' }, error: null },
@@ -261,6 +267,81 @@ describe('/v1/health on-chain summary', () => {
     const off = onchainSummary(live({ error: 'REDIS_URL is not a unix socket: the on-chain workers run only on Velum\'s own Redis' }), NOW, open)!;
     expect(off.ok).toBe(false);
     expect(off.reasons[0]).toMatch(/^on-chain workers disabled: REDIS_URL is not a unix socket/);
+  });
+});
+
+// On-chain audit M-2: the relayer and the keeper run in velum-signer (their own Unix user, no Redis, no Postgres) and
+// report through a status file the API may read but not write; /v1/health combines it with the workers' status.
+describe('/v1/health with the signer status (M-2)', () => {
+  const off = { ...status().relayer, enabled: false, address: null, sending: false, markets: {} };
+  const workers = (o: Partial<OnchainStatus> = {}) =>
+    status({ relayer: off, keeper: { ...status().keeper, enabled: false, address: null }, startedAt: NOW - 600_000, pushIntervalMs: 9000, error: null, roles: { relayer: { enabled: false, lockHeld: null, lastOkAt: null, everyMs: 0 }, keeper: { enabled: false, lockHeld: null, lastOkAt: null, everyMs: 0 }, indexer: { enabled: true, lockHeld: true, lastOkAt: NOW - 1000, everyMs: 2000 } }, ...o });
+  const signer = (o: Partial<SignerStatus> = {}): SignerStatus => ({
+    v: 1,
+    at: NOW - 2000,
+    chainId: 46630,
+    deployment: raw.contracts.perpsMarkets,
+    startedAt: NOW - 300_000,
+    requested: true,
+    error: null,
+    pushIntervalMs: 9000,
+    relayer: { ...status().relayer, lastPushAt: NOW - 4000 },
+    keeper: status().keeper,
+    roles: { relayer: { enabled: true, lockHeld: true, lastOkAt: NOW - 1000, everyMs: 1000 }, keeper: { enabled: true, lockHeld: true, lastOkAt: NOW - 2000, everyMs: 3000 } },
+    prices: { lastPollAt: NOW - 1000, markets: { TSLA: 'live', AMZN: 'none' } },
+    ...o,
+  });
+  const open = () => true;
+  it('takes the relayer and keeper from the signer, the indexer from the workers', () => {
+    const s = onchainSummary(workers(), NOW, open, signer())!;
+    expect(s).toMatchObject({ ok: true, reasons: [], signerAge: 2, relayer: { enabled: true, lastPush: 4, markets: { TSLA: 'pushed' } }, keeper: { enabled: true, liquidations: 2 }, indexer: { block: 120 } });
+  });
+  it('not ok without a signer status (or a stale one) while the workers run on-chain, with the reason', () => {
+    expect(onchainSummary(workers(), NOW, open, null)!.reasons).toEqual([expect.stringMatching(/^signer: no status from velum-signer/)]);
+    expect(onchainSummary(workers(), NOW, open, signer({ at: NOW - 90_000 }))!.reasons).toContainEqual('signer: status is 90 s old');
+    expect(onchainSummary(workers(), NOW, open, signer({ requested: false }))!.reasons).toEqual([expect.stringMatching(/^signer: ONCHAIN_WORKERS is not true/)]);
+    // Without on-chain workers and without a signer status there is nothing to report.
+    expect(onchainSummary(null, NOW, open, null)).toBeNull();
+  });
+  it('names the signer error (no deployment file, unreadable keys) and the indexer missing', () => {
+    const idle = signer({ error: 'no deployment file for chain 46630 (/home/velum-signer/current/contracts/deployments/46630.json)', relayer: off, keeper: { ...status().keeper, enabled: false }, roles: { relayer: { enabled: false, lockHeld: null, lastOkAt: null, everyMs: 0 }, keeper: { enabled: false, lockHeld: null, lastOkAt: null, everyMs: 0 } } });
+    const s = onchainSummary(workers(), NOW, open, idle)!;
+    expect(s.ok).toBe(false);
+    expect(s.reasons[0]).toMatch(/^signer: no deployment file for chain 46630/);
+    const noWorkers = onchainSummary(null, NOW, open, signer())!;
+    expect(noWorkers.reasons).toEqual(['indexer: no on-chain status from the workers']);
+    expect(noWorkers.relayer.enabled).toBe(true);
+  });
+  it("judges the signer's roles by the signer's own start, its alerts and its lagging pushes", () => {
+    const young = signer({ startedAt: NOW - 5000, roles: { relayer: { enabled: true, lockHeld: true, lastOkAt: null, everyMs: 1000 }, keeper: { enabled: true, lockHeld: true, lastOkAt: null, everyMs: 3000 } }, relayer: { ...status().relayer, lastPushAt: null } });
+    expect(withSigner(workers(), young, NOW).status!.roles!.relayer.lastOkAt).toBe(NOW - 5000);
+    expect(onchainSummary(workers(), NOW, open, young)!.ok).toBe(true);
+    const stuck = signer({ keeper: { ...status().keeper, stuck: true, alerts: ['keeper could not read the cover claims of block 9'] } });
+    expect(onchainSummary(workers(), NOW, open, stuck)!.reasons).toEqual(['keeper: a transaction is stuck', 'keeper: keeper could not read the cover claims of block 9']);
+  });
+  it('reports the signer age in /v1/health for deploy.sh, read from the status file without following links', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'velum-signer-status-'));
+    try {
+      const file = path.join(dir, 'status.json');
+      writeFileSync(file, JSON.stringify(signer()));
+      const res = await (await make({ s: workers(), signer: fileSigner(file, { now: () => NOW }) })).inject('/v1/health');
+      expect(res.body).toMatch(/"workers":\d+,"signer":2,/);
+      expect(res.json().onchain).toMatchObject({ ok: true, signerAge: 2 });
+      // Another chain's status is ignored; a missing, oversized, malformed or linked file reads as none.
+      writeFileSync(file, JSON.stringify(signer({ chainId: 4663 })));
+      expect((await (await make({ s: workers(), signer: fileSigner(file, { now: () => NOW }) })).inject('/v1/health')).json().signer).toBeNull();
+      expect(await fileSigner(path.join(dir, 'none.json')).status()).toBeNull();
+      writeFileSync(file, 'x'.repeat(17 * 1024));
+      expect(await fileSigner(file).status()).toBeNull();
+      writeFileSync(path.join(dir, 'real.json'), JSON.stringify(signer()));
+      symlinkSync(path.join(dir, 'real.json'), path.join(dir, 'link.json'));
+      expect(await fileSigner(path.join(dir, 'link.json'), { now: () => NOW }).status()).toBeNull();
+      expect(await fileSigner(path.join(dir, 'real.json'), { now: () => NOW }).status()).not.toBeNull();
+      expect(parseSignerStatus(JSON.stringify({ ...signer(), roles: {} }), NOW)).toBeNull();
+      expect(parseSignerStatus(JSON.stringify({ ...signer(), at: NOW + 60_000 }), NOW)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

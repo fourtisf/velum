@@ -1,5 +1,5 @@
 import type { Candle, CandleCache, MarketSnapshot, Timeframe } from '@velum/config';
-import type { OnchainStatus } from '@velum/config/src/onchain';
+import type { OnchainStatus, SignerStatus } from '@velum/config/src/onchain';
 import type { ApiEnv } from '../env';
 import type { DeploymentSource, OnchainReader } from './onchain';
 
@@ -48,9 +48,17 @@ export interface ChainReader {
   chainId?(): Promise<number | null>;
 }
 
+/** The signer's status (on-chain audit M-2): written by velum-signer to a file the API may read but not write. */
+export interface SignerReader {
+  /** The parsed status, or null (no file: the signer is not running, or never was). */
+  status(): Promise<SignerStatus | null>;
+}
+
 export interface AppDeps {
   env: ApiEnv;
   cache: CacheReader;
+  /** Phase 3: the signer's status file (absent in tests that do not need it). */
+  signer?: SignerReader;
   db: DbReader;
   chain: ChainReader;
   /** Phase 3: the deployment file of the configured chain (none: the Phase 3 routes answer 404). */

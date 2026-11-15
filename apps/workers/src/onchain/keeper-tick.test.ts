@@ -1,6 +1,10 @@
-/** Keeper.tick with a fake chain, index and sender: ordering, profitability versus solvency, the other actions. */
+/**
+ * Keeper.tick with a fake chain and sender: ordering, profitability versus solvency, the other actions. Everything the
+ * keeper acts on comes from the chain (on-chain audit M-2): positions from nextPositionId + getPosition, cover claims
+ * from CoverClaimFiled logs and the coverClaims view; there is no database in the keeper any more.
+ */
 import { parseDeployment } from '@velum/config/src/onchain';
-import { decodeFunctionData, type Address } from 'viem';
+import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, type Address } from 'viem';
 import { describe, expect, it } from 'vitest';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
@@ -24,6 +28,10 @@ interface Pos {
   makerMargin: bigint;
   claim: bigint;
   liquidatable: boolean;
+  /** Default true. */
+  open?: boolean;
+  /** Forced-exit request time (s), 0 or absent: none. */
+  exitRequestedAt?: bigint;
 }
 
 function harness() {
@@ -36,10 +44,11 @@ function harness() {
     reverts: new Set<string>(),
     gas: 300_000n,
     simulations: [] as string[],
-    rows: [] as Array<{ positionId: bigint; exitSettleAfter: Date | null }>,
-    /** What the unpaid-cover-claims SQL returns (its own test runs against Postgres: keeper-db.test.ts). */
-    cover: [] as Array<{ epoch: string; account: string }>,
-    pageReads: [] as unknown[],
+    /** CoverClaimFiled events on chain (block, epoch, account) and the coverClaims view (unpaid amount, 0 once paid). */
+    claims: [] as Array<{ block: bigint; epoch: bigint; account: Address; amount: bigint }>,
+    head: 100n,
+    logsError: null as Error | null,
+    getPositionReads: [] as bigint[],
   };
   const client: KeeperClient = {
     readContract: (async ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
@@ -60,9 +69,13 @@ function harness() {
         case 'insurance':
           return 1000n * E6;
         case 'getPosition': {
-          const p = st.positions.get(id)!;
-          return { market: TSLA, qty: p.qty, takerMargin: p.takerMargin, makerMargin: p.makerMargin };
+          st.getPositionReads.push(id);
+          const p = st.positions.get(id);
+          if (!p) return { market: '0x0000000000000000000000000000000000000000', open: false, exitRequestedAt: 0n, qty: 0n, takerMargin: 0n, makerMargin: 0n };
+          return { market: TSLA, open: p.open ?? true, exitRequestedAt: p.exitRequestedAt ?? 0n, qty: p.qty, takerMargin: p.takerMargin, makerMargin: p.makerMargin };
         }
+        case 'coverClaims':
+          return st.claims.find((c) => c.epoch === (args![0] as bigint) && c.account.toLowerCase() === String(args![1]).toLowerCase())?.amount ?? 0n;
         case 'price':
           return st.price;
         case 'takerClaimAt':
@@ -75,27 +88,23 @@ function harness() {
       throw new Error(`unexpected ${functionName}`);
     }) as unknown as KeeperClient['readContract'],
     getBlock: (async () => ({ timestamp: st.blockTs })) as unknown as KeeperClient['getBlock'],
+    getBlockNumber: (async () => st.head) as unknown as KeeperClient['getBlockNumber'],
+    getLogs: (async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+      if (st.logsError) throw st.logsError;
+      return st.claims
+        .filter((c) => c.block >= fromBlock && c.block <= toBlock)
+        .map((c) => ({
+          address: ADDR(5),
+          topics: encodeEventTopics({ abi: abis.perpsMarkets, eventName: 'CoverClaimFiled', args: { epoch: c.epoch, account: c.account } }),
+          data: encodeAbiParameters([{ type: 'uint256' }], [c.amount]),
+        }));
+    }) as unknown as KeeperClient['getLogs'],
     estimateContractGas: (async ({ functionName, args }: { functionName: string; args: readonly unknown[] }) => {
       const key = `${functionName}:${args.map(String).join(',')}`;
       st.simulations.push(key);
       if (st.reverts.has(key)) throw new Error('execution reverted');
       return st.gas;
     }) as unknown as KeeperClient['estimateContractGas'],
-  };
-  const prisma = {
-    perpPosition: {
-      // The keeper's two reads: keyset pages of open positions by id, and matured forced exits.
-      findMany: async ({ where, take }: { where: { positionId?: { gt?: bigint; lte?: bigint }; exitSettleAfter?: { lte: Date } }; take: number }) => {
-        st.pageReads.push(where.positionId ?? null);
-        const rows = st.rows
-          .filter((r) => (where.positionId?.gt === undefined || r.positionId > where.positionId.gt) && (where.positionId?.lte === undefined || r.positionId <= where.positionId.lte))
-          .filter((r) => !where.exitSettleAfter || (r.exitSettleAfter !== null && r.exitSettleAfter <= where.exitSettleAfter.lte))
-          .sort((x, y) => (x.positionId < y.positionId ? -1 : 1));
-        return rows.slice(0, take);
-      },
-      findFirst: async () => (st.rows.length ? { positionId: st.rows.reduce((m, r) => (r.positionId > m ? r.positionId : m), 0n) } : null),
-    },
-    $queryRaw: async () => st.cover,
   };
   const sent: TxRequest[] = [];
   // One transaction in flight, like TxSender: busy from submit until a poll reports it mined (at once, unless `hold`).
@@ -140,7 +149,7 @@ function harness() {
   const log: Logger = { debug: () => undefined, info: (m) => lines.push(['info', m]), warn: (m) => lines.push(['warn', m]), error: (m) => lines.push(['error', m]) };
   let clock = 1_000_000;
   const make = (ethPriceUsd = 4000n, tickBudgetMs?: number) =>
-    new Keeper({ client, sender: sender as unknown as TxSender, prisma: prisma as never, deployment: dep, chainId: 46630, fundingEpochSeconds: 3600, ethPriceUsd, maxFeeWei: 10n ** 9n, log, now: () => clock, receiptPollMs: 0, tickBudgetMs });
+    new Keeper({ client, sender: sender as unknown as TxSender, deployment: dep, chainId: 46630, fundingEpochSeconds: 3600, ethPriceUsd, maxFeeWei: 10n ** 9n, confirmations: 0, chunkBlocks: 50, log, now: () => clock, receiptPollMs: 0, tickBudgetMs });
   const call = (r: TxRequest) => {
     const d = decodeFunctionData({ abi: abis.perpsMarkets, data: r.data });
     return `${d.functionName}:${((d.args ?? []) as readonly unknown[]).map(String).join(',')}`;
@@ -154,11 +163,10 @@ const pos = (entry: bigint, price: bigint, margin = 200n * E6): Pos => {
 };
 
 describe('Keeper.tick', () => {
-  it('liquidates the most underwater position first, including ids the indexer has not reached, then the rest in the same tick', async () => {
+  it('liquidates the most underwater position first, read from the chain (no index), then the rest in the same tick', async () => {
     const h = harness();
-    h.st.rows = [{ positionId: 1n, exitSettleAfter: null }];
     h.st.positions.set(1n, pos(400n * E18, 352n * E18)); // claim 8% of notional
-    h.st.positions.set(2n, pos(400n * E18, 335n * E18)); // not indexed yet, 4.5%: urgent and first
+    h.st.positions.set(2n, pos(400n * E18, 335n * E18)); // 4.5%: urgent and first
     const k = h.make();
     await k.tick();
     // L-3: one transaction in flight, but the next action follows as soon as the previous one mined.
@@ -201,7 +209,6 @@ describe('Keeper.tick', () => {
 
   it('waits on a liquidation worth less than its gas unless solvency needs it', async () => {
     const h = harness();
-    h.st.rows = [{ positionId: 1n, exitSettleAfter: null }];
     h.st.next = 2n;
     h.st.positions.set(1n, pos(400n * E18, 352n * E18)); // reward 4.4 USDG
     h.st.market = [true, 0n, 0n, 0n, 0n, 0n, 0n]; // no funding call in the way
@@ -219,18 +226,19 @@ describe('Keeper.tick', () => {
     expect(h.lines.some(([l, m]) => l === 'warn' && /gas loss: needed for solvency/.test(m))).toBe(true);
   });
 
-  it('settles matured forced exits, advances stale funding, pays cover claims of ended epochs', async () => {
+  it('settles matured forced exits, advances stale funding, pays cover claims of ended epochs (all found on chain)', async () => {
     const h = harness();
     h.st.next = 3n;
-    h.st.rows = [
-      { positionId: 1n, exitSettleAfter: new Date(9_000_000) }, // matured (block time 10,000 s)
-      { positionId: 2n, exitSettleAfter: new Date(20_000_000) },
-    ];
+    h.st.blockTs = 1_000_000n;
+    // Forced exits mature 7 days after the request (getPosition's exitRequestedAt).
+    h.st.positions.set(1n, { ...pos(400n * E18, 380n * E18), liquidatable: false, exitRequestedAt: 300_000n }); // matured
+    h.st.positions.set(2n, { ...pos(400n * E18, 380n * E18), liquidatable: false, exitRequestedAt: 900_000n }); // not yet
     h.st.market = [true, 0n, 10n * E18, 0n, 0n, 0n, 1000n];
-    h.st.cover = [
-      { epoch: '7', account: ADDR(43) },
-      { epoch: '5', account: ADDR(40) },
-      { epoch: 'x', account: ADDR(44) }, // malformed rows are ignored
+    h.st.claims = [
+      { block: 40n, epoch: 7n, account: ADDR(43), amount: 5n * E6 },
+      { block: 20n, epoch: 5n, account: ADDR(40), amount: 3n * E6 },
+      { block: 30n, epoch: 6n, account: ADDR(44), amount: 0n }, // paid already: the view reads 0
+      { block: 90n, epoch: 10n, account: ADDR(45), amount: 1n * E6 }, // the current epoch: not payable yet
     ];
     const k = h.make();
     await k.tick();
@@ -242,21 +250,29 @@ describe('Keeper.tick', () => {
     expect(h.sent).toHaveLength(4);
   });
 
-  it('reads open positions page by page and rotates through them, never all at once (L-9)', async () => {
+  it('reads the positions from the chain: new ids once, then a rotation over the open ones, never all at once', async () => {
     const h = harness();
     h.st.market = [true, 0n, 0n, 0n, 0n, 0n, 0n];
-    h.st.rows = Array.from({ length: 5 }, (_, i) => ({ positionId: BigInt(i + 1), exitSettleAfter: null }));
+    for (let i = 1n; i <= 5n; i++) h.st.positions.set(i, { ...pos(400n * E18, 380n * E18), liquidatable: false });
     h.st.next = 6n;
-    // Each tick reads one page of two, then wraps around.
     const k = h.make();
     (k as unknown as { d: { maxChecks: number } }).d.maxChecks = 2;
+    (k as unknown as { positions: { sweepPerTick: number } }).positions.sweepPerTick = 2;
     const ids = async () => (await (k as unknown as { candidateIds(): Promise<{ ids: bigint[] }> }).candidateIds()).ids;
-    expect(await ids()).toEqual([1n, 2n]);
+    // First tick: every id is new (read once with getPosition) and checked; then two open ids a tick, rotating.
+    expect(await ids()).toEqual([3n, 4n, 5n, 1n, 2n]);
     expect(await ids()).toEqual([3n, 4n]);
     expect(await ids()).toEqual([5n, 1n]);
-    expect(await ids()).toEqual([2n, 3n]);
-    // Never an unbounded read: every position query is a keyset page (or the matured forced exits).
-    expect(h.st.pageReads.filter((w) => w === null)).toHaveLength(4); // one forced-exit query per tick
+    // A position opened since: read once, checked at once.
+    h.st.positions.set(6n, { ...pos(400n * E18, 380n * E18), liquidatable: false });
+    h.st.next = 7n;
+    expect(await ids()).toEqual([6n, 2n, 3n]);
+    // The sweep re-reads every id in turn (two a tick here): a closure leaves the rotation.
+    h.st.positions.get(4n)!.open = false;
+    for (let i = 0; i < 4; i++) await ids();
+    expect((k as unknown as { positions: { openIds(): bigint[] } }).positions.openIds()).toEqual([1n, 2n, 3n, 5n, 6n]);
+    // Bounded reads: per tick, the new ids plus at most two sweep reads.
+    expect(h.st.getPositionReads.length).toBeLessThanOrEqual(6 + 2 * 8);
   });
 
   it('a failed cover read does not hold up liquidations', async () => {
@@ -264,11 +280,8 @@ describe('Keeper.tick', () => {
     h.st.next = 2n;
     h.st.market = [true, 0n, 0n, 0n, 0n, 0n, 0n];
     h.st.positions.set(1n, pos(400n * E18, 335n * E18));
-    (h as unknown as { st: { cover: unknown } }).st.cover = null as never;
+    h.st.logsError = new Error('connection refused');
     const k = h.make();
-    (k as unknown as { d: { prisma: { $queryRaw: () => Promise<never> } } }).d.prisma.$queryRaw = async () => {
-      throw new Error('relation "ChainEvent" does not exist');
-    };
     await k.tick();
     expect(h.sent.map(h.call)).toEqual(['liquidate:1']);
     expect(h.lines.some(([l, m]) => l === 'warn' && /could not read its cover claims/.test(m))).toBe(true);

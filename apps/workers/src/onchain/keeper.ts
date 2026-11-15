@@ -1,13 +1,16 @@
 /**
- * Keeper (Phase 3): its own hot key (KEEPER_PRIVATE_KEY, never the relay key), one transaction in flight,
- * one active instance (onchain/lock.ts). Each tick, in order of urgency:
- *  1. liquidations: open positions from the indexer tables (plus ids the indexer has not reached yet, read
- *     from nextPositionId), checked with PerpsMarkets.isLiquidatable (which applies the sequencer rules: none
+ * Keeper (Phase 3): its own hot key (KEEPER_PRIVATE_KEY, never the relay key), one transaction in flight, run by
+ * the signer process (velum-signer, signer/run.ts; one instance: a lock socket in the signer's home). Everything it
+ * acts on comes from the chain itself, never from the indexer's database or Redis, which the app user (api +
+ * workers) can write (on-chain audit M-2). Each tick, in order of urgency:
+ *  1. liquidations: the open positions (positions.ts: every id below nextPositionId read with getPosition, a sweep
+ *     re-reading them in turn), checked with PerpsMarkets.isLiquidatable (which applies the sequencer rules: none
  *     while the sequencer is down, only below MM / 2 during its grace hour), most underwater first;
- *  2. matured forced exits (7 days after the request);
+ *  2. matured forced exits (7 days after the request, from getPosition's exitRequestedAt);
  *  3. advanceFunding for markets with open interest whose funding is older than FUNDING_EPOCH_SECONDS;
- *  4. cover payouts: claimCover for shortfall claims of ended hourly epochs (the contracts have no keeper
- *     insurance top-up action: the keeper top-up is paid inside liquidate, and fundInsurance is a donation).
+ *  4. cover payouts: claimCover for shortfall claims of ended hourly epochs (cover-claims.ts: CoverClaimFiled logs,
+ *     confirmed unpaid with the coverClaims view; the contracts have no keeper insurance top-up action: the keeper
+ *     top-up is paid inside liquidate, and fundInsurance is a donation).
  * Every action is simulated first (eth_estimateGas, which also gives the gas), so a position someone else
  * already liquidated costs nothing. A liquidation whose estimated gas costs more than its reward is sent only
  * when solvency needs it (the liquidated side below MM / 2, or unable to pay the full penalty) and logged.
@@ -20,11 +23,12 @@
  * quarter-second blocks that is a few liquidations per second, far above the 200 the 572 s keeper window needs.
  */
 import { PERPS_LIMITS, deploymentMarkets, type Deployment, type KeeperStatus, type LowerAddress } from '@velum/config/src/onchain';
-import { Prisma, type PrismaClient } from '@velum/db';
 import { encodeFunctionData, type Address, type Hex, type PublicClient } from 'viem';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
+import { CoverClaims, type CoverState } from './cover-claims';
 import { describeError, revertName, throttledWarn } from './errors';
+import { ChainPositions } from './positions';
 import type { PollResult, TxSender } from './tx-sender';
 
 const BPS = 10_000n;
@@ -83,12 +87,11 @@ export function gasCostUsdg(gas: bigint, maxFeeWei: bigint, ethPriceUsd: bigint,
   return ceilDiv(gas * maxFeeWei * ethPriceUsd * 10n ** BigInt(usdgDecimals), WAD);
 }
 
-export type KeeperClient = Pick<PublicClient, 'readContract' | 'getBlock' | 'estimateContractGas'>;
+export type KeeperClient = Pick<PublicClient, 'readContract' | 'getBlock' | 'estimateContractGas' | 'getBlockNumber' | 'getLogs'> & { request?: PublicClient['request'] };
 
 export interface KeeperDeps {
   client: KeeperClient;
   sender: TxSender;
-  prisma: PrismaClient;
   deployment: Deployment;
   chainId: number;
   fundingEpochSeconds: number;
@@ -96,7 +99,13 @@ export interface KeeperDeps {
   /** Max fee per gas ceiling (the profitability estimate uses the current quote, at most this). */
   maxFeeWei: bigint;
   log: Logger;
-  /** Most positions checked per tick (rotating). */
+  /** CONFIRMATIONS: the cover-claim log scan stays this many blocks behind the head (default 3). */
+  confirmations?: number;
+  /** Largest eth_getLogs range of the cover-claim scan (INDEXER_CHUNK_BLOCKS, default 2000). */
+  chunkBlocks?: number;
+  /** Where the cover-claim scan keeps its position across restarts (the signer's own state file), or nothing. */
+  state?: CoverState;
+  /** Most positions checked per tick (rotating), and ids the sweep re-reads per tick. */
   maxChecks?: number;
   now?: () => number;
   /** How long one tick keeps sending actions (default TICK_BUDGET_MS). */
@@ -131,9 +140,8 @@ export class Keeper {
   private valueScale = 0n;
   private keeperRewardCap = 0n;
   private usdgDecimals = 6;
-  /** Rotation over the ids not indexed yet, and the last indexed open position checked (keyset pages). */
-  private cursor = 0;
-  private pageAfter = 0n;
+  private readonly positions: ChainPositions;
+  private readonly claims: CoverClaims;
   private readonly cooldown = new Map<string, number>();
   private readonly skippedLogged = new Set<string>();
   private lastRunAt: number | null = null;
@@ -145,6 +153,8 @@ export class Keeper {
   constructor(private readonly d: KeeperDeps) {
     this.now = d.now ?? Date.now;
     this.warn = throttledWarn(d.log, 60_000, this.now);
+    this.positions = new ChainPositions(d.client, d.deployment, d.maxChecks ?? 200);
+    this.claims = new CoverClaims({ client: d.client, deployment: d.deployment, confirmations: d.confirmations ?? 3, chunkBlocks: d.chunkBlocks ?? 2000, log: d.log, state: d.state, now: this.now });
   }
 
   private perps(): Address {
@@ -171,37 +181,14 @@ export class Keeper {
     return false;
   }
 
-  /** Position ids to check: open ones the indexer knows, plus any above the highest indexed id. */
   /**
-   * Position ids to check this tick, read page by page (audit L-9: every open position was read on every tick): the
-   * next `maxChecks` open positions the indexer knows (keyset pages by id, rotating), up to `maxChecks` ids above the
-   * highest indexed one (not indexed yet, rotating), and the matured forced exits (oldest first).
+   * Position ids to check this tick, from the chain (positions.ts): the open ids read for the first time, the next
+   * `maxChecks` open ids in rotation, and the matured forced exits (oldest request first).
    */
   private async candidateIds(): Promise<{ ids: bigint[]; forced: bigint[] }> {
-    const perps = this.perps();
-    const max = this.d.maxChecks ?? 200;
-    const open = { chainId: this.d.chainId, perps, status: 'open' as const };
-    const page = (positionId: { gt: bigint } | { lte: bigint }, take: number) =>
-      this.d.prisma.perpPosition.findMany({ where: { ...open, positionId }, select: { positionId: true }, orderBy: { positionId: 'asc' }, take });
-    let rows = await page({ gt: this.pageAfter }, max);
-    if (rows.length < max && this.pageAfter > 0n) rows = [...rows, ...(await page({ lte: this.pageAfter }, max - rows.length))];
-    this.pageAfter = rows.at(-1)?.positionId ?? 0n;
-    const ids = rows.map((r) => r.positionId);
-    const maxRow = await this.d.prisma.perpPosition.findFirst({ where: { chainId: this.d.chainId, perps }, orderBy: { positionId: 'desc' }, select: { positionId: true } });
-    const next = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'nextPositionId' })) as bigint;
-    const from = (maxRow?.positionId ?? 0n) + 1n;
-    const unindexed = next > from ? Number(next - from) : 0;
-    const start = unindexed > max ? this.cursor % unindexed : 0;
-    for (let i = 0; i < Math.min(unindexed, max); i++) ids.push(from + BigInt((start + i) % unindexed));
-    if (unindexed > max) this.cursor = start + max;
     const block = await this.d.client.getBlock({ blockTag: 'latest' });
-    const forced = await this.d.prisma.perpPosition.findMany({
-      where: { ...open, exitSettleAfter: { lte: new Date(Number(block.timestamp) * 1000) } },
-      select: { positionId: true },
-      orderBy: { exitSettleAfter: 'asc' },
-      take: max,
-    });
-    return { ids, forced: forced.map((r) => r.positionId) };
+    const r = await this.positions.refresh(this.d.maxChecks ?? 200, block.timestamp);
+    return { ids: [...r.fresh, ...r.rotation], forced: r.forced };
   }
 
   private async liquidations(batch: bigint[]): Promise<Action[]> {
@@ -257,32 +244,14 @@ export class Keeper {
   }
 
   /**
-   * Shortfall claims of ended epochs not paid yet: the indexed CoverClaimFiled events with no CoverPaid for the same
-   * epoch and account after them, selected in SQL (audit L-9: a capped, oldest-first read of every claim and payout
-   * stopped seeing new claims once the history grew past the cap). Oldest epochs first.
+   * Shortfall claims of ended epochs not paid yet (cover-claims.ts): CoverClaimFiled logs read from the chain,
+   * confirmed unpaid with coverClaims(epoch, account). Oldest epochs first, at most COVER_PER_TICK.
    */
   private async coverActions(): Promise<Action[]> {
     const perps = this.perps();
     const current = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'currentCoverEpoch' })) as bigint;
-    const rows = await this.d.prisma.$queryRaw<Array<{ epoch: string; account: string }>>(Prisma.sql`
-      SELECT DISTINCT CASE WHEN c."data"->>'epoch' ~ '^[0-9]{1,30}$' THEN (c."data"->>'epoch')::numeric END AS n,
-        c."data"->>'epoch' AS epoch, c."data"->>'account' AS account
-      FROM "ChainEvent" c
-      WHERE c."chainId" = ${this.d.chainId} AND c."address" = ${perps} AND c."kind" = 'CoverClaimFiled'
-        AND CASE WHEN c."data"->>'epoch' ~ '^[0-9]{1,30}$' THEN (c."data"->>'epoch')::numeric END < ${current.toString()}::numeric
-        AND NOT EXISTS (
-          SELECT 1 FROM "ChainEvent" p
-          WHERE p."chainId" = c."chainId" AND p."address" = c."address" AND p."kind" = 'CoverPaid'
-            AND p."data"->>'epoch' = c."data"->>'epoch' AND p."data"->>'account' = c."data"->>'account'
-            AND (p."block" > c."block" OR (p."block" = c."block" AND p."logIndex" > c."logIndex"))
-        )
-      ORDER BY n, account
-      LIMIT ${COVER_PER_TICK * 4}`);
-    return rows
-      .filter((r) => /^\d+$/.test(r.epoch) && /^0x[0-9a-f]{40}$/.test(r.account))
-      .map((r) => ({ kind: 'cover' as const, epoch: BigInt(r.epoch), account: r.account as LowerAddress }))
-      .sort((a, b) => (a.epoch === b.epoch ? 0 : a.epoch < b.epoch ? -1 : 1))
-      .slice(0, COVER_PER_TICK);
+    await this.claims.scan();
+    return (await this.claims.due(current, COVER_PER_TICK)).map((c) => ({ kind: 'cover' as const, epoch: c.epoch, account: c.account }));
   }
 
   private call(a: Action): { functionName: 'liquidate' | 'settleForcedExit' | 'advanceFunding' | 'claimCover'; args: readonly unknown[] } {
@@ -414,6 +383,8 @@ export class Keeper {
   }
 
   status(): KeeperStatus {
-    return { ...this.d.sender.status(true), lastRunAt: this.lastRunAt, ...this.counts };
+    const s = this.d.sender.status(true);
+    const alerts = [...(s.alerts ?? []), ...this.claims.alerts()].map((a) => a.slice(0, 200)).slice(0, 8);
+    return { ...s, alerts, lastRunAt: this.lastRunAt, ...this.counts };
   }
 }

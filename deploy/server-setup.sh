@@ -11,8 +11,9 @@
 # Moving from an older in-place layout (/opt/velum owned by velum): follow docs/05 "Upgrading"
 # (fresh clone, deploy/import-env.sh, then this script).
 # Optional: APP_USER (default velum, created if missing), WEB_USER (default velum-web, created if
-#           missing; both are recorded in <base>/.velum-users and every other script uses them from
-#           there; giving other names moves the install to new users, docs/05 "Compromise suspected"),
+#           missing), SIGNER_USER (default velum-signer, created if missing: runs only the price relayer and the
+#           keeper, on-chain audit M-2); all three are recorded in <base>/.velum-users and every other script uses
+#           them from there; giving other names moves the install to new users, docs/05 "Compromise suspected"),
 #           BRANCH (default: current branch), WWW=yes|no|auto, REDIS_DB (default 5, keeps
 #           Velum's keys apart from other apps), REDIS_PORT (default 6379), REDIS_CONF (default
 #           /etc/redis/redis.conf), PG_PORT (default 5432, the local PostgreSQL to use), NGINX_DIR
@@ -35,8 +36,10 @@ cd "${ROOT}"
 # The users this base was installed with (recorded below), unless APP_USER/WEB_USER name new ones.
 PREV_APP_USER="$(recorded_user "${ROOT}" APP_USER)"
 PREV_WEB_USER="$(recorded_user "${ROOT}" WEB_USER)"
+PREV_SIGNER_USER="$(recorded_user "${ROOT}" SIGNER_USER)"
 APP_USER="${APP_USER:-${PREV_APP_USER:-velum}}"
 WEB_USER="${WEB_USER:-${PREV_WEB_USER:-velum-web}}"
+SIGNER_USER="${SIGNER_USER:-${PREV_SIGNER_USER:-velum-signer}}"
 WWW="${WWW:-auto}"
 REDIS_DB="${REDIS_DB:-5}"
 REDIS_PORT="${REDIS_PORT:-6379}"
@@ -47,8 +50,9 @@ ENV_FILE="${ROOT}/.env"
 BACKUPS="${ROOT}/backups"
 [[ "${DOMAIN}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] || die "DOMAIN must be a host name such as velum.example."
 [[ "${EMAIL}" =~ ^[^[:space:]@\"\']+@[^[:space:]@\"\']+$ ]] || die "EMAIL does not look like an email address."
-[[ "${APP_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [[ "${WEB_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "APP_USER and WEB_USER must be plain user names."
+[[ "${APP_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [[ "${WEB_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] && [[ "${SIGNER_USER}" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "APP_USER, WEB_USER and SIGNER_USER must be plain user names."
 [ "${APP_USER}" != root ] && [ "${WEB_USER}" != root ] && [ "${APP_USER}" != "${WEB_USER}" ] || die "APP_USER and WEB_USER must be two different users, neither of them root."
+[ "${SIGNER_USER}" != root ] && [ "${SIGNER_USER}" != "${APP_USER}" ] && [ "${SIGNER_USER}" != "${WEB_USER}" ] || die "SIGNER_USER must be a user of its own, neither root nor ${APP_USER} nor ${WEB_USER}."
 [[ "${REDIS_DB}" =~ ^[0-9]{1,3}$ ]] || die "REDIS_DB must be a number."
 valid_port "${REDIS_PORT}" || die "REDIS_PORT must be a port number."
 valid_port "${PG_PORT}" || die "PG_PORT must be a port number."
@@ -113,12 +117,12 @@ elif ! node -e 'const [a, b] = process.versions.node.split(".").map(Number); pro
 fi
 command -v pm2 >/dev/null || npm i -g "pm2@${PM2_VERSION}"
 
-echo "› Users (${APP_USER} builds and runs api + workers; ${WEB_USER} runs only the web)"
+echo "› Users (${APP_USER} builds and runs api + workers; ${WEB_USER} runs only the web; ${SIGNER_USER} runs only the price relayer and the keeper)"
 # Moving to new users (audit R3-05): the old ones must be stopped first, or their apps would keep the
 # ports and the API socket (and they may be the reason for the move).
-for u in ${PREV_APP_USER} ${PREV_WEB_USER}; do
-  if [ "${u}" != "${APP_USER}" ] && [ "${u}" != "${WEB_USER}" ] && id -u "${u}" >/dev/null 2>&1 && [ -n "$(ps -u "${u}" -o pid= 2>/dev/null)" ]; then
-    die "This base ran as ${PREV_APP_USER}/${PREV_WEB_USER}, and ${u} still has running processes. Stop and lock the old users first (docs/05-deploy-vps.md, \"Compromise suspected\"), then re-run."
+for u in ${PREV_APP_USER} ${PREV_WEB_USER} ${PREV_SIGNER_USER}; do
+  if [ "${u}" != "${APP_USER}" ] && [ "${u}" != "${WEB_USER}" ] && [ "${u}" != "${SIGNER_USER}" ] && id -u "${u}" >/dev/null 2>&1 && [ -n "$(ps -u "${u}" -o pid= 2>/dev/null)" ]; then
+    die "This base ran as ${PREV_APP_USER}/${PREV_WEB_USER}${PREV_SIGNER_USER:+/${PREV_SIGNER_USER}}, and ${u} still has running processes. Stop and lock the old users first (docs/05-deploy-vps.md, \"Compromise suspected\"), then re-run."
   fi
 done
 if ! id -u "${APP_USER}" >/dev/null 2>&1; then
@@ -128,11 +132,17 @@ if ! id -u "${WEB_USER}" >/dev/null 2>&1; then
   # Own group, no login shell, not in the app group (which can read .env) (R2-M3).
   useradd --system --create-home --user-group --shell /usr/sbin/nologin "${WEB_USER}"
 fi
-# Validates both users and homes (real directories owned by their user), refuses a web user that is in
-# the app group, sets APP_HOME, WEB_HOME, PM2_DIR, WEB_PM2_DIR, SEPARATE=1.
+if ! id -u "${SIGNER_USER}" >/dev/null 2>&1; then
+  # Own group only, no login shell, in no other group (on-chain audit M-2): it cannot read .env, the API socket's
+  # directory or the release files, and only its group (nobody else) can read the hot keys.
+  useradd --system --create-home --user-group --shell /usr/sbin/nologin "${SIGNER_USER}"
+fi
+# Validates the three users and homes (real directories owned by their user), refuses a web user in the app group and
+# a signer in any other group, sets APP_HOME, WEB_HOME, SIGNER_HOME, PM2_DIR, WEB_PM2_DIR, SIGNER_PM2_DIR, SEPARATE=1.
 velum_mode "${ROOT}" setup
 [ -z "${PREV_APP_USER}" ] || [ "${PREV_APP_USER}/${PREV_WEB_USER}" = "${APP_USER}/${WEB_USER}" ] || say "Moving this install from ${PREV_APP_USER}/${PREV_WEB_USER} to ${APP_USER}/${WEB_USER}"
-printf '# Written by deploy/server-setup.sh: the users this base runs as. Change them only with server-setup.sh.\nAPP_USER=%s\nWEB_USER=%s\n' "${APP_USER}" "${WEB_USER}" | install_file "${ROOT}/${VELUM_USERS_FILE}" 644 root:root
+[ -z "${PREV_SIGNER_USER}" ] || [ "${PREV_SIGNER_USER}" = "${SIGNER_USER}" ] || say "Moving the signer from ${PREV_SIGNER_USER} to ${SIGNER_USER}"
+printf '# Written by deploy/server-setup.sh: the users this base runs as. Change them only with server-setup.sh.\nAPP_USER=%s\nWEB_USER=%s\nSIGNER_USER=%s\n' "${APP_USER}" "${WEB_USER}" "${SIGNER_USER}" | install_file "${ROOT}/${VELUM_USERS_FILE}" 644 root:root
 read -r NGINX_RUN_USER NGINX_RUN_GROUP < <(nginx_user_group "${NGINX_DIR}" || true; echo)
 [ -n "${NGINX_RUN_USER:-}" ] || die "Cannot tell which user Nginx runs as (no usable 'user' line in ${NGINX_DIR}/nginx.conf). Set NGINX_USER=…"
 [ "${NGINX_RUN_GROUP}" != "${APP_GROUP}" ] && [ "${NGINX_RUN_GROUP}" != "${WEB_GROUP}" ] && [ "${NGINX_RUN_USER}" != "${WEB_USER}" ] || die "Nginx must run as its own user and group, not as ${APP_USER} or ${WEB_USER}."
@@ -142,6 +152,9 @@ read -r NGINX_RUN_USER NGINX_RUN_GROUP < <(nginx_user_group "${NGINX_DIR}" || tr
 as_app sh -c 'mkdir -p "$PM2_HOME" && chmod 700 "$PM2_HOME"'
 # shellcheck disable=SC2016
 as_web sh -c 'mkdir -p "$PM2_HOME" && chmod 700 "$PM2_HOME"'
+# The signer's home is closed to everyone (its state, its own copy of the releases, its PM2 files) (M-2).
+# shellcheck disable=SC2016
+as_signer sh -c 'chmod 700 "$HOME" && mkdir -p "$PM2_HOME" "$HOME/state" "$HOME/releases" && chmod 700 "$PM2_HOME" "$HOME/state" "$HOME/releases"'
 
 echo "› Layout (root-owned base, app-owned releases)"
 # Others may traverse the base (the web user reaches web.env and current/ that way) but not list it;
@@ -231,19 +244,28 @@ if ! [[ "${PROXY_SECRET}" =~ ^[0-9a-fA-F]{32,128}$ ]]; then
   PROXY_SECRET="$(openssl rand -hex 32)"
   NEW_PROXY_SECRET=1
 fi
-# The web's own settings (no secrets), readable by the web user only (R2-M3).
+# The hot keys (on-chain audit M-2): never in .env, which the app user (and so the API) can read. The keys file is
+# created root:${SIGNER_GROUP} 640 when missing, and a key still in .env (an older layout) is moved there once, .env
+# and its backups rewritten without it. The running workers still hold a moved key in memory until the release below
+# restarts them (a clean restart, their variables changed), and release.sh removes PM2's saved list that held it.
+echo "› Signer keys (${SIGNER_KEYS_FILE}, root:${SIGNER_GROUP} 640)"
+migrate_signer_keys "${ENV_FILE}"
+# The web's own settings and the signer's (no secrets), each readable by its user only (R2-M3, M-2).
 render_web_env "${ENV_FILE}" | install_file "${ROOT}/web.env" 640 "root:${WEB_GROUP}"
+render_signer_env "${ENV_FILE}" | install_file "${ROOT}/signer.env" 640 "root:${SIGNER_GROUP}"
 
-echo "› API socket directory (${NGINX_RUN_USER} and ${APP_USER} only) and log rotation"
+echo "› API socket directory (${NGINX_RUN_USER} and ${APP_USER} only), the signer's status directory and log rotation"
 API_SOCKET_PATH="$(env_get "${ENV_FILE}" API_SOCKET)"
 valid_api_socket "${API_SOCKET_PATH}" || die "API_SOCKET in .env must look like /run/<dir>/<name>.sock (default ${API_SOCKET_DEFAULT})."
 # Root-created at every boot (tmpfiles.d) before the PM2 units start (R3-03).
 install -d -m 755 "$(dirname "${TMPFILES_CONF}")"
-render_tmpfiles "${API_SOCKET_PATH}" "${APP_USER}" "${NGINX_RUN_GROUP}" | install_file "${TMPFILES_CONF}" 644 root:root
-apply_tmpfiles "${API_SOCKET_PATH}"
+# The signer's status directory (M-2): owned by the signer, readable by the app user's group (the API), 2750.
+SIGNER_STATUS_DIR="$(dirname "$(signer_status_file "${ENV_FILE}")")"
+render_tmpfiles "${API_SOCKET_PATH}" "${APP_USER}" "${NGINX_RUN_GROUP}" "${SIGNER_USER}" "${APP_GROUP}" "${SIGNER_STATUS_DIR}" | install_file "${TMPFILES_CONF}" 644 root:root
+apply_tmpfiles "${API_SOCKET_PATH}" "${SIGNER_STATUS_DIR}"
 # PM2 logs rotated by logrotate as each user, never by root, never through npm or /tmp (R3-02).
 install -d -m 755 "$(dirname "${LOGROTATE_CONF}")"
-render_logrotate "${APP_USER}" "${WEB_USER}" | install_file "${LOGROTATE_CONF}" 644 root:root
+render_logrotate "${APP_USER}" "${WEB_USER}" "${SIGNER_USER}" | install_file "${LOGROTATE_CONF}" 644 root:root
 
 echo "› PostgreSQL (own role and database)"
 systemctl is-active --quiet postgresql || systemctl enable --now postgresql
@@ -525,13 +547,14 @@ if [ "${NEW_PROXY_SECRET}" = 1 ]; then
 fi
 unset PROXY_SECRET
 
-# The release starts each user's PM2 daemon under its systemd unit (pm2-${APP_USER}, pm2-${WEB_USER}),
-# enabled for boot, and saves the process lists (I-2). No pm2-logrotate module (R3-02).
-echo "› First release (api + workers as ${APP_USER}, web as ${WEB_USER}, each PM2 under its systemd unit)"
-APP_USER="${APP_USER}" WEB_USER="${WEB_USER}" BRANCH="${BRANCH}" NGINX_SNIPPET="${HEADERS_SNIPPET}" NGINX_PROXY_SNIPPET="${PROXY_SNIPPET}" NGINX_API_SNIPPET="${API_SNIPPET}" NGINX_SITE="${SITE}" bash "${ROOT}/deploy/deploy.sh"
+# The release starts each user's PM2 daemon under its systemd unit (pm2-${APP_USER}, pm2-${WEB_USER}, and with
+# ONCHAIN_WORKERS=true pm2-${SIGNER_USER}), enabled for boot, and saves the process lists (I-2). No pm2-logrotate
+# module (R3-02).
+echo "› First release (api + workers as ${APP_USER}, web as ${WEB_USER}, the signer as ${SIGNER_USER} with ONCHAIN_WORKERS=true, each PM2 under its systemd unit)"
+APP_USER="${APP_USER}" WEB_USER="${WEB_USER}" SIGNER_USER="${SIGNER_USER}" BRANCH="${BRANCH}" NGINX_SNIPPET="${HEADERS_SNIPPET}" NGINX_PROXY_SNIPPET="${PROXY_SNIPPET}" NGINX_API_SNIPPET="${API_SNIPPET}" NGINX_SITE="${SITE}" bash "${ROOT}/deploy/deploy.sh"
 
 echo "✓ Velum Phase 2 is live at https://${DOMAIN}"
-echo "  Status:   bash ${ROOT}/deploy/as-user.sh ${APP_USER} pm2 status ; bash ${ROOT}/deploy/as-user.sh ${WEB_USER} pm2 status"
+echo "  Status:   bash ${ROOT}/deploy/as-user.sh ${APP_USER} pm2 status ; bash ${ROOT}/deploy/as-user.sh ${WEB_USER} pm2 status ; bash ${ROOT}/deploy/as-user.sh ${SIGNER_USER} pm2 status"
 echo "  Logs:     bash ${ROOT}/deploy/as-user.sh ${APP_USER} pm2 logs velum-api --lines 100 --nostream"
 echo "  Health:   curl -s https://${DOMAIN}/api/v1/health"
 echo "  Releases: sudo bash ${ROOT}/deploy/deploy.sh   (roll back: sudo bash ${ROOT}/deploy/deploy.sh --rollback)"

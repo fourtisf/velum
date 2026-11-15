@@ -14,11 +14,13 @@ import {
   type Timeframe,
 } from '@velum/config';
 import type { CacheMac } from '@velum/config/src/cache-mac';
-import { MAX_ONCHAIN_STATUS_BYTES, ONCHAIN_STATUS_KEY, parseOnchainStatus } from '@velum/config/src/onchain';
+import { MAX_ONCHAIN_STATUS_BYTES, MAX_SIGNER_STATUS_BYTES, ONCHAIN_STATUS_KEY, parseOnchainStatus, parseSignerStatus } from '@velum/config/src/onchain';
 import { Prisma, type PrismaClient } from '@velum/db';
+import { constants as fsConstants } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import type { Redis } from 'ioredis';
 import { createPublicClient, http } from 'viem';
-import type { CacheReader, ChainReader, DbReader, PublishedPool } from './deps';
+import type { CacheReader, ChainReader, DbReader, PublishedPool, SignerReader } from './deps';
 import { circuit, timeout } from './memo';
 
 const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
@@ -76,6 +78,31 @@ export function redisCache(redis: Redis, opts: { mac: CacheMac; now?: () => numb
     async onchainStatus() {
       const raw = await read(() => redis.get(ONCHAIN_STATUS_KEY));
       return parseOnchainStatus(mac.open(ONCHAIN_STATUS_KEY, raw, MAX_ONCHAIN_STATUS_BYTES), now());
+    },
+  };
+}
+
+/**
+ * The signer's status file (on-chain audit M-2). velum-signer writes it atomically into a directory it owns and the
+ * API's group may only read (tmpfiles.d), so the API cannot have written it. Read without following a link, at most
+ * MAX_SIGNER_STATUS_BYTES, then validated (parseSignerStatus). Missing or unreadable: null.
+ */
+export function fileSigner(path: string, opts: { now?: () => number } = {}): SignerReader {
+  const now = opts.now ?? Date.now;
+  return {
+    async status() {
+      let fh: FileHandle | null = null;
+      try {
+        fh = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+        const st = await fh.stat();
+        if (!st.isFile() || st.size > MAX_SIGNER_STATUS_BYTES) return null;
+        const { buffer, bytesRead } = await fh.read(Buffer.alloc(st.size), 0, st.size, 0);
+        return parseSignerStatus(buffer.subarray(0, bytesRead).toString('utf8'), now());
+      } catch {
+        return null;
+      } finally {
+        await fh?.close().catch(() => undefined);
+      }
     },
   };
 }

@@ -58,6 +58,13 @@ export function throttledWarn(log: { warn(msg: string, data?: Record<string, unk
   };
 }
 
+/**
+ * Provider texts for "this eth_getLogs asks for too much" (block range or result count): geth/Nitro, Alchemy,
+ * Infura, QuickNode, Ankr, Chainstack, BlastAPI, dRPC and others, plus the JSON-RPC codes some of them use.
+ */
+export const LOG_CAP_ERROR =
+  /range|too many|limit|exceed|10000|10,000|response size|too big|too large|timeout|timed out|max(imum)? (number of )?(results|logs)|query returned more than|logs matched|result window|-32005|-32602|-32011/;
+
 /** The error name of a decoded contract revert, or null. */
 export function revertName(err: unknown): string | null {
   if (!(err instanceof BaseError)) return null;

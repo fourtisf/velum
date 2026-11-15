@@ -13,13 +13,17 @@
                          ├─ relay API ──► Redis queue ──► relayer ──┘ (pays gas)
                          └─ Prisma ──► PostgreSQL
                                   ▲
-               apps/workers (BullMQ on Redis)
+               apps/workers (BullMQ on Redis; user velum, no keys)
                ├─ price-relay   pulls quotes → MAC'd Redis snapshots + PriceTick rows
                ├─ candles       aggregates ticks → 15m/1h/4h/1D candles
-               ├─ onchain relay pushes MAC-verified real prices to OracleAdapter (Phase 3, testnet relay oracle)
-               ├─ keeper        liquidations, forced-exit settlement, advanceFunding, cover payouts (Phase 3)
                ├─ indexer       contract events → positions, trades, offers, pools, vault, funding (Phase 3;
                │                notes, nullifiers, commitments in Phase 4)
+               │
+               velum-signer (apps/workers/src/signer.ts; its own user, no Redis, no Postgres; Phase 3)
+               ├─ onchain relay its own Robinhood quotes → OracleAdapter (testnet relay oracle)
+               ├─ keeper        liquidations, forced-exit settlement, advanceFunding, cover payouts, from the chain
+               └─ status file   /run/velum-signer/status.json → /v1/health
+               │
                ├─ coordinator   matches taker locks with maker offers (Phase 4)
                ├─ risk-a / risk-b  watch positions, submit liquidations (Phase 4, separate keys)
                └─ aggregates    hourly rounded public totals (min 10 fills, 2 makers)
@@ -47,7 +51,8 @@ apps/
     src/plugins/{prisma,redis,rateLimit,cors}.ts
   workers/        Node, TS, BullMQ
     src/jobs/{price-relay,candles,prune}.ts
-    src/onchain/{relayer,keeper,indexer,projections,tx-sender,lock,...}.ts   (Phase 3)
+    src/onchain/{relayer,keeper,positions,cover-claims,indexer,projections,tx-sender,lock,...}.ts   (Phase 3)
+    src/signer.ts, src/signer/{run,env,files,prices,lock}.ts   (Phase 3: the signer process, on-chain audit M-2)
 packages/
   db/             Prisma schema + generated client
   config/         chain constants, token list, protocol params
@@ -114,26 +119,40 @@ marks them errored) and report alive only once started; PM2 restarts api and wor
 exponential backoff, and each PM2 daemon's systemd unit starts after PostgreSQL and Redis.
 
 **Phase 3 (public contracts):** web sends txs directly with wagmi; indexer stores events;
-positions/pools come from chain via API. The on-chain workers (`apps/workers/src/onchain`) are described
-below.
+positions/pools come from chain via API. The on-chain roles (`apps/workers/src/onchain`, the signer in
+`apps/workers/src/signer`) are described below.
 
 ### Phase 3 on-chain workers
 
+**Two processes, two users (on-chain audit M-2).** The indexer runs in the workers process (user `velum`, the same
+user as the internet-facing API); it holds no key. The price relayer and the keeper, the only code holding hot keys,
+run in the signer process `velum-signer` (`src/signer.ts`, `src/signer/run.ts`) as their own Unix user, which is in no
+group but its own (docs/05, "The signer"). The signer uses neither Redis nor Postgres and reads nothing the app user
+can write: its keys from `SIGNER_KEYS_FILE` (`/etc/velum/signer-keys.env`, root:velum-signer 640; never `.env`, never
+an environment: `src/signer/files.ts`), its prices straight from Robinhood (`src/signer/prices.ts`), its candidates
+straight from the chain (`positions.ts`, `cover-claims.ts`), its deployment file from its own copy of the release
+(built by the signer user from the commit, never from the app user's release files; a deployment file on a path
+another user could change is refused). A compromised app user can at worst degrade its liveness, which `/v1/health`
+shows; it cannot make it sign. The signer's settings come from `signer.env` (root-rendered from `.env`, no secrets);
+test-only settings (`SIGNER_TEST_PRICES_URL`, `SIGNER_TEST_ASSETS_URL`, `SIGNER_TEST_CLOCK_OFFSET_MS`) are honoured
+on the local anvil chain (31337) only and refused anywhere else.
+
 **Gate.** Off unless `ONCHAIN_WORKERS=true` (the literal `true`) **and** `contracts/deployments/<CHAIN_ID>.json`
-exists (`DEPLOYMENTS_DIR`, default `contracts/deployments` of the release; `Deploy.s.sol` writes it and it is
-committed after a deployment, so every release carries it). The relayer also needs `PRICE_RELAY_PRIVATE_KEY`
-(its address must be the oracle's `relayer`), the keeper `KEEPER_PRIVATE_KEY`, a separate key (refused if it is
-the relay key or the deployment's price relayer); without its key a component stays off and the indexer still
-runs. On Robinhood Chain mainnet (4663) nothing is ever signed without `ONCHAIN_MAINNET_CONFIRMED=yes`: the
+exists (the workers: `DEPLOYMENTS_DIR`, default `contracts/deployments` of the release; the signer:
+`SIGNER_DEPLOYMENTS_DIR`, default its own copy's; `Deploy.s.sol` writes it and it is committed after a deployment, so
+every release carries it). Without `ONCHAIN_WORKERS=true` `deploy.sh` does not run the signer at all. The relayer also
+needs `PRICE_RELAY_PRIVATE_KEY` (its address must be the oracle's `relayer`), the keeper `KEEPER_PRIVATE_KEY`, a
+separate key (refused if it is the relay key or the deployment's price relayer); without its key a component stays
+off (the signer's status says why) and the indexer still runs. On Robinhood Chain mainnet (4663) nothing is ever signed without `ONCHAIN_MAINNET_CONFIRMED=yes`: the
 sender refuses when the configured chain **or** `RPC_URL`'s (or `RPC_URL_SEND`'s) `eth_chainId` is 4663, and whenever
 an endpoint serves another chain than `CHAIN_ID`; the relayer and keeper then only read, every signing path checks
 it (submit, replacement, cancellation, nonce-gap fill), and a refused sender adopts no pending transaction (audit L-1).
-Indexing mainnet is allowed. `deploy/ecosystem.config.cjs` passes the two hot keys to `velum-workers` only while
-`.env` says `ONCHAIN_WORKERS=true`, never to the API or the web (it refuses to load if a hot key is on their lists).
-Keys become viem accounts at start and are never logged (the logger also redacts every `*_PRIVATE_KEY` value).
+Indexing mainnet is allowed. `deploy/ecosystem.config.cjs` passes no hot key to any app (it refuses to load if one is
+on a list); the signer reads its keys file at start, keys become viem accounts there and are never logged (the logger
+also redacts every `*_PRIVATE_KEY` value).
 
-**Redis and settings (audit M-3, I-2).** The role locks and job schedulers live in Redis, so a tenant of a shared
-Redis could hold the locks or delete the schedulers and stop every role. The on-chain workers therefore start only
+**Redis and settings (audit M-3, I-2).** The indexer's role lock and job scheduler live in Redis, so a tenant of a
+shared Redis could hold the lock or delete the scheduler and stop it. The indexer therefore starts only
 when `REDIS_URL` is a unix socket, Velum's own Redis from `deploy/redis-velum.sh`
 (`unix://:PASSWORD@/run/velum-redis/redis.sock`); with a TCP `REDIS_URL` they stay off, log
 `on-chain workers off` with the reason, and `/v1/health` shows it. An invalid on-chain setting (a malformed key,
@@ -141,11 +160,13 @@ when `REDIS_URL` is a unix socket, Velum's own Redis from `deploy/redis-velum.sh
 (never the value), only the on-chain workers stay off, the Phase 2 price and candle workers run on, and while
 `ONCHAIN_WORKERS` asks for them `/v1/health` names the problem.
 
-**Layout.** Three BullMQ queues in the workers process (`velum-onchain-relay` every second,
-`velum-onchain-keeper` every `KEEPER_INTERVAL_MS`, `velum-onchain-indexer` every `INDEXER_POLL_MS`), each with
-concurrency 1 and behind a Redis role lock (SET NX PX, renewed every tick), so a second process (a release
-overlap, a mistaken copy) stays idle; job payloads are never read. A role whose last successful tick is more than a
-minute (and ten intervals) old gets its job scheduler re-added. Each hot key has one sender (`tx-sender.ts`): one
+**Layout.** The indexer: one BullMQ queue in the workers process (`velum-onchain-indexer` every `INDEXER_POLL_MS`),
+concurrency 1, behind a Redis role lock (SET NX PX, renewed every tick), so a second process (a release overlap, a
+mistaken copy) stays idle; job payloads are never read; a role whose last successful tick is more than a minute (and
+ten intervals) old gets its job scheduler re-added (an older release's relay and keeper schedulers are removed). The
+signer: plain loops in one process (the relayer every second, the keeper every `KEEPER_INTERVAL_MS`, its quote read
+every 2 s), one tick at a time each, one instance per user (a lock socket in its 0700 state directory, which only the
+signer user can take or remove). Each hot key has one sender (`tx-sender.ts`): one
 transaction in flight; the nonce is the chain's transaction count; a transaction not mined after 6 s (relay) or 15 s
 (keeper) is replaced at the same nonce with fees bumped 12.5% and a freshly rebuilt payload (or a 0-value transfer
 to self when nothing qualifies any more), never above the fee ceiling (`RELAYER_MAX_GWEI`, `KEEPER_MAX_GWEI`). A
@@ -162,12 +183,16 @@ the keys; its path and query are redacted from logs like `RPC_URL`'s. Balances a
 `RELAYER_MIN_BALANCE_ETH` / `KEEPER_MIN_BALANCE_ETH` the workers warn (every 10 minutes) and `/v1/health` says
 `balanceLow`.
 
-**Price relayer** (`relayer.ts`, `relay-math.ts`). Every `PRICE_PUSH_INTERVAL_MS` (8-10 s, default 9 s) it pushes
-the deployment's markets in one `pushPrices` call, but only prices that are safe on chain: the latest
-MAC-verified Redis snapshot, confirmed with its source within 6 s (`RELAY_SNAPSHOT_MAX_AGE_MS`) and newer than the
-snapshot last pushed for that market (audit L-6), never a demo price (on any network: with the testnet default
-`PRICE_SOURCE=demo` nothing is pushed, so on-chain testnet trading needs `PRICE_SOURCE=robinhood`), quote confirmed
-and not frozen (15 minutes), the US-equity session open, the market relay-sourced on chain, and (off anvil) the
+**Price relayer** (`relayer.ts`, `relay-math.ts`, in the signer). Every `PRICE_PUSH_INTERVAL_MS` (8-10 s, default
+9 s) it pushes the deployment's markets in one `pushPrices` call, but only prices that are safe on chain: the
+signer's own latest Robinhood quote (`src/signer/prices.ts`: it reads `/rhj/prices` itself every 2 s for the
+deployment's markets with price-relay's code and guards: the exact mainnet token address, the multiplier rules, the
+spread and freshness limits, the jump guard; quote time and confirmation as in price-relay; the last quote per market
+kept in its own state directory, so a restart neither unfreezes a quote nor loses the jump guard's reference, which
+is otherwise seeded from the price last relayed on chain; never Redis, so `PRICE_SOURCE` does not matter to it),
+confirmed with its source within 6 s (`RELAY_SNAPSHOT_MAX_AGE_MS`) and newer than the snapshot last pushed for that
+market (audit L-6), quote confirmed and not frozen (15 minutes), the US-equity session open, the market relay-sourced
+on chain, and (off anvil) the
 deployment's token equal to the verified token in `packages/config`; and only while `OracleAdapter.sequencerStatus()`
 reports the sequencer up. A price outside the adapter's fixed bounds is pushed as it is (the adapter clamps it and the
 market reads as lagging, IA-06) and raises an alert, instead of never being pushed (audit L-7). Every push carries its
@@ -192,14 +217,21 @@ estimated: in the latest block, on an idle chain the previous push, it would rev
 off (5 s, doubling to a minute) with an alert until a push succeeds. Its expected block time runs on from the newest
 block seen at wall-clock speed.
 
-**Keeper** (`keeper.ts`). Each tick, most urgent first: liquidations (open positions from the index, plus ids
-above the highest indexed one from `nextPositionId`, so the confirmation lag never hides one), checked with
+**Keeper** (`keeper.ts`, in the signer). Everything it acts on comes from the chain, never from the index (which the
+app user writes). Positions (`positions.ts`): every id below `nextPositionId` is read once with `getPosition` (at most
+2,000 new ids a tick), the open ones are kept in memory, and a sweep re-reads every id in turn (`maxChecks` a tick),
+which catches closures, forced-exit requests and anything a reorg changed. Cover claims (`cover-claims.ts`): the
+perps engine's `CoverClaimFiled` logs from the deployment's start block, `CONFIRMATIONS` behind the head, each scan
+reading the last 64 blocks again (reorg margin), in ranges of `INDEXER_CHUNK_BLOCKS` halved when the provider refuses
+(a single refused block is read with `eth_getBlockReceipts`, or skipped with an alert); a claim is payable while
+`coverClaims(epoch, account)` reads non-zero, and the scan position is kept in the signer's state. Each tick, most
+urgent first: liquidations (the fresh open ids and the next `maxChecks` open ids in rotation), checked with
 `isLiquidatable` (which applies the sequencer rules: none while it is down, only below MM / 2 in the grace hour),
 ordered by risk (the urgent ones, below MM / 2 or unable to pay the full penalty, first, then the smallest remaining
-claim relative to notional); matured forced exits; `advanceFunding` for markets with open interest whose funding is
-older than `FUNDING_EPOCH_SECONDS`; `claimCover` for shortfall claims of ended epochs, selected in SQL as the filed
-claims with no later payout (audit L-9; the contracts have no keeper insurance top-up action: the keeper top-up is
-paid inside `liquidate`). Every action is simulated against the latest block first (a cool-down follows a refusal),
+claim relative to notional); matured forced exits (`getPosition`'s `exitRequestedAt` plus 7 days); `advanceFunding`
+for markets with open interest whose funding is older than `FUNDING_EPOCH_SECONDS`; `claimCover` for unpaid shortfall
+claims of ended epochs (the contracts have no keeper insurance top-up action: the keeper top-up is paid inside
+`liquidate`). Every action is simulated against the latest block first (a cool-down follows a refusal),
 so a position someone else liquidated costs nothing. A liquidation whose gas (at the current fee and
 `KEEPER_ETH_PRICE_USD`) costs more than its expected reward is sent only when solvency needs it (the liquidated side
 below MM / 2, or unable to pay the full penalty), and logged. Throughput (audit L-3): one transaction stays in
@@ -228,25 +260,36 @@ activity feed), `OnchainToken`, `IndexerCheckpoint`, `IndexedBlock`. Rows carry 
 contract, so a redeploy or a network switch never mixes deployments; the API reads the current deployment's rows
 (docs/03). To re-index, delete the deployment's `IndexerCheckpoint` row.
 
-**Health.** The workers write an authenticated status (`velum:onchain:status`, 2-minute expiry) every 5 s:
-indexer block, head, lag and reorgs; relayer last push, per-market state, sequencer; keeper last run and counts;
-each hot wallet's public address, balance, low/stuck/gas-capped flags, last (redacted) error and alerts; per role
-whether this process holds its lock and when its last successful tick was; the push interval; and, while they are
-disabled although `ONCHAIN_WORKERS=true`, the reason. `/v1/health` summarises it as `onchain` with `ok` and the
-`reasons` it is not (docs/03): during an open session no confirmed push for more than two push intervals, a role
-lock held by someone else, a role tick overdue, an alert, a stuck or low wallet, an indexer error (audit M-3).
+**Health.** The workers write an authenticated status (`velum:onchain:status`, 2-minute expiry) every 5 s: indexer
+block, head, lag and reorgs, whether this process holds the indexer's lock and when its last successful tick was,
+and, while the indexer is disabled although `ONCHAIN_WORKERS=true`, the reason. The signer writes its status every 5 s
+to `SIGNER_STATUS_FILE` (`/run/velum-signer/status.json`: written atomically, 640, in a directory the API's group may
+read but not write; no MAC needed, the app user cannot write it): relayer last push, per-market state, sequencer;
+keeper last run and counts; each hot wallet's public address, balance, low/stuck/gas-capped flags, last (redacted)
+error and alerts; per role whether it runs and when its last successful tick was; its quotes' state; and why it signs
+nothing although requested (no deployment file, a keys file others could read, ...). `/v1/health` reads both and
+summarises them as `onchain` with `ok` and the `reasons` it is not (docs/03): during an open session no confirmed push
+for more than two push intervals, a role lock held by someone else, a role tick overdue, an alert, a stuck or low
+wallet, an indexer error, no (or a stale) signer status while the workers run on-chain; `signer` is the signer
+status's age in seconds, which `deploy.sh` checks after a release that runs the signer.
 
 **Tests.** `bash apps/workers/e2e/onchain-e2e.sh` deploys the contracts on a local anvil with `forge script` (in a
-scratch copy), runs the real relayer, keeper and indexer against their own Postgres (non-default port) and Redis (a
-unix socket in the scratch directory, like production), and checks a liquidation, a stuck-transaction replacement, a
-reorg, a funding advance and a forced exit end to end, then the API endpoints over the same index, then the audit's
-reproductions inverted (`audit-e2e.test.ts`: a withheld push landed late, squatted role locks, a block over the
-provider's log cap, keeper throughput with 220 liquidatable positions).
+scratch copy), runs the real indexer against its own Postgres (non-default port) and Redis (a unix socket in the
+scratch directory, like production) and the relayer and keeper as the real signer process (`node dist/signer.js`, its
+own keys file, state and status file, no Postgres or Redis, quotes from a fake Robinhood API on 127.0.0.1), and checks
+a liquidation, a stuck-transaction replacement (seen in anvil's pool), a reorg, a funding advance and a forced exit end
+to end, then the API endpoints over the same index, then the audit's reproductions inverted (`audit-e2e.test.ts`: a
+withheld push landed late, a squatted indexer lock, a block over the provider's log cap, keeper throughput with 220
+liquidatable positions found on the chain).
 
 **Limits.** Arbitrum chains make blocks only for transactions: with `CONFIRMATIONS` above 0 the newest events wait
 for later blocks (the relay's pushes make one every 8-10 s in market hours; over a weekend the last events stay
 unindexed until the next transactions). The keeper checks open positions with one `isLiquidatable` call each
-(JSON-RPC batched, at most 200 per tick, rotating). `KEEPER_ETH_PRICE_USD` is a fixed, rough price.
+(JSON-RPC batched, at most 200 per tick, rotating) and re-reads 200 ids a tick in its sweep, so with many thousands
+of positions a closure or a forced-exit request is noticed within a few minutes (a forced exit matures after 7 days).
+A first start reads every position id (2,000 a tick) and the cover-claim logs from the deployment's start block (2 s
+a tick) before it is caught up; the cover-claim position is kept across restarts. `KEEPER_ETH_PRICE_USD` is a fixed,
+rough price.
 
 **Phase 4 (private):** web builds proofs with the SDK → `POST /v1/relay/:action` →
 queue → relayer submits → indexer stores encrypted records → web fetches
@@ -261,13 +304,14 @@ queue → relayer submits → indexer stores encrypted records → web fetches
 | Relayer | hot wallet for gas (small balance, alerting) | user keys; it only submits proofs |
 | Coordinator | lock terms against one-time addresses | wallet ↔ position link |
 | Risk workers (2) | keys to decrypt position health fields only | user wallets |
-| Price relay | oracle updater key (testnet bounds and rate limit enforced on-chain) | the keeper key |
-| Keeper (Phase 3) | gas key for public liquidations, forced exits, funding, cover payouts | the price-relay key |
+| Price relay (velum-signer) | oracle updater key (testnet bounds and rate limit enforced on-chain) | the keeper key; anything the app user can write (Redis, Postgres, its release files) |
+| Keeper (Phase 3, velum-signer) | gas key for public liquidations, forced exits, funding, cover payouts | the price-relay key; anything the app user can write |
+| Workers (indexer) and API | public chain data, the index, Redis, `.env` | any hot key |
 
-Keys for relayer, coordinator, risk workers, price relay, keeper: separate env vars, separate
-processes, least privilege. Rotate on any incident. In Phase 3 the price relay and the keeper run in the
-workers process with separate keys and senders; `deploy/ecosystem.config.cjs` gives their keys to
-`velum-workers` only with `ONCHAIN_WORKERS=true`.
+Keys for relayer, coordinator, risk workers, price relay, keeper: separate keys, separate processes, least
+privilege. Rotate on any incident. In Phase 3 the price relay and the keeper run in the signer process as their own
+user, with separate keys and senders, reading the keys from `/etc/velum/signer-keys.env` (root:velum-signer 640); no
+hot key is in `.env` or any app's environment (on-chain audit M-2).
 
 ## 5. Performance targets
 

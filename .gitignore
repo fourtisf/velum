@@ -22,6 +22,7 @@ dump.rdb
 /.previous.new
 /.deploy.lock
 /web.env
+/signer.env
 /backups/
 /.velum-users
 # Keys and deployer material must never be committed (audit SE-02)

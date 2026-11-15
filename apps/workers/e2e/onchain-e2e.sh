@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# End-to-end test of the Phase 3 on-chain workers (price relayer, keeper, indexer) and the API's Phase 3
-# reads, against a local anvil (chain 31337) with their own PostgreSQL and Redis in a scratch directory on
-# non-default ports. It never touches system services, public networks or real keys: anvil's public test
-# accounts sign everything (the deployer through anvil's unlocked accounts, the workers with keys derived in
-# the test from anvil's public test mnemonic).
+# End-to-end test of the Phase 3 on-chain roles (the indexer in the workers; the price relayer and the keeper in the
+# separate signer process, on-chain audit M-2) and the API's Phase 3 reads, against a local anvil (chain 31337) with
+# their own PostgreSQL and Redis in a scratch directory on non-default ports. It never touches system services, public
+# networks or real keys: anvil's public test accounts sign everything (the deployer through anvil's unlocked accounts,
+# the relayer and keeper with keys derived in the test from anvil's public test mnemonic).
 #
 #   bash apps/workers/e2e/onchain-e2e.sh        (from anywhere; pnpm install must have run)
 #
 # Steps: start Postgres, Redis (on a unix socket only, like Velum's own Redis from deploy/redis-velum.sh: the
 # on-chain workers refuse any other, audit M-3) and anvil; copy contracts/ to the scratch directory and deploy it
 # there with `forge script script/Deploy.s.sol` (the repository's contracts/deployments is never written); migrate
-# the scratch database and check the schema has no drift; run apps/workers/src/onchain/e2e.test.ts (relayer,
-# keeper, indexer, reorg, stuck transaction, forced exit), then apps/api/src/onchain-e2e.test.ts (the API
+# the scratch database and check the schema has no drift; build apps/workers (dist/signer.js is the signer program);
+# run apps/workers/src/onchain/e2e.test.ts (the indexer in-process and the relayer and keeper as a spawned
+# `node dist/signer.js` with its own keys file, state and status file, no Postgres, no Redis, its quotes from a fake
+# Robinhood API on 127.0.0.1; reorg, stuck transaction, forced exit), then apps/api/src/onchain-e2e.test.ts (the API
 # endpoints over the same index), then apps/workers/src/onchain/audit-e2e.test.ts (the on-chain workers audit:
 # a withheld push landed late, squatted role locks, a block over the provider's log cap, keeper throughput with
 # hundreds of liquidatable positions). Everything started is stopped and the scratch directories removed on exit.
@@ -115,7 +117,10 @@ export TEST_DATABASE_URL="${DATABASE_URL}"
 export TEST_REDIS_URL="${REDIS_URL}"
 export LOG_LEVEL="${LOG_LEVEL:-warn}"
 
-say "Workers end to end (relayer, keeper, indexer)"
+say "Build apps/workers (the signer runs as its own process from dist/signer.js)"
+(cd "${ROOT}/apps/workers" && npx tsup >"${SCRATCH}/workers-build.log" 2>&1) || { tail -20 "${SCRATCH}/workers-build.log"; die "workers build failed"; }
+
+say "Workers end to end (indexer in-process; relayer and keeper in the separate signer process)"
 (cd "${ROOT}/apps/workers" && npx vitest run src/onchain/e2e.test.ts)
 
 say "API end to end (Phase 3 reads over the same index)"

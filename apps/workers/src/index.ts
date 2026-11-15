@@ -1,9 +1,11 @@
 /**
- * Velum workers: price-relay and candles on BullMQ, plus an hourly tick prune (Phase 2), and the Phase 3
- * on-chain workers (price relayer, keeper, indexer: onchain/index.ts), off unless ONCHAIN_WORKERS=true and
- * the chain's deployment file exists. Runs as a single PM2 fork process (deploy/ecosystem.config.cjs).
+ * Velum workers: price-relay and candles on BullMQ, plus an hourly tick prune (Phase 2), and the Phase 3 indexer
+ * (onchain/index.ts), off unless ONCHAIN_WORKERS=true and the chain's deployment file exists. Runs as a single PM2 fork
+ * process (deploy/ecosystem.config.cjs). The price relayer and the keeper, which hold the hot keys, run in their own
+ * process as their own user (velum-signer, src/signer.ts; on-chain audit M-2): this process never signs anything.
  */
 import { createCacheMac } from '@velum/config/src/cache-mac';
+import { SIGNER_HOT_KEYS } from '@velum/config/src/onchain';
 import { PrismaClient } from '@velum/db';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -42,6 +44,8 @@ async function main(): Promise<void> {
   const onchainEnv: OnchainEnv | null = settings.env;
   let onchainDisabled: string | null = settings.disabled === null ? null : redact(settings.disabled);
   if (settings.error) log.error('on-chain workers disabled: invalid on-chain settings; the price and candle workers keep running', { err: redact(settings.error) });
+  const strayKeys = SIGNER_HOT_KEYS.filter((k) => (process.env[k] ?? '').trim() !== '');
+  if (strayKeys.length) log.warn('hot keys in the workers environment are never used: they belong in the signer keys file (deploy/new-key.sh)', { names: strayKeys.join(',') });
 
   const prisma = new PrismaClient({ datasources: { db: { url: env.databaseUrl } } });
   // BullMQ needs maxRetriesPerRequest: null; it duplicates this connection for blocking calls. REDIS_URL
@@ -164,9 +168,9 @@ async function main(): Promise<void> {
     }
   }).catch((err: unknown) => log.warn('background candle tagging failed; tried again on the next start', { err: redact(String(err)) }));
 
-  // Phase 3: relayer, keeper and indexer, only with ONCHAIN_WORKERS=true and a deployment file for this chain,
-  // and only on Velum's own Redis over a unix socket (audit M-3). Started after liveness and without any RPC
-  // call, so the chain can never hold up the Phase 2 workers.
+  // Phase 3: the indexer, only with ONCHAIN_WORKERS=true and a deployment file for this chain, and only on Velum's own
+  // Redis over a unix socket (audit M-3). Started after liveness and without any RPC call, so the chain can never hold
+  // up the Phase 2 workers. (The relayer and keeper run in velum-signer.)
   if (onchainEnv?.requested && redisRefusal(redis)) {
     onchainDisabled = redisRefusal(redis);
     log.error('on-chain workers off', { reason: onchainDisabled });

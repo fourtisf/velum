@@ -1,9 +1,11 @@
 /**
- * On-chain price relayer (Phase 3, testnet relay-sourced oracle). Runs every second on BullMQ; pushes every
- * PRICE_PUSH_INTERVAL_MS (8-10 s) the latest authenticated price snapshot of each listed market to
- * OracleAdapter.pushPrices, in one batched transaction, but only prices that are safe to put on chain:
- *  - the snapshot verifies (MAC, docs/02) and parses, and price-relay confirmed it with its source within
- *    RELAY_SNAPSHOT_MAX_AGE_MS (stale snapshots are never re-stamped as fresh on chain);
+ * On-chain price relayer (Phase 3, testnet relay-sourced oracle). Runs every second in the signer process
+ * (velum-signer, signer/run.ts; on-chain audit M-2); pushes every PRICE_PUSH_INTERVAL_MS (8-10 s) the latest price
+ * snapshot of each listed market to OracleAdapter.pushPrices, in one batched transaction, but only prices that are
+ * safe to put on chain:
+ *  - the snapshot comes from the signer's own Robinhood reads (signer/prices.ts: no Redis, nothing the app user can
+ *    write), and was confirmed with its source within RELAY_SNAPSHOT_MAX_AGE_MS (stale snapshots are never
+ *    re-stamped as fresh on chain);
  *  - it is newer than the snapshot last pushed for that market (audit L-6: observations only move forward);
  *  - it is not a demo (simulated) price, on any network;
  *  - its quote is confirmed and not frozen (QUOTE_FROZEN_AFTER_MS), and the US-equity session is open;
@@ -18,11 +20,9 @@
  * when none qualify), never re-sent with old prices. The gas limit comes from eth_estimateGas, which on Arbitrum
  * chains includes the L1 data cost (audit L-4); a reverted push backs off (5 s, doubling to a minute) and alerts.
  */
-import { CHAIN, MAX_SNAPSHOT_BYTES, QUOTE_FROZEN_AFTER_MS, TOKENS, cacheKeys, parseSnapshot, usEquitySession, type MarketSnapshot } from '@velum/config';
-import type { CacheMac } from '@velum/config/src/cache-mac';
+import { CHAIN, QUOTE_FROZEN_AFTER_MS, TOKENS, usEquitySession, type MarketSnapshot } from '@velum/config';
 import { RELAY_MAX_PUSH_GAP_S, RELAY_SNAPSHOT_MAX_AGE_MS, deploymentMarkets, type Deployment, type LowerAddress, type RelayerStatus } from '@velum/config/src/onchain';
 import { parseWad, toDecimalString } from '@velum/math';
-import type { Redis } from 'ioredis';
 import { decodeEventLog, encodeFunctionData, type Address, type PublicClient } from 'viem';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
@@ -68,11 +68,20 @@ export function snapshotEligibility(snap: MarketSnapshot | undefined, now: numbe
 /** The relay reads of one tick (a viem PublicClient provides them). */
 export type RelayClient = Pick<PublicClient, 'readContract' | 'getBlock' | 'estimateGas'>;
 
+/**
+ * Where the relayer's price snapshots come from: the signer's own Robinhood reads (signer/prices.ts). Never Redis or
+ * anything else the app user can write (on-chain audit M-2: a compromised app user must not be able to make the
+ * relay key sign a price).
+ */
+export interface PriceFeed {
+  /** The latest snapshot of each of `symbols` the feed has (a missing market is simply absent). */
+  snapshots(symbols: readonly string[]): Promise<Map<string, MarketSnapshot>>;
+}
+
 export interface RelayerDeps {
   client: RelayClient;
   sender: TxSender;
-  redis: Pick<Redis, 'mget'>;
-  mac: CacheMac;
+  prices: PriceFeed;
   deployment: Deployment;
   chainId: number;
   intervalMs: number;
@@ -173,17 +182,13 @@ export class PriceRelayer {
   }
 
   private async snapshots(): Promise<Map<string, MarketSnapshot>> {
-    const keys = this.markets.map((m) => cacheKeys.price(m.symbol));
-    const out = new Map<string, MarketSnapshot>();
-    if (!keys.length) return out;
-    const raws = await this.d.redis.mget(...keys);
-    const now = this.now();
-    raws.forEach((raw, i) => {
-      const m = this.markets[i]!;
-      const snap = parseSnapshot(this.d.mac.open(keys[i]!, raw, MAX_SNAPSHOT_BYTES), m.symbol, now);
-      if (snap) out.set(m.symbol, snap);
-    });
-    return out;
+    if (!this.markets.length) return new Map();
+    return this.d.prices.snapshots(this.markets.map((m) => m.symbol));
+  }
+
+  /** The markets this relayer pushes, with their token (after init). */
+  get tokens(): Array<{ symbol: string; token: LowerAddress }> {
+    return this.markets.map(({ symbol, token }) => ({ symbol, token }));
   }
 
   private note(symbol: string, reason: string): void {
@@ -359,7 +364,7 @@ export class PriceRelayer {
       await this.step();
       this.okAt = this.wallNow();
     } catch (err) {
-      // An RPC or Redis outage: back off 5 s, warn once a minute.
+      // An RPC outage: back off 5 s, warn once a minute.
       this.warn('price relay tick failed', { err: describeError(err) });
       this.nextCheckAt = this.wallNow() + 5000;
     }

@@ -86,19 +86,19 @@ describe('M-3: the on-chain workers run only on a unix-socket Redis', () => {
 
 describe('I-2: an invalid on-chain setting disables only the on-chain workers', () => {
   it('never throws; reports the problem by variable name, never the value', () => {
-    const bad = `0x${'g'.repeat(64)}`;
-    const s = loadOnchainSettings({ ONCHAIN_WORKERS: 'true', PRICE_RELAY_PRIVATE_KEY: bad, CONFIRMATIONS: '-1', RPC_URL_SEND: 'ftp://x' });
+    const s = loadOnchainSettings({ ONCHAIN_WORKERS: 'true', CONFIRMATIONS: '-1', RPC_URL_SEND: 'ftp://x://secretpath' });
     expect(s.env).toBeNull();
-    expect(s.error).toMatch(/PRICE_RELAY_PRIVATE_KEY is not a private key/);
     expect(s.error).toMatch(/CONFIRMATIONS must be an integer/);
     expect(s.error).toMatch(/RPC_URL_SEND must be an http\(s\) URL/);
-    expect(s.disabled).toMatch(/^Invalid on-chain workers environment: PRICE_RELAY_PRIVATE_KEY is not a private key/);
-    expect(`${s.error} ${s.disabled}`).not.toContain('g'.repeat(64));
+    expect(s.disabled).toMatch(/^Invalid on-chain workers environment: RPC_URL_SEND must be an http\(s\) URL.* CONFIRMATIONS must be an integer/);
+    expect(`${s.error} ${s.disabled}`).not.toContain('secretpath');
     // Asked for with an invalid flag value: disabled with the reason.
     expect(loadOnchainSettings({ ONCHAIN_WORKERS: 'yes' }).disabled).toMatch(/ONCHAIN_WORKERS must be true or false/);
     // Not asked for: logged only, nothing for /v1/health.
-    expect(loadOnchainSettings({ ONCHAIN_WORKERS: 'false', KEEPER_PRIVATE_KEY: bad })).toMatchObject({ env: null, disabled: null, error: expect.stringMatching(/KEEPER_PRIVATE_KEY/) });
+    expect(loadOnchainSettings({ ONCHAIN_WORKERS: 'false', CONFIRMATIONS: 'x' })).toMatchObject({ env: null, disabled: null, error: expect.stringMatching(/CONFIRMATIONS/) });
     expect(loadOnchainSettings({ ONCHAIN_WORKERS: 'true' })).toMatchObject({ env: { requested: true }, error: null, disabled: null });
+    // M-2: a hot key in this environment is not a setting the workers read (the signer reads its keys file).
+    expect(loadOnchainSettings({ ONCHAIN_WORKERS: 'true', PRICE_RELAY_PRIVATE_KEY: `0x${'g'.repeat(64)}` })).toMatchObject({ error: null, disabled: null });
   });
 
   it('the disabled status parses and names the reason', () => {

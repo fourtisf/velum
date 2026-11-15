@@ -40,22 +40,27 @@ from Postgres.
 ## Read
 
 ### `GET /v1/health`
-`{ "ok": true, "chainId": 46630, "block": 153118480, "lag": 1, "workers": 2, "db": true, "redis": true, "demoMode": true, "rpcChainId": 46630, "onchain": null }`
+`{ "ok": true, "chainId": 46630, "block": 153118480, "lag": 1, "workers": 2, "signer": null, "db": true, "redis": true, "demoMode": true, "rpcChainId": 46630, "onchain": null }`
 
 `lag`: seconds since the price relay last wrote prices (null before the first tick). `workers`:
 seconds since the workers process last reported alive, whether or not the price source has quotes
 (null if never, or while the workers wait for Postgres and Redis at start-up); `deploy/deploy.sh`
-requires a fresh one after each release. `block` is null when the RPC is unreachable. `rpcChainId` is
+requires a fresh one after each release. `signer` *(Phase 3)*: seconds since the signer process (the price relayer and
+the keeper, their own Unix user, on-chain audit M-2) last wrote its status file (`SIGNER_STATUS_FILE`, default
+`/run/velum-signer/status.json`), null without one (it runs only with `ONCHAIN_WORKERS=true`); `deploy/deploy.sh`
+requires a fresh one after each release that runs the signer. `block` is null when the RPC is unreachable. `rpcChainId` is
 `eth_chainId` of `RPC_URL` (null until the RPC answered; re-checked every 10 minutes). 503 when Postgres
 or Redis is down, or when `rpcChainId` differs from `chainId` (a misconfigured `RPC_URL`); an unreachable
 RPC alone does not fail the check. `demoMode` is always `true` in Phase 2: every trade is simulated,
 whatever `DEMO_MODE` says. Rate limited per client (`RATE_LIMIT_HEALTH_PER_MIN`, default 60).
 
-`onchain` *(Phase 3)*: `null` while the on-chain workers are off (`ONCHAIN_WORKERS` not `true`, or no
-deployment file for the chain; the status they write expires after two minutes), otherwise a summary of the
-status the workers write every 5 s (authenticated like every value the API trusts):
+`onchain` *(Phase 3)*: `null` while the on-chain roles are off (`ONCHAIN_WORKERS` not `true`, or no
+deployment file for the chain; the workers' status expires after two minutes, and `deploy.sh` removes the signer's
+when it stops it), otherwise a summary of the indexer's status, which the workers write every 5 s to Redis
+(authenticated like every value the API trusts), and of the relayer's and keeper's, which the signer writes every 5 s
+to its status file (a directory the API may read but not write):
 ```json
-{ "ok": true, "reasons": [], "age": 3, "chainId": 46630,
+{ "ok": true, "reasons": [], "age": 3, "signerAge": 2, "chainId": 46630,
   "indexer": { "block": 153118477, "head": 153118480, "lag": 3, "reorgs": 0, "lastRun": 1, "error": null },
   "relayer": { "enabled": true, "address": "0x…", "sending": true, "lastPush": 4, "balanceLow": false,
                "stuck": false, "gasCapped": false, "sequencerUp": true,
@@ -63,23 +68,28 @@ status the workers write every 5 s (authenticated like every value the API trust
   "keeper": { "enabled": true, "address": "0x…", "sending": true, "lastRun": 2, "balanceLow": false,
               "stuck": false, "gasCapped": false, "liquidations": 2, "forcedExits": 0, "error": null } }
 ```
-Ages are seconds. `sending` is false on Robinhood Chain mainnet without `ONCHAIN_MAINNET_CONFIRMED=yes` (the
-workers only read there) or when `RPC_URL` serves another chain. `balanceLow`: the hot wallet holds less
+Ages are seconds (`age`: the workers' status, `signerAge`: the signer's). `sending` is false on Robinhood Chain
+mainnet without `ONCHAIN_MAINNET_CONFIRMED=yes` (the signer only reads there) or when `RPC_URL` serves another chain. `balanceLow`: the hot wallet holds less
 than `RELAYER_MIN_BALANCE_ETH` / `KEEPER_MIN_BALANCE_ETH`. `markets` gives each market's last relay state:
 `pushed`, `lagging` (the adapter's rate limit clamped the push), `converging`, `deferred`, `waiting`, or why it
 is not pushed (`demo`, `stale`, `unconfirmed`, `frozen`, `closed`, `bounds`, `token-mismatch`,
-`not-relay-sourced`, `sequencer-down`, `no-snapshot`, `bad-price`); `bounds` means the quote is outside the
+`not-relay-sourced`, `sequencer-down`, `no-snapshot` (the signer has no quote of its own for it), `bad-price`);
+`bounds` means the quote is outside the
 adapter's bounds and is pushed as it is (the adapter clamps it; an alert is raised). `ok` is false, with one short
 sentence per cause in `reasons` (at most 10), when:
 - the status is older than 60 s;
 - the on-chain workers are disabled although `ONCHAIN_WORKERS=true`: an invalid on-chain setting (named, never its
   value), or `REDIS_URL` is not a unix socket (they only run on Velum's own Redis, `deploy/redis-velum.sh`);
 - the indexer reports an error;
+- the workers run on-chain but the signer wrote no status (it is not running, or cannot write its status file), its
+  status is older than 60 s, its settings do not ask for it (`ONCHAIN_WORKERS` not `true` there), or it signs
+  nothing although asked (no deployment file, a keys file others could read, invalid settings: named, never a value);
+  or the signer runs but the workers wrote no status (the indexer);
 - an enabled hot wallet is low, stuck or failing, or raised an alert: a nonce still unused after its replacements
   ran out (it is being cancelled at up to the fee ceiling), a nonce-gap fill the node rejected, reverted pushes,
   a quote outside the oracle bounds;
-- a role (relayer, keeper, indexer) runs here but this process does not hold its Redis lock, or its last
-  successful tick is more than a minute (and five of its intervals) old;
+- a role (relayer, keeper, indexer) runs but its process does not hold its lock (the indexer's in Redis, the signer's
+  a socket in its own home), or its last successful tick is more than a minute (and five of its intervals) old;
 - during an open US-equity session, the relayer (enabled, sending, sequencer not down) has confirmed no push for
   more than two push intervals.
 

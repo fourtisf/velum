@@ -1,5 +1,6 @@
 import { CHAIN, NETWORK, parseRedisUrl, type NetworkName, type RedisConnection } from '@velum/config';
 import { defaultDeploymentsDir } from '@velum/config/src/deployment-file';
+import { SIGNER_STATUS_FILE_DEFAULT } from '@velum/config/src/onchain';
 import { redactUrls } from './lib/redact';
 
 /** Log levels LOG_LEVEL accepts (pino's, audit I-5). */
@@ -50,6 +51,11 @@ export interface ApiEnv {
    * release). /v1/deployment, /v1/accounts/* and /v1/markets/:symbol/funding read <dir>/<CHAIN_ID>.json.
    */
   deploymentsDir?: string;
+  /**
+   * The signer's status file (SIGNER_STATUS_FILE, default /run/velum-signer/status.json; on-chain audit M-2): the
+   * price relayer and keeper run as their own user and report through it; /v1/health combines it with the workers'.
+   */
+  signerStatusFile?: string;
 }
 
 /** Absolute path, plain characters, short enough for sun_path (108 bytes, minus margin). */
@@ -107,6 +113,11 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     problems.push('API_SOCKET is set but PROXY_SECRET is empty: on the socket every client would share one rate limit. Set PROXY_SECRET (deploy/server-setup.sh generates one and gives it to Nginx) or clear API_SOCKET to listen on HOST:PORT_API.');
   }
 
+  const signerStatusFile = (e.SIGNER_STATUS_FILE ?? '').trim();
+  if (signerStatusFile && (!SOCKET_PATH_RE.test(signerStatusFile) || signerStatusFile.split('/').includes('..'))) {
+    problems.push('SIGNER_STATUS_FILE must be an absolute path of at most 100 plain characters (letters, digits, . _ - /).');
+  }
+
   const logLevel = (e.LOG_LEVEL ?? '').trim() || (e.NODE_ENV === 'production' ? 'info' : 'debug');
   if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')} (got "${e.LOG_LEVEL}").`);
   const network: NetworkName = (e.VELUM_NETWORK ?? '').trim().toLowerCase() === 'mainnet' ? 'mainnet' : NETWORK;
@@ -130,6 +141,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     proxySecret: proxySecret || null,
     socketPath: socketPath || null,
     deploymentsDir: (e.DEPLOYMENTS_DIR ?? '').trim() || defaultDeploymentsDir(),
+    signerStatusFile: signerStatusFile || SIGNER_STATUS_FILE_DEFAULT,
   };
 
   if (problems.length) throw new Error(`Invalid API environment:\n  - ${problems.join('\n  - ')}`);

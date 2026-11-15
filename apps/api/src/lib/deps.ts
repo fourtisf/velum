@@ -1,5 +1,7 @@
 import type { Candle, CandleCache, MarketSnapshot, Timeframe } from '@velum/config';
+import type { OnchainStatus } from '@velum/config/src/onchain';
 import type { ApiEnv } from '../env';
+import type { DeploymentSource, OnchainReader } from './onchain';
 
 /**
  * Reads what the workers write to Redis (see packages/config/src/cache.ts). Every value is authenticated
@@ -11,6 +13,8 @@ export interface CacheReader {
   /** The cached series with the source it was built from (audit F-3), or null. */
   candles(symbol: string, tf: Timeframe): Promise<CandleCache | null>;
   heartbeat(worker: string): Promise<number | null>;
+  /** The on-chain workers' status (Phase 3), authenticated and validated, or null (off, or not written). */
+  onchainStatus?(): Promise<OnchainStatus | null>;
 }
 
 export interface PublishedPool {
@@ -49,6 +53,10 @@ export interface AppDeps {
   cache: CacheReader;
   db: DbReader;
   chain: ChainReader;
+  /** Phase 3: the deployment file of the configured chain (none: the Phase 3 routes answer 404). */
+  deployment?: DeploymentSource;
+  /** Phase 3: the indexer's tables. */
+  onchain?: OnchainReader;
   /** ioredis client for the shared rate-limit store; omitted in tests (in-memory store). */
   rateLimitRedis?: unknown;
   now?: () => number;

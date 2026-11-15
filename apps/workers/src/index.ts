@@ -1,6 +1,7 @@
 /**
- * Velum workers (Phase 2): price-relay and candles on BullMQ, plus an hourly tick prune.
- * Runs as a single PM2 fork process (deploy/ecosystem.config.cjs).
+ * Velum workers: price-relay and candles on BullMQ, plus an hourly tick prune (Phase 2), and the Phase 3
+ * on-chain workers (price relayer, keeper, indexer: onchain/index.ts), off unless ONCHAIN_WORKERS=true and
+ * the chain's deployment file exists. Runs as a single PM2 fork process (deploy/ecosystem.config.cjs).
  */
 import { createCacheMac } from '@velum/config/src/cache-mac';
 import { PrismaClient } from '@velum/db';
@@ -17,6 +18,8 @@ import { startLiveness } from './lib/liveness';
 import { createLogger } from './lib/log';
 import { redact } from './lib/redact';
 import { retryForever, timeout } from './lib/retry';
+import { loadOnchainEnv } from './onchain/env';
+import { removeOnchainSchedulers, startOnchain, type OnchainHandle } from './onchain/index';
 import { pickSource } from './sources';
 
 /** Start-up tags candles of unknown source whose bucket ended in this window; the rest follows in the background. */
@@ -32,6 +35,7 @@ const stop = new AbortController();
 async function main(): Promise<void> {
   const log = createLogger();
   const env = loadEnv();
+  const onchainEnv = loadOnchainEnv();
 
   const prisma = new PrismaClient({ datasources: { db: { url: env.databaseUrl } } });
   // BullMQ needs maxRetriesPerRequest: null; it duplicates this connection for blocking calls. REDIS_URL
@@ -154,8 +158,16 @@ async function main(): Promise<void> {
     }
   }).catch((err: unknown) => log.warn('background candle tagging failed; tried again on the next start', { err: redact(String(err)) }));
 
+  // Phase 3: relayer, keeper and indexer, only with ONCHAIN_WORKERS=true and a deployment file for this chain.
+  // Started after liveness and without any RPC call, so the chain can never hold up the Phase 2 workers.
+  const onchain: OnchainHandle | null = await retry('on-chain workers (Redis)', async () => {
+    const h = await startOnchain({ env: onchainEnv, chainId: env.chainId, rpcUrl: env.rpcUrl, prisma, redis, mac, log });
+    if (!h) await removeOnchainSchedulers(redis);
+    return h;
+  });
+
   log.info('workers started', {
-    workers: [PRICE_WORKER, CANDLES_WORKER, 'prune'],
+    workers: [PRICE_WORKER, CANDLES_WORKER, 'prune', ...(onchain ? ['onchain'] : [])],
     source: ctx.source.name,
     pollMs: env.pricePollMs,
     demoMode: env.demoMode,
@@ -171,6 +183,7 @@ async function main(): Promise<void> {
     log.info('shutting down', { signal });
     setTimeout(() => process.exit(1), 10_000).unref();
     stopLiveness();
+    await onchain?.stop().catch(() => undefined);
     await Promise.allSettled(workers.map((w) => w.close()));
     await Promise.allSettled([prices.close(), candles.close(), maintenance.close()]);
     await Promise.allSettled([prisma.$disconnect(), redis.quit()]);

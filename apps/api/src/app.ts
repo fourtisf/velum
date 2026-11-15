@@ -6,7 +6,10 @@ import { clientKeyGenerator } from './lib/client-address';
 import type { AppDeps } from './lib/deps';
 import { ApiError, ERROR_CODES, errorBody, type ErrorCode } from './lib/errors';
 import { fallbackStore } from './lib/rate-limit-store';
+import { accountsRoutes } from './routes/accounts';
 import { candlesRoutes } from './routes/candles';
+import { deploymentRoutes } from './routes/deployment';
+import { fundingRoutes } from './routes/funding';
 import { healthRoutes } from './routes/health';
 import { marketsRoutes } from './routes/markets';
 import { poolsRoutes } from './routes/pools';
@@ -90,6 +93,10 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
   await app.register(poolsRoutes(deps));
   await app.register(statsRoutes(deps));
   await app.register(quoteRoutes(deps));
+  // Phase 3 reads (404 until contracts/deployments/<CHAIN_ID>.json exists).
+  await app.register(deploymentRoutes(deps));
+  await app.register(accountsRoutes(deps));
+  await app.register(fundingRoutes(deps));
 
   if (deps.onClose) app.addHook('onClose', async () => deps.onClose?.());
   return app;

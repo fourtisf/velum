@@ -118,17 +118,282 @@ model Nullifier {
   block   BigInt
 }
 
+// Every contract log the Phase 3 indexer read (apps/workers/src/onchain/indexer.ts): the event store the
+// projections below are folded from, and rebuilt from after a reorg. `kind` is the event name, or
+// "unknown:<topic0>" for a log no ABI in packages/config/src/onchain-abi.ts decodes (a newer contract
+// version's extra events are kept raw, never an error). `data` holds the decoded arguments with every
+// integer as a decimal string (or, for unknown logs, the raw topics and data).
 model ChainEvent {
   id       BigInt   @id @default(autoincrement())
-  kind     String                                  // PositionChanged | PoolChanged | Shield | Unshield | Liquidated | FundingAdvanced
+  kind     String                                  // PositionChanged | PoolChanged | Deposited | Liquidated | FundingAdvanced | unknown:0x…
   market   String?
   txHash   String
   logIndex Int
   block    BigInt
   data     Json
+  chainId  Int?                                    // null only for rows written before Phase 3 (none in practice)
+  address  String?                                 // emitting contract, lower case
+  at       DateTime?                               // block time
 
   @@unique([txHash, logIndex])
   @@index([kind, block])
+  @@index([chainId, block])
+  @@index([chainId, address, kind])
+}
+
+// ───────── Phase 3 indexer (apps/workers/src/onchain). All amounts are integers in base units, exact. ─────────
+// Addresses are lower case. Rows carry chainId and the emitting contract so a redeploy, or a server that
+// switches networks, never mixes deployments (contract addresses can repeat across chains).
+
+// Last fully indexed block per (chain, deployment) and its hash; a reorg is detected when the next block's
+// parent hash differs.
+model IndexerCheckpoint {
+  chainId    Int
+  deployment String                                // perps contract (lower case)
+  block      BigInt
+  blockHash  String
+  updatedAt  DateTime @updatedAt
+
+  @@id([chainId, deployment])
+}
+
+// Hashes of indexed blocks that had logs, plus the last block of every indexed range: the points a reorg
+// rewind checks against the chain to find the common ancestor.
+model IndexedBlock {
+  chainId Int
+  number  BigInt
+  hash    String
+
+  @@id([chainId, number])
+}
+
+// Token decimals and symbols of a deployment (read from the chain once), for formatting amounts.
+model OnchainToken {
+  chainId  Int
+  address  String
+  symbol   String
+  decimals Int
+
+  @@id([chainId, address])
+}
+
+enum PerpPositionStatus {
+  open
+  closed
+  liquidated
+  forced_exit
+}
+
+// Current state of every perps position, folded from PositionChanged, PositionSettled, Liquidated and the
+// forced-exit events. Prices are USDG per token x 1e18, qty tokens x 1e18, margins and payouts USDG base units.
+model PerpPosition {
+  chainId          Int
+  perps            String
+  positionId       BigInt
+  market           String                          // token address
+  symbol           String?
+  taker            String
+  maker            String
+  isLong           Boolean                         // the taker's side
+  qty              Decimal            @db.Decimal(78, 0)
+  entry            Decimal            @db.Decimal(78, 0)
+  takerMargin      Decimal            @db.Decimal(78, 0)
+  makerMargin      Decimal            @db.Decimal(78, 0)
+  size             Decimal?           @db.Decimal(78, 0)   // notional at open (the maker offer's fill size)
+  offerId          BigInt?
+  status           PerpPositionStatus
+  openedBlock      BigInt
+  openedAt         DateTime
+  openTx           String
+  closedBlock      BigInt?
+  closedAt         DateTime?
+  closeTx          String?
+  closePrice       Decimal?           @db.Decimal(78, 0)   // oracle price used at close
+  exitPrice        Decimal?           @db.Decimal(78, 0)   // spread-adjusted exit (oracle price on liquidation)
+  takerPnl         Decimal?           @db.Decimal(78, 0)
+  takerFunding     Decimal?           @db.Decimal(78, 0)
+  fee              Decimal?           @db.Decimal(78, 0)   // close fee, or the penalty on liquidation
+  takerOut         Decimal?           @db.Decimal(78, 0)
+  makerOut         Decimal?           @db.Decimal(78, 0)
+  liquidator       String?
+  liquidatedSide   String?                          // taker | maker
+  liquidationPrice Decimal?           @db.Decimal(78, 0)
+  penalty          Decimal?           @db.Decimal(78, 0)
+  reward           Decimal?           @db.Decimal(78, 0)
+  shortfall        Decimal?           @db.Decimal(78, 0)
+  exitRequester    String?
+  exitRequestedAt  DateTime?
+  exitSettleAfter  DateTime?
+  exitAtEntry      Boolean?
+  lastBlock        BigInt
+  lastLogIndex     Int
+
+  @@id([chainId, perps, positionId])
+  @@index([chainId, taker])
+  @@index([chainId, maker])
+  @@index([chainId, perps, status])
+}
+
+// Fills and other trades: one row per open (with the maker offer it filled), close, liquidation and forced exit.
+model PerpTrade {
+  chainId    Int
+  txHash     String
+  logIndex   Int
+  perps      String
+  positionId BigInt
+  kind       String                                // open | close | liquidation | forced_exit
+  market     String
+  symbol     String?
+  taker      String
+  maker      String
+  isLong     Boolean
+  qty        Decimal  @db.Decimal(78, 0)
+  price      Decimal  @db.Decimal(78, 0)          // entry on open, exit price otherwise
+  notional   Decimal  @db.Decimal(78, 0)          // USDG base units
+  fee        Decimal  @db.Decimal(78, 0)
+  offerId    BigInt?
+  block      BigInt
+  at         DateTime
+
+  @@id([chainId, txHash, logIndex])
+  @@index([chainId, perps, positionId])
+  @@index([chainId, market, block])
+}
+
+// Maker standing offers (MakerBook), folded from OfferPosted, OfferFilled and OfferWithdrawn.
+model MakerOffer {
+  chainId        Int
+  book           String
+  offerId        BigInt
+  maker          String
+  market         String
+  symbol         String?
+  backingPosted  Decimal  @db.Decimal(78, 0)
+  backing        Decimal  @db.Decimal(78, 0)      // remaining, unallocated
+  largestFill    Decimal  @db.Decimal(78, 0)
+  openSpreadBps  Int
+  closeSpreadBps Int
+  expiry         DateTime
+  active         Boolean
+  fills          Int      @default(0)
+  returned       Decimal? @db.Decimal(78, 0)
+  postedBlock    BigInt
+  postedAt       DateTime
+  postTx         String
+  lastBlock      BigInt
+  lastLogIndex   Int
+
+  @@id([chainId, book, offerId])
+  @@index([chainId, maker])
+  @@index([chainId, market, active])
+}
+
+// Spot pool reserves after the last PoolChanged.
+model SpotPoolState {
+  chainId      Int
+  pools        String
+  stock        String
+  symbol       String?
+  stockReserve Decimal  @db.Decimal(78, 0)
+  usdgReserve  Decimal  @db.Decimal(78, 0)
+  totalShares  Decimal  @db.Decimal(78, 0)
+  at           DateTime
+  lastBlock    BigInt
+  lastLogIndex Int
+
+  @@id([chainId, pools, stock])
+}
+
+model SpotSwap {
+  chainId   Int
+  txHash    String
+  logIndex  Int
+  pools     String
+  account   String
+  tokenIn   String
+  tokenOut  String
+  amountIn  Decimal  @db.Decimal(78, 0)
+  amountOut Decimal  @db.Decimal(78, 0)
+  block     BigInt
+  at        DateTime
+
+  @@id([chainId, txHash, logIndex])
+  @@index([chainId, account])
+}
+
+model SpotLiquidity {
+  chainId     Int
+  txHash      String
+  logIndex    Int
+  pools       String
+  kind        String                               // add | remove
+  account     String
+  stock       String
+  stockAmount Decimal  @db.Decimal(78, 0)
+  usdgAmount  Decimal  @db.Decimal(78, 0)
+  shares      Decimal  @db.Decimal(78, 0)
+  block       BigInt
+  at          DateTime
+
+  @@id([chainId, txHash, logIndex])
+  @@index([chainId, account])
+}
+
+// Public vault deposits ("shield") and withdrawals ("unshield") per account.
+model VaultTransfer {
+  chainId  Int
+  txHash   String
+  logIndex Int
+  vault    String
+  kind     String                                  // deposit | withdraw
+  from     String
+  to       String
+  token    String
+  amount   Decimal  @db.Decimal(78, 0)
+  block    BigInt
+  at       DateTime
+
+  @@id([chainId, txHash, logIndex])
+  @@index([chainId, from])
+  @@index([chainId, to])
+}
+
+// Funding index per market after every FundingAdvanced. rate: per hour, 1e18 = 100%; index: cumulative
+// funding per token in USDG x 1e18 (both signed).
+model FundingPoint {
+  chainId   Int
+  txHash    String
+  logIndex  Int
+  perps     String
+  market    String
+  symbol    String?
+  rate      Decimal  @db.Decimal(78, 0)
+  index     Decimal  @db.Decimal(78, 0)
+  timestamp DateTime                               // the event's block time
+  block     BigInt
+
+  @@id([chainId, txHash, logIndex])
+  @@index([chainId, perps, market, timestamp])
+}
+
+// One row per (event, account involved): the paginated activity feed of /v1/accounts/:address/activity.
+// `data` holds the event's fields formatted as exact decimal strings (USDG and tokens in whole units).
+model AccountActivity {
+  chainId    Int
+  txHash     String
+  logIndex   Int
+  account    String
+  contract   String
+  kind       String
+  market     String?
+  symbol     String?
+  positionId BigInt?
+  data       Json
+  block      BigInt
+  at         DateTime
+
+  @@id([chainId, txHash, logIndex, account])
+  @@index([chainId, account, block, logIndex])
 }
 
 enum RelayStatus {

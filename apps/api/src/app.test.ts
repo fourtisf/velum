@@ -79,7 +79,7 @@ describe('health', () => {
   it('reports chain, block and lag', async () => {
     const res = await (await make()).inject('/v1/health');
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, chainId: 46630, block: 153118480, lag: 3, workers: 3, db: true, redis: true, demoMode: true, rpcChainId: null });
+    expect(res.json()).toEqual({ ok: true, chainId: 46630, block: 153118480, lag: 3, workers: 3, db: true, redis: true, demoMode: true, rpcChainId: null, onchain: null });
   });
   it('stays healthy when the RPC is down, fails when Redis is down', async () => {
     const a = await make({ chain: { blockNumber: async () => null } });

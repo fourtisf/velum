@@ -1,4 +1,5 @@
 import { CHAIN, NETWORK, parseRedisUrl, type NetworkName, type RedisConnection } from '@velum/config';
+import { defaultDeploymentsDir } from '@velum/config/src/deployment-file';
 import { redactUrls } from './lib/redact';
 
 /** Log levels LOG_LEVEL accepts (pino's, audit I-5). */
@@ -44,6 +45,11 @@ export interface ApiEnv {
    * user can take the API's address while it is down and receive what Nginx sends (the proxy secret).
    */
   socketPath: string | null;
+  /**
+   * Phase 3: directory of the deployment files (DEPLOYMENTS_DIR, default contracts/deployments of the
+   * release). /v1/deployment, /v1/accounts/* and /v1/markets/:symbol/funding read <dir>/<CHAIN_ID>.json.
+   */
+  deploymentsDir?: string;
 }
 
 /** Absolute path, plain characters, short enough for sun_path (108 bytes, minus margin). */
@@ -123,6 +129,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     logLevel,
     proxySecret: proxySecret || null,
     socketPath: socketPath || null,
+    deploymentsDir: (e.DEPLOYMENTS_DIR ?? '').trim() || defaultDeploymentsDir(),
   };
 
   if (problems.length) throw new Error(`Invalid API environment:\n  - ${problems.join('\n  - ')}`);

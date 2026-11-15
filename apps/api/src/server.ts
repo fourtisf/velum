@@ -6,6 +6,7 @@ import { buildApp } from './app';
 import { loadEnv } from './env';
 import { prismaDb, redisCache, viemChain } from './lib/adapters';
 import { listenOnSocket } from './lib/listen';
+import { deploymentSource, prismaOnchain } from './lib/onchain';
 import { redact } from './lib/redact';
 
 /** Error serializer for the request log: messages and stacks pass through redact() (audit L-6). */
@@ -46,6 +47,8 @@ async function main(): Promise<void> {
       cache: redisCache(redis, { mac }),
       db: prismaDb(prisma),
       chain,
+      deployment: deploymentSource(env.deploymentsDir ?? '', env.chainId),
+      onchain: prismaOnchain(prisma),
       rateLimitRedis: redis,
       onClose: async () => {
         await Promise.allSettled([prisma.$disconnect(), redis.quit()]);

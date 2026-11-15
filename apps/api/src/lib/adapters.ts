@@ -14,6 +14,7 @@ import {
   type Timeframe,
 } from '@velum/config';
 import type { CacheMac } from '@velum/config/src/cache-mac';
+import { MAX_ONCHAIN_STATUS_BYTES, ONCHAIN_STATUS_KEY, parseOnchainStatus } from '@velum/config/src/onchain';
 import { Prisma, type PrismaClient } from '@velum/db';
 import type { Redis } from 'ioredis';
 import { createPublicClient, http } from 'viem';
@@ -71,6 +72,10 @@ export function redisCache(redis: Redis, opts: { mac: CacheMac; now?: () => numb
     async heartbeat(worker) {
       const key = cacheKeys.heartbeat(worker);
       return parseHeartbeat(mac.open(key, await read(() => redis.get(key)), MAX_HEARTBEAT_BYTES), now());
+    },
+    async onchainStatus() {
+      const raw = await read(() => redis.get(ONCHAIN_STATUS_KEY));
+      return parseOnchainStatus(mac.open(ONCHAIN_STATUS_KEY, raw, MAX_ONCHAIN_STATUS_BYTES), now());
     },
   };
 }

@@ -10,10 +10,14 @@ The API holds no user keys and keeps no per-user state.
 
 **Status per endpoint.** Phase 2 implements `GET /v1/health`, `GET /v1/markets`,
 `GET /v1/markets/:symbol`, `GET /v1/markets/:symbol/candles`, `GET /v1/pools`, `GET /v1/stats` and
-`POST /v1/quote`. Everything marked *planned* below is the contract for later phases and answers 404
-today.
+`POST /v1/quote`. Phase 3 adds `GET /v1/deployment`, `GET /v1/accounts/:address/positions`,
+`GET /v1/accounts/:address/activity` and `GET /v1/markets/:symbol/funding`: they read
+`contracts/deployments/<CHAIN_ID>.json` (`DEPLOYMENTS_DIR`) and the indexer's tables, and answer 404
+`NOT_FOUND` ("No Velum contracts are deployed on this network yet.") until that file exists. Everything
+marked *planned* below is the contract for later phases and answers 404 today.
 
-**Rate limits** (per client, per minute): 120 on read routes (`RATE_LIMIT_READ_PER_MIN`), 600 on
+**Rate limits** (per client, per minute): 120 on read routes (`RATE_LIMIT_READ_PER_MIN`, the Phase 3 reads
+included), 600 on
 `/v1/markets` and `/v1/markets/:symbol` (`RATE_LIMIT_MARKETS_PER_MIN`, its own budget: the web polls
 every 2 s, so one tab uses 30 and several users behind one NAT address would starve each other at 120),
 30 on `/v1/quote`, 60 on `/v1/health`, 10 on `/v1/relay/*` (planned). The client is Nginx's `X-Real-IP`,
@@ -36,7 +40,7 @@ from Postgres.
 ## Read
 
 ### `GET /v1/health`
-`{ "ok": true, "chainId": 46630, "block": 153118480, "lag": 1, "workers": 2, "db": true, "redis": true, "demoMode": true, "rpcChainId": 46630 }`
+`{ "ok": true, "chainId": 46630, "block": 153118480, "lag": 1, "workers": 2, "db": true, "redis": true, "demoMode": true, "rpcChainId": 46630, "onchain": null }`
 
 `lag`: seconds since the price relay last wrote prices (null before the first tick). `workers`:
 seconds since the workers process last reported alive, whether or not the price source has quotes
@@ -47,18 +51,105 @@ or Redis is down, or when `rpcChainId` differs from `chainId` (a misconfigured `
 RPC alone does not fail the check. `demoMode` is always `true` in Phase 2: every trade is simulated,
 whatever `DEMO_MODE` says. Rate limited per client (`RATE_LIMIT_HEALTH_PER_MIN`, default 60).
 
-### `GET /v1/deployment` *(planned, Phase 3)*
-Contract addresses and public keys the client needs.
+`onchain` *(Phase 3)*: `null` while the on-chain workers are off (`ONCHAIN_WORKERS` not `true`, or no
+deployment file for the chain; the status they write expires after two minutes), otherwise a summary of the
+status the workers write every 5 s (authenticated like every value the API trusts):
+```json
+{ "ok": true, "age": 3, "chainId": 46630,
+  "indexer": { "block": 153118477, "head": 153118480, "lag": 3, "reorgs": 0, "lastRun": 1, "error": null },
+  "relayer": { "enabled": true, "address": "0x…", "sending": true, "lastPush": 4, "balanceLow": false,
+               "stuck": false, "gasCapped": false, "sequencerUp": true,
+               "markets": { "TSLA": "pushed", "AMZN": "closed" }, "error": null },
+  "keeper": { "enabled": true, "address": "0x…", "sending": true, "lastRun": 2, "balanceLow": false,
+              "stuck": false, "gasCapped": false, "liquidations": 2, "forcedExits": 0, "error": null } }
+```
+Ages are seconds. `sending` is false on Robinhood Chain mainnet without `ONCHAIN_MAINNET_CONFIRMED=yes` (the
+workers only read there) or when `RPC_URL` serves another chain. `balanceLow`: the hot wallet holds less
+than `RELAYER_MIN_BALANCE_ETH` / `KEEPER_MIN_BALANCE_ETH`. `markets` gives each market's last relay state:
+`pushed`, `lagging` (the adapter's rate limit clamped the push), `converging`, `deferred`, `waiting`, or why it
+is not pushed (`demo`, `stale`, `unconfirmed`, `frozen`, `closed`, `bounds`, `token-mismatch`,
+`not-relay-sourced`, `sequencer-down`, `no-snapshot`, `bad-price`). `ok` is false when the status is older than
+60 s, the indexer reports an error, or an enabled hot wallet is low, stuck or failing; it never makes the
+check answer 503 (a low relay balance must not fail a release). No key, and nothing derived from one, is
+ever included.
+
+### `GET /v1/deployment` *(Phase 3)*
+The contracts of the configured chain, from `contracts/deployments/<CHAIN_ID>.json` (written by
+`contracts/script/Deploy.s.sol`, committed after a deployment), addresses checksummed.
 ```json
 {
   "chainId": 46630,
-  "contracts": { "pool": "0x…", "spot": "0x…", "markets": "0x…", "oracle": "0x…" },
-  "tokens": { "USDG": "0x…", "TSLA": "0x…" },
-  "coordinatorKey": { "x": "…", "y": "…" },
-  "riskKeys": [{ "x": "…", "y": "…" }, { "x": "…", "y": "…" }],
-  "startBlock": 0
+  "startBlock": 153118000,
+  "contracts": { "vault": "0x…", "oracle": "0x…", "spotPools": "0x…", "makerBook": "0x…", "perpsMarkets": "0x…" },
+  "tokens": { "USDG": "0x…", "TSLA": "0x…", "AMZN": "0x…" },
+  "priceRelayer": "0x…",
+  "guard": { "guardian": null, "closeOnly": { "TSLA": false, "AMZN": false } },
+  "indexer": { "block": 153118477, "lag": 3, "age": 2 }
 }
 ```
+- `contracts` lists every address entry of the file (a later contract, such as a guarded-launch allowlist, appears
+  under its own name).
+- `guard`: what the contracts expose today: the optional close-only guardian (null: none) and each market's
+  close-only flag (from the indexed `CloseOnlySet` events; null while the index cannot be read). Deposit caps or an
+  allowlist will be added here once the vault exposes them.
+- `indexer`: the block the index has reached, its lag behind the head (blocks) and the age of that status
+  (seconds); null while the on-chain workers are off.
+- `coordinatorKey` and `riskKeys` come with Phase 4 (planned).
+- 404 before a deployment file exists for the chain.
+
+### `GET /v1/accounts/:address/positions?status=open|closed|all&limit=100` *(Phase 3)*
+The account's perps positions, as taker or maker, in the current deployment: open ones first, then the newest.
+`address` is accepted in any letter case (no checksum required) and must be `0x` + 40 hex digits (400
+`BAD_REQUEST` otherwise); every address in the answer is checksummed. `status` defaults to `all`
+(`closed` = closed, liquidated or forced out); `limit` 1-500.
+```json
+[{
+  "id": "12", "market": "TSLA", "token": "0x…", "role": "taker", "side": "long",
+  "taker": "0x…", "maker": "0x…", "status": "liquidated",
+  "qty": "2.550724637681159420", "entry": "392.04165", "size": "1000",
+  "takerMargin": "200", "makerMargin": "200", "offerId": "1",
+  "openedAt": 1794646800000, "openBlock": 153118000, "openTx": "0x…",
+  "closedAt": 1794647400000, "closeBlock": 153118300, "closeTx": "0x…",
+  "closePrice": "344.65", "exitPrice": "344.65", "takerPnl": "-120.87", "takerFunding": "0.01",
+  "fee": "8.79", "takerOut": "70.33", "makerOut": "320.88",
+  "liquidation": { "liquidator": "0x…", "side": "taker", "price": "344.65", "penalty": "8.79", "reward": "4.39", "shortfall": "0" },
+  "forcedExit": null
+}]
+```
+- `side` is the taker's side; `role` the queried account's. `qty` tokens, prices USDG per token, margins and
+  payouts USDG, all exact decimal strings (no rounding; the chain's base units formatted).
+- `size`: the USDG notional at open (the maker offer's fill). `takerMargin`/`makerMargin` are the posted margins
+  (as of the last change; a settled position keeps the margins it had when it closed).
+- `exitPrice`: the spread-adjusted exit of a close or a taker-requested forced exit, the oracle price of a
+  liquidation; `fee`: the close fee, or the liquidation penalty. `forcedExit`: `{ "requester", "requestedAt",
+  "settleAfter", "atEntry" }` once requested.
+- From the indexer, which stays `CONFIRMATIONS` blocks behind the head: a position appears a few blocks after its
+  transaction.
+
+### `GET /v1/accounts/:address/activity?limit=50&before=<cursor>` *(Phase 3)*
+Everything the account did or received in the current deployment, newest first.
+```json
+{ "items": [{ "kind": "position_settled", "tx": "0x…", "block": 153118300, "logIndex": 4,
+              "at": 1794647400000, "contract": "0x…", "market": "TSLA", "token": "0x…", "positionId": "12",
+              "data": { "kind": "liquidation", "role": "taker", "exitPrice": "344.65", "fee": "8.79", "payout": "70.33", "pnl": "-120.87", "funding": "0.01" } }],
+  "next": "153118295-2" }
+```
+- Pass `next` as `before` for the next (older) page; it is null on the last page. `limit` 1-200. Pages never repeat
+  or skip an item.
+- `kind`: `deposit`, `withdraw`, `approval`, `position_open`, `position_close`, `position_add_margin`,
+  `position_remove_margin`, `position_liquidate`, `position_forced_exit`, `position_settled`,
+  `liquidation_reward`, `forced_exit_requested`, `offer_posted`, `offer_filled`, `offer_withdrawn`, `swap`,
+  `liquidity_add`, `liquidity_remove`, `insurance_funded`, `cover_claim`, `cover_paid`, `bond_refund`,
+  `bond_claimed`. `data` holds the event's fields as exact decimal strings in whole units (USDG, tokens, ETH for
+  bonds) and checksummed addresses.
+
+### `GET /v1/markets/:symbol/funding?limit=48` *(Phase 3)*
+`[{ "t": 1794646800000, "rate": "0.0042", "index": "0.000081", "block": 153118000, "tx": "0x…" }]`
+
+The funding index of the market after each `FundingAdvanced` event, oldest first (the newest `limit`, 1-500).
+`rate`: percent per hour (0.0042 = 0.0042%/h, at most ±0.01), positive when longs pay shorts; `index`: the
+cumulative funding per token in USDG (signed). `t` is the event's block time. 404 for an unknown market or one
+the deployment does not list.
 
 ### `GET /v1/markets` and `GET /v1/markets/:symbol`
 ```json
@@ -120,9 +211,6 @@ a bucket dated ahead of now. On mainnet only real history: the cache only when i
 price source (it records its source and network), Postgres only candles tagged `robinhood` or
 `chainlink`. Candles of unknown source (older than the source column and not proven by stored ticks,
 docs/02) are kept but not served on mainnet; testnet serves every candle.
-
-### `GET /v1/markets/:symbol/funding?limit=48` *(planned, Phase 3)*
-`[{ "t": 1794646800000, "rate": "0.0042", "index": "…" }]`
 
 ### `GET /v1/pools`
 ```json

@@ -57,31 +57,47 @@ const fileEnv = fs.existsSync(envFile) ? parseEnv(fs.readFileSync(envFile, 'utf8
 /**
  * Variables each app reads. Nothing else reaches it (hot keys reach only their worker). The web list
  * must match WEB_ENV_KEYS / WEB_ENV_PREFIX in deploy/lib/common.sh (what root writes to web.env).
+ * `gated` keys reach the app only while `when` holds.
  */
+// Phase 3 on-chain workers (apps/workers/src/onchain): the hot keys reach velum-workers only with the literal
+// ONCHAIN_WORKERS=true in .env (the workers apply the same rule), and never reach the API or the web.
+const onchainOn = (fileEnv.ONCHAIN_WORKERS || '').trim().toLowerCase() === 'true';
 const ALLOW = {
   'velum-web': { keys: ['NODE_ENV', 'PORT_WEB', 'PUBLIC_SITE_URL'], prefixes: ['NEXT_PUBLIC_'] },
   'velum-api': {
     // API_SOCKET: on the server the API listens on a unix socket only Nginx can reach (audit R3-03).
-    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET'],
+    // DEPLOYMENTS_DIR: the Phase 3 reads (/v1/deployment, /v1/accounts/*, funding) use the deployment file.
+    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET', 'DEPLOYMENTS_DIR'],
     prefixes: ['RATE_LIMIT_'],
   },
   'velum-workers': {
-    // No hot key in Phase 2 (audit I-6): the workers sign nothing. PRICE_RELAY_PRIVATE_KEY comes back with
-    // the Phase 3 on-chain price relay.
     keys: [
       'NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE',
       'PRICE_POLL_MS', 'PRICE_SOURCE', 'PRICE_TICK_RETENTION_DAYS', 'LOG_LEVEL',
+      // Phase 3 on-chain workers (no secrets): off unless ONCHAIN_WORKERS=true and the deployment file exists.
+      'ONCHAIN_WORKERS', 'ONCHAIN_MAINNET_CONFIRMED', 'DEPLOYMENTS_DIR', 'PRICE_PUSH_INTERVAL_MS',
+      'RELAYER_MAX_GWEI', 'KEEPER_MAX_GWEI', 'RELAYER_MIN_BALANCE_ETH', 'KEEPER_MIN_BALANCE_ETH', 'KEEPER_ETH_PRICE_USD',
+      'INDEXER_START_BLOCK', 'CONFIRMATIONS', 'INDEXER_CHUNK_BLOCKS', 'INDEXER_POLL_MS', 'KEEPER_INTERVAL_MS', 'FUNDING_EPOCH_SECONDS',
     ],
     prefixes: [],
+    // The price-relay and keeper hot keys (deploy/new-key.sh), two separate keys.
+    gated: { when: onchainOn, keys: ['PRICE_RELAY_PRIVATE_KEY', 'KEEPER_PRIVATE_KEY'] },
   },
 };
+// A hot key must never be on the API's or the web's list, nor match a prefix there.
+for (const name of ['velum-web', 'velum-api']) {
+  const { keys, prefixes } = ALLOW[name];
+  if (keys.some((k) => /PRIVATE_KEY|SECRET_KEY|MNEMONIC/.test(k)) || prefixes.some((p) => 'PRICE_RELAY_PRIVATE_KEY'.startsWith(p) || 'KEEPER_PRIVATE_KEY'.startsWith(p))) {
+    throw new Error(`${name} must not receive a hot key`);
+  }
+}
 
 function envFor(name, defaults) {
-  const { keys, prefixes } = ALLOW[name];
+  const { keys, prefixes, gated } = ALLOW[name];
   const env = { ...defaults };
   for (const [k, v] of Object.entries(fileEnv)) {
     if (v === '') continue;
-    if (keys.includes(k) || prefixes.some((p) => k.startsWith(p))) env[k] = v;
+    if (keys.includes(k) || prefixes.some((p) => k.startsWith(p)) || (gated && gated.when && gated.keys.includes(k))) env[k] = v;
   }
   return env;
 }

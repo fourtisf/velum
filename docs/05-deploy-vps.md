@@ -300,11 +300,12 @@ lock) runs one just for Velum and leaves the system Redis, its config and its da
 
 | What | Where | Owner, mode |
 |---|---|---|
-| systemd unit `velum-redis` (User=redis, sandboxed, `RestrictAddressFamilies=AF_UNIX`) | `/etc/systemd/system/velum-redis.service` | root 644 |
-| config: `port 0` (no TCP), unix socket, own random password, `maxmemory` (`REDIS_MAXMEMORY`, default 256mb) with `maxmemory-policy noeviction` (BullMQ needs it), AOF + RDB, `CONFIG`/`DEBUG`/`MODULE` disabled | `/etc/velum-redis/redis.conf` | root:redis 640 |
-| data | `/var/lib/velum-redis` | redis 750 |
-| socket directory, recreated at boot | `/run/velum-redis` (`/etc/tmpfiles.d/velum-redis.conf`) | redis:velum 2770 |
-| socket | `/run/velum-redis/redis.sock` | redis:velum 660: only `velum` (api + workers) connects; `velum-web`, Nginx and other users cannot |
+| system user `velum-redis` (created by the script; not the shared Redis's `redis` user, final audit M-1) | | own group only, no login |
+| systemd unit `velum-redis` (User=velum-redis, sandboxed, `RestrictAddressFamilies=AF_UNIX`) | `/etc/systemd/system/velum-redis.service` | root 644 |
+| config: `port 0` (no TCP), unix socket, own random password, `maxmemory` (`REDIS_MAXMEMORY`, default 256mb) with `maxmemory-policy noeviction` (BullMQ needs it), AOF + RDB, `CONFIG`/`DEBUG`/`MODULE` disabled | `/etc/velum-redis/redis.conf` | root:velum-redis 640 |
+| data | `/var/lib/velum-redis` | velum-redis 750 |
+| socket directory, recreated at boot | `/run/velum-redis` (`/etc/tmpfiles.d/velum-redis.conf`) | velum-redis:velum 2750 (no group write: `velum` cannot replace the socket) |
+| socket | `/run/velum-redis/redis.sock` | velum-redis:velum 660: only `velum` (api + workers) connects; `velum-web`, Nginx, the shared Redis and other users cannot |
 | the shared `REDIS_URL` from before the switch | `/etc/velum-redis/shared-redis-url` | root 600 |
 
 It needs a release of this version running first (so `deploy.sh` can safely switch back if the next
@@ -330,7 +331,7 @@ Verify:
 systemctl status velum-redis
 ss -lx | grep velum-redis                     # the socket; ss -ltn shows no port for it
 curl -s --unix-socket /run/velum-api/api.sock http://velum-api/v1/health | cat -v   # "redis":true, "workers":<a few s>
-REDISCLI_AUTH="$(sed -n 's/^requirepass //p' /etc/velum-redis/redis.conf)" redis-cli -s /run/velum-redis/redis.sock info keyspace
+REDISCLI_AUTH="$(sed -n 's/^requirepass //p' /etc/velum-redis/redis.conf)" redis-cli -s /run/velum-redis/redis.sock info keyspace | cat -v
 bash /srv/velum/deploy/as-user.sh velum-web redis-cli -s /run/velum-redis/redis.sock ping   # Permission denied
 ```
 Optional, once the release is healthy: remove Velum's old keys from the shared Redis (with its
@@ -526,7 +527,10 @@ nano /srv/velum/.env
 # C3. Install with new users. Releases the old users built are never run again (deploy.sh only uses
 #     releases the current app user built; the first one is built from scratch). The users are
 #     recorded in /srv/velum/.velum-users: later runs of every script use them without APP_USER.
+#     With Velum's own Redis (REDIS_URL=unix://…), setup stops at its Redis check: run the
+#     redis-velum.sh line (new password; the socket follows velum2), then the setup line again.
 APP_USER=velum2 WEB_USER=velum2-web DOMAIN=velumtrade.com EMAIL=you@example.com bash /srv/velum/deploy/server-setup.sh
+bash /srv/velum/deploy/redis-velum.sh --rotate                 # only with Velum's own Redis, then setup again
 bash /srv/velum/deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY      # then fund the new address
 bash /srv/velum/deploy/deploy.sh                               # the workers get the new key
 ```
@@ -634,12 +638,13 @@ render_tmpfiles /run/velum-api/api.sock velum www-data > /etc/tmpfiles.d/velum.c
 systemd-tmpfiles --create /etc/tmpfiles.d/velum.conf    # /run/velum-api, velum:www-data 2750
 render_logrotate velum velum-web > /etc/logrotate.d/velum
 install -d /etc/nginx/snippets
+install -d -m 755 /var/cache/nginx                      # parent of the /api/v1/markets micro-cache (nginx -t needs it)
 render_security_headers .env > /etc/nginx/snippets/velum-security-headers.conf
 render_api_upstream socket /run/velum-api/api.sock > /etc/nginx/snippets/velum-api-upstream.conf
 (umask 077 && render_proxy_secret .env > /etc/nginx/snippets/velum-proxy-secret.conf)
 sed -e "s/velum.example/$DOMAIN/g" deploy/nginx/velum.conf > /etc/nginx/sites-available/velum.conf
 ln -sf /etc/nginx/sites-available/velum.conf /etc/nginx/sites-enabled/velum.conf
-nginx -t && systemctl reload nginx
+nginx -t && nginx_reload                                 # reload, then check Nginx really applied it (H-1)
 certbot --nginx --cert-name $DOMAIN -d $DOMAIN -d www.$DOMAIN -m $EMAIL --agree-tos --redirect -n
 ```
 (`www-data` is Nginx's user on Ubuntu: the `user` line of `/etc/nginx/nginx.conf`.) `velum.conf`

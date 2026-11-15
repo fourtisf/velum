@@ -178,6 +178,26 @@ install_file() {
   mv -f "${tmp}" "${dst}"
 }
 
+# nginx_reload — `systemctl reload nginx`, then checks that Nginx really applied the new configuration
+# (final audit H-1). The running master can refuse a configuration that `nginx -t` accepts (a
+# limit_req/proxy_cache zone whose key or size changed, a listen address it cannot bind): it logs
+# [emerg], keeps the previous configuration for every site, and systemctl still reports success. An
+# applied reload starts new worker processes, so the check is: did a child of the master appear that was
+# not there before? Returns 1 (with a warning) when not.
+nginx_reload() {
+  local master before p
+  master="$(systemctl show -p MainPID --value nginx 2>/dev/null || true)"
+  if ! [[ "${master}" =~ ^[1-9][0-9]*$ ]]; then systemctl reload nginx; return; fi
+  before=" $(pgrep -P "${master}" | tr '\n' ' ')"
+  systemctl reload nginx || return 1
+  for _ in $(seq 1 40); do
+    for p in $(pgrep -P "${master}"); do case "${before}" in *" ${p} "*) ;; *) return 0 ;; esac; done
+    sleep 0.25
+  done
+  warn "Nginx did not apply its new configuration: it still runs the previous one, for every site. Its error log says why ([emerg])."
+  return 1
+}
+
 # valid_port VALUE — true for an integer 1..65535.
 valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 

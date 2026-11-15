@@ -297,7 +297,15 @@ rcli() {
   else env -u REDISCLI_AUTH redis-cli "${where[@]}" -n "${R_DB}" "$@"; fi
 }
 REDIS_PONG="$(rcli ping 2>/dev/null || true)"
-[ "${REDIS_PONG}" = "PONG" ] || die "Cannot reach Redis with REDIS_URL from .env (${REDIS_PONG:-no answer}). Fix REDIS_URL, then re-run."
+# (The reply is shown without control characters: whoever answers on that address wrote it, final audit L-1.)
+[ "${REDIS_PONG}" = "PONG" ] || die "Cannot reach Redis with REDIS_URL from .env ($(printf '%s' "${REDIS_PONG:-no answer}" | tty_sanitize)). Fix REDIS_URL, then re-run."
+if [ "${R_SOCK}" != "-" ]; then
+  # Velum's own Redis (deploy/redis-velum.sh): root reaches any socket, but only the app user's group may
+  # enter its directory. After a move to new users (docs/05, "Compromise suspected") it still admits the
+  # old group, so the first release would fail (final audit M-2).
+  R_GROUP="$(stat -c %G "$(dirname "${R_SOCK}")" 2>/dev/null || true)"
+  [ "${R_GROUP}" = "${APP_GROUP}" ] || die "REDIS_URL names Velum's own Redis, but its socket directory $(dirname "${R_SOCK}") admits group ${R_GROUP:-?}, not ${APP_GROUP}. Run: bash ${ROOT}/deploy/redis-velum.sh --rotate (new password; the socket follows ${APP_USER}), then re-run this script."
+fi
 if [ -z "${R_PASS}" ]; then
   # A shared Redis without a password lets every local program read and change Velum's data (audit L5).
   if [ "${ALLOW_REDIS_WITHOUT_PASSWORD:-}" = "yes" ]; then
@@ -308,7 +316,8 @@ if [ -z "${R_PASS}" ]; then
   To accept the risk anyway: ALLOW_REDIS_WITHOUT_PASSWORD=yes."
   fi
 fi
-POLICY="$(rcli config get maxmemory-policy 2>/dev/null | sed -n 2p || true)"
+# From INFO, which works where CONFIG is disabled (Velum's own Redis disables it).
+POLICY="$(rcli info memory 2>/dev/null | tr -d '\r' | sed -n 's/^maxmemory_policy://p' || true)"
 case "${POLICY}" in
   noeviction) echo "  maxmemory-policy noeviction" ;;
   "") warn "Could not read Redis maxmemory-policy (CONFIG may be disabled). BullMQ needs noeviction; check it with the Redis owner." ;;
@@ -382,7 +391,7 @@ restore_nginx() {
     if [ -f "${b}" ]; then cp -p -- "${b}" "${f}"; else rm -f -- "${f}"; fi
   done
   [ "${HAD_LINK}" = 1 ] || rm -f -- "${SITE_LINK}"
-  if nginx -t -q 2>/dev/null; then systemctl reload nginx || true; echo "  restored the previous Nginx files" >&2; else warn "Restored the previous Nginx files, but nginx -t still fails; check: nginx -t"; fi
+  if nginx -t -q 2>/dev/null; then nginx_reload || true; echo "  restored the previous Nginx files" >&2; else warn "Restored the previous Nginx files, but nginx -t still fails; check: nginx -t"; fi
 }
 nginx_test_or_restore() { nginx -t || { restore_nginx; die "nginx -t failed with the new Velum files; the previous ones were restored."; }; }
 link_site() { [ -L "${SITE_LINK}" ] || ln -s "${SITE}" "${SITE_LINK}"; }
@@ -472,7 +481,7 @@ case "${SITE_STATE}" in
         link_site
         nginx_test_or_restore
         if [ "${need_cert}" = 1 ]; then certbot_install "${CERT_NAME}" || { restore_nginx; die "certbot install failed; the previous Nginx files were restored (HTTPS as before)."; }; fi
-        systemctl reload nginx
+        nginx_reload || { restore_nginx; die "Nginx did not apply the refreshed site (see its error log); the previous Nginx files were restored."; }
         echo "  refreshed the upstream ports in ${SITE}; Certbot's HTTPS settings kept"
       fi
     else
@@ -483,7 +492,7 @@ case "${SITE_STATE}" in
       nginx_test_or_restore
       certbot_install "${CERT_NAME}" || { restore_nginx; die "certbot install failed; the previous Nginx files were restored (HTTPS as before). Template kept at ${NGINX_BACKUPS}/velum.conf.template.${STAMP}."; }
       if ! grep -q 'managed by Certbot' "${SITE}" || ! nginx -t -q 2>/dev/null; then restore_nginx; die "certbot did not install the certificate into ${SITE}; the previous Nginx files were restored."; fi
-      systemctl reload nginx
+      nginx_reload || { restore_nginx; die "Nginx did not apply the new Velum site (see its error log: [emerg]); the previous Nginx files were restored and HTTPS is as before."; }
     fi
     ;;
   none | plain)
@@ -491,7 +500,7 @@ case "${SITE_STATE}" in
     link_site
     nginx_test_or_restore
     systemctl is-active --quiet nginx || systemctl enable --now nginx
-    systemctl reload nginx
+    nginx_reload || { restore_nginx; die "Nginx did not apply the new Velum site (see its error log: [emerg]); the previous Nginx files were restored."; }
     if [ -n "${CERT_NAME}" ] && [ "${need_cert}" = 0 ]; then
       if ! certbot_install "${CERT_NAME}"; then
         if [ "${SITE_STATE}" = plain ]; then restore_nginx; die "certbot install failed; the previous Nginx files were restored."; fi

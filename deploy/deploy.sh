@@ -140,6 +140,14 @@ env_matches() {
     }' "${rec}" <(build_env_record "${ENV_FILE}") | LC_ALL=C sort >&2
   return 1
 }
+# redis_url_ok_for ID — release ID understands the REDIS_URL in .env: a unix:// URL (deploy/redis-velum.sh)
+# needs a release that ships redis-velum.sh, the version that added socket support (final audit L-2).
+redis_url_ok_for() {
+  case "$(env_get "${ENV_FILE}" REDIS_URL)" in
+    unix://* | redis+unix://*) as_app test -f "${RELEASES}/$1/deploy/redis-velum.sh" ;;
+    *) return 0 ;;
+  esac
+}
 # drop_release ID-DIR — removes a release and its record.
 drop_release() { remove_release "$1"; rm -f -- "$1.build-env"; }
 port_of() { local p; p="$(env_get "${ENV_FILE}" "$1")"; if valid_port "${p}"; then printf '%s' "${p}"; else printf '%s' "$2"; fi; }
@@ -268,7 +276,11 @@ update_nginx() {
   [ "${changed}" = 1 ] || return 0
   if [ "${VELUM_NGINX_RELOAD:-1}" = "1" ] && command -v nginx >/dev/null; then
     if nginx -t -q 2>/dev/null; then
-      systemctl reload nginx
+      if ! nginx_reload; then
+        restore_nginx
+        warn "Nginx did not apply the new snippets (see its error log); kept the previous ones. Not switching the apps."
+        return 1
+      fi
       say "Nginx snippets updated (CSP from .env; /api/ on the API socket)"
     else
       restore_nginx
@@ -282,7 +294,7 @@ restore_nginx() {
   for f in "${NGINX_SNIPPET}" "${NGINX_PROXY_SNIPPET}" "${NGINX_API_SNIPPET}"; do
     if [ -f "${f}.prev" ]; then mv -f "${f}.prev" "${f}"; any=1; fi
   done
-  if [ "${any}" = 1 ] && [ "${VELUM_NGINX_RELOAD:-1}" = "1" ] && command -v nginx >/dev/null && nginx -t -q 2>/dev/null; then systemctl reload nginx; fi
+  if [ "${any}" = 1 ] && [ "${VELUM_NGINX_RELOAD:-1}" = "1" ] && command -v nginx >/dev/null && nginx -t -q 2>/dev/null; then nginx_reload || true; fi
 }
 forget_nginx_backups() { rm -f "${NGINX_SNIPPET}.prev" "${NGINX_PROXY_SNIPPET}.prev" "${NGINX_API_SNIPPET}.prev" 2>/dev/null || true; }
 
@@ -403,6 +415,7 @@ if [ "${ACTION}" = "rollback" ]; then
   # A release runs only with the settings it was built with (R3-04): after set-network.sh (or an edit
   # of NEXT_PUBLIC_*) the previous release would serve a web bundle for one network while web.env, the
   # API and the CSP follow the other.
+  redis_url_ok_for "${prev}" || die "Not rolling back to ${prev}: it predates the unix-socket REDIS_URL in ${ENV_FILE} (Velum's own Redis) and could not connect to Redis. Run deploy/redis-velum.sh --rollback first, or deploy a new release."
   env_matches "${prev}" || die "Not rolling back to ${prev}: running it with this .env would mix two configurations (web bundle, API and CSP). Put the values it was built with back into ${ENV_FILE} (the .env.bak.* files next to it keep earlier versions; set-network.sh switches the network with a new release) and run --rollback again, or deploy a new release."
   say "Rolling back ${cur} → ${prev}"
   if [ "${SEPARATE}" = 1 ]; then apply_tmpfiles "${API_SOCKET_PATH}"; fi
@@ -488,9 +501,9 @@ say "Switching current → ${ID}"
 STAGE=switched
 write_web_env
 activate "${ID}"
-update_nginx
 PM2_OK=1
-pm2_apply || PM2_OK=0
+# A snippet change Nginx does not apply (H-1) would leave /api/ pointing elsewhere: treat it as a failed release.
+if update_nginx; then pm2_apply || PM2_OK=0; else PM2_OK=0; fi
 SINCE="$(date +%s)"
 
 say "Health check"
@@ -506,7 +519,7 @@ else
       restore_env_backup "${VELUM_ENV_RESTORE}"
       warn "Put back ${ENV_FILE} from ${VELUM_ENV_RESTORE##*/} (the settings ${PREV_ID} was built with)."
     fi
-    if env_matches "${PREV_ID}"; then
+    if env_matches "${PREV_ID}" && redis_url_ok_for "${PREV_ID}"; then
       warn "Switching back to ${PREV_ID}."
       write_web_env
       activate "${PREV_ID}"

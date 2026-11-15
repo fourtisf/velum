@@ -12,8 +12,8 @@ import { activityRow } from '@/lib/onchain/activity';
 import { PERPS_ABI } from '@/lib/onchain/abi';
 import type { OnchainInfo } from '@/lib/onchain/deployment';
 import { claimBondFlow, closeFlow, exact, forcedExitFlow, marginFlow, settleExitFlow } from '@/lib/onchain/flows';
-import { closeFee, exitPrice, liquidationPrice, slipBps, takerPnl } from '@/lib/onchain/quote';
-import { priceUsable, useChainPositions, useOnchainActivity, useOraclePrice, type ChainPosition } from '@/lib/onchain/reads';
+import { closeFee, exitPrice, liquidationPrice, liquidationQuote, slipBps, takerPnl } from '@/lib/onchain/quote';
+import { SCAN_POSITIONS, priceUsable, useChainPositions, useOnchainActivity, useOraclePrice, type ChainPosition } from '@/lib/onchain/reads';
 import { unitsToWad, wadToUnits } from '@/lib/onchain/units';
 import { useApp } from '@/lib/store';
 import { toNumber } from '@velum/math';
@@ -62,11 +62,18 @@ function CloseButton({ oc, p }: { oc: OnchainInfo; p: ChainPosition }) {
     if (!o || !c.base || !c.proto) return;
     setBusy(true);
     try {
+      const perps = oc.d.contracts.perpsMarkets as `0x${string}`;
       const exit = exitPrice(o.price, p.long, p.closeBps);
       const fee = closeFee(p.qty, exit, c.proto.valueScale);
-      const claim = await publicClient.readContract({ address: oc.d.contracts.perpsMarkets as `0x${string}`, abi: PERPS_ABI, functionName: 'takerClaimAt', args: [p.id, exit] });
+      // A liquidatable position settles as a liquidation with the taker as liquidator: quote that route (W3-10).
+      const [liquidatable, claim, claimAtPrice] = await Promise.all([
+        publicClient.readContract({ address: perps, abi: PERPS_ABI, functionName: 'isLiquidatable', args: [p.id] }).catch(() => false),
+        publicClient.readContract({ address: perps, abi: PERPS_ABI, functionName: 'takerClaimAt', args: [p.id, exit] }),
+        publicClient.readContract({ address: perps, abi: PERPS_ABI, functionName: 'takerClaimAt', args: [p.id, o.price] }),
+      ]);
+      const liq = liquidatable ? liquidationQuote({ takerClaim: claimAtPrice, takerMargin: p.takerMargin, makerMargin: p.makerMargin, qty: p.qty, price: o.price, valueScale: c.proto.valueScale, rewardCap: c.proto.rewardCap }) : null;
       const est = claim - fee;
-      runTxFlow(closeFlow(c.base, { pos: p, exit, fee, estOut: est > 0n ? est : 0n, slip: slipBps(slip) }));
+      runTxFlow(closeFlow(c.base, { pos: p, price: o.price, exit, fee, estOut: est > 0n ? est : 0n, slip: slipBps(slip), liq }));
     } catch {
       toast('Could not quote the close. Try again.', true);
     } finally {
@@ -155,11 +162,12 @@ function MarkCell({ oc, sym }: { oc: OnchainInfo; sym: string }) {
 export function OcActList({ oc, n }: { oc: OnchainInfo; n: number }) {
   const addr = useApp((s) => s.account?.addr);
   const q = useOnchainActivity(oc, addr);
-  const rows = (q.data ?? []).map((a) => activityRow(a, addr ?? ''));
+  const syms = new Set(Object.keys(oc.d.tokens));
+  const rows = (q.data ?? []).map((a) => activityRow(a, addr ?? '', syms));
   if (!rows.length)
     return (
       <div className="empty">
-        <p>{q.isLoading ? 'Loading activity…' : q.isError ? 'Activity is unavailable right now.' : 'No activity yet.'}</p>
+        <p>{!oc.verified ? 'Activity shows once the Velum API confirms this build’s contracts.' : q.isLoading ? 'Loading activity…' : q.isError ? 'Activity is unavailable right now.' : 'No activity yet.'}</p>
       </div>
     );
   return (
@@ -185,10 +193,25 @@ export function OcActList({ oc, n }: { oc: OnchainInfo; n: number }) {
   );
 }
 
+/** Says that positions could not be read from the index (or at all), never "No open positions" in its place (W3-05). */
+export function PositionsNote({ indexError, failed, empty }: { indexError: boolean; failed: boolean; empty: boolean }) {
+  if (failed) return <p>Your positions could not be read right now. Try again in a moment; nothing has changed onchain.</p>;
+  if (!indexError) return null;
+  return empty ? (
+    <p>The Velum API’s position index is unavailable. No open position of yours was found onchain among the newest {SCAN_POSITIONS.toLocaleString('en-US')} positions and the ones this browser knows.</p>
+  ) : (
+    <p className="ph-sub" style={{ padding: '8px 2px 0' }}>
+      The Velum API’s position index is unavailable: these positions were read from the chain (the newest {SCAN_POSITIONS.toLocaleString('en-US')} and the ones this browser knows).
+    </p>
+  );
+}
+
 export function OcPositionsCard({ oc }: { oc: OnchainInfo }) {
   const s = useApp();
   const connected = !!s.account;
-  const positions = useChainPositions(oc, s.account?.addr).data ?? [];
+  const read = useChainPositions(oc, s.account?.addr);
+  const positions = read.data?.list ?? [];
+  const indexError = !!read.data?.indexError;
   let body: React.ReactNode;
   if (s.ptab === 'pos') {
     if (!connected)
@@ -200,13 +223,25 @@ export function OcPositionsCard({ oc }: { oc: OnchainInfo }) {
           </button>
         </div>
       );
+    else if (!read.data)
+      body = (
+        <div className="empty">
+          {read.isError ? <PositionsNote indexError={false} failed empty /> : <p>Loading your positions…</p>}
+        </div>
+      );
     else if (!positions.length)
       body = (
         <div className="empty">
-          <p>No open positions. Pick long or short in the ticket to open one.</p>
+          {indexError ? <PositionsNote indexError failed={false} empty /> : <p>No open positions. Pick long or short in the ticket to open one.</p>}
         </div>
       );
-    else body = <OcPosTable oc={oc} list={positions} />;
+    else
+      body = (
+        <>
+          <OcPosTable oc={oc} list={positions} />
+          <PositionsNote indexError={indexError} failed={false} empty={false} />
+        </>
+      );
   } else
     body = connected ? (
       <OcActList oc={oc} n={10} />
@@ -234,7 +269,7 @@ export function OcPositionsCard({ oc }: { oc: OnchainInfo }) {
 export function ManageModal({ oc, id }: { oc: OnchainInfo; id: string }) {
   const s = useApp();
   const c = useOc(oc);
-  const positions = useChainPositions(oc, s.account?.addr).data;
+  const positions = useChainPositions(oc, s.account?.addr).data?.list;
   const o = useOraclePrice(oc, positions?.find((p) => p.id.toString() === id)?.sym ?? null).data;
   const [amt, setAmt] = useState('');
   const p = positions?.find((x) => x.id.toString() === id);

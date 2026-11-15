@@ -6,16 +6,13 @@
  */
 import { MARKETS, POOLS } from '@velum/config';
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
-import { publicClient } from '@/lib/chain';
 import { ONCHAIN, P } from '@/lib/copy';
 import { compact, fmt, fmtBal, usd, usdBal } from '@/lib/format';
-import { SPOT_ABI } from '@/lib/onchain/abi';
 import type { OnchainInfo } from '@/lib/onchain/deployment';
 import { exact, lpAddFlow, lpRemoveFlow, postOfferFlow, withdrawOfferFlow } from '@/lib/onchain/flows';
 import { GUARD_COPY } from '@/lib/onchain/guard';
-import { OFFER_SPREAD, slipBps, stockForUsdg } from '@/lib/onchain/quote';
+import { OFFER_SPREAD, lpAddPlan, slipBps, stockForUsdg } from '@/lib/onchain/quote';
 import { useAllOracle, useOfferBook, usePools, type PoolRead } from '@/lib/onchain/reads';
 import { tokenValue } from '@/lib/onchain/totals';
 import { unitsToWad, wadToUnits } from '@/lib/onchain/units';
@@ -23,8 +20,6 @@ import { OFFER_EXPIRIES as EXPIRIES, useApp } from '@/lib/store';
 import { I } from '../icons';
 import { Av, Px } from '../ui';
 import { useOc } from './useOc';
-
-type A = `0x${string}`;
 
 function PoolCard({ oc, sym, pool }: { oc: OnchainInfo; sym: string; pool: PoolRead | undefined }) {
   const s = useApp();
@@ -126,43 +121,32 @@ export function OcLpAddModal({ oc, sym }: { oc: OnchainInfo; sym: string }) {
   const stockHave = c.acct?.vault[sym] ?? 0n;
   const empty = !!pool && pool.totalShares === 0n;
   const firstStock = empty && px && c.proto ? stockForUsdg(half, px, c.proto.valueScale) : 0n;
-  const sp = oc.d.contracts.spotPools as A;
-  const q = useQuery({
-    queryKey: ['oc-quote', sp, 'USDG', sym, half.toString()],
-    enabled: !!pool && !empty && half > 0n,
-    retry: false,
-    refetchInterval: 5000,
-    queryFn: async () => {
-      try {
-        return await publicClient.readContract({ address: sp, abi: SPOT_ABI, functionName: 'getAmountOut', args: [oc.d.tokens.USDG as A, oc.d.tokens[sym] as A, half] });
-      } catch {
-        return null;
-      }
-    },
-  });
+  const slip = slipBps(s.slip);
+  // The swap and the add, with both minimums, planned from these reserves as the user reviews them (W3-07).
+  const plan = pool && !empty && a > 0n ? lpAddPlan(pool, a, slip) : null;
   const bad = amountHint(amt) || (units && !units.ok ? `USDG has ${ud} decimals.` : '');
   const basic = !!bad || a <= 0n || !c.base || !pool || ud === undefined || sd === undefined;
   /** Why the deposit cannot go ahead (a hint), '' while loading, or null when it can. */
-  const why: string | null = basic
-    ? bad
-    : c.guard.blocked
-      ? GUARD_COPY.blocked
-      : a > have
-        ? `You have ${fmtBal(unitsToWad(have, ud!))} USDG in your vault.`
-        : empty && !px
-          ? `No onchain price for ${sym} yet.`
-          : empty && firstStock > stockHave
-            ? `This pool is empty: the first deposit adds ${exact(firstStock, sd!, sym)} and USDG from your vault. Shield ${sym} first.`
-            : !empty && !q.data
-              ? q.isLoading
-                ? ''
-                : 'No quote for this amount right now.'
-              : null;
+  const why: string | null = c.paused
+    ? c.paused.hint
+    : basic
+      ? bad
+      : c.guard.blocked
+        ? GUARD_COPY.blocked
+        : a > have
+          ? `You have ${fmtBal(unitsToWad(have, ud!))} USDG in your vault.`
+          : empty && !px
+            ? `No onchain price for ${sym} yet.`
+            : empty && firstStock > stockHave
+              ? `This pool is empty: the first deposit adds ${exact(firstStock, sd!, sym)} and USDG from your vault. Shield ${sym} first.`
+              : !empty && (!plan || plan.minStock === 0n || plan.minShares === 0n)
+                ? 'This amount is too small to protect with a minimum.'
+                : null;
   const disabled = basic || why !== null;
   const hint = why ?? '';
   const go = () => {
     if (!c.base || !pool) return;
-    s.runTxFlow(lpAddFlow(c.base, { sym, usdgUnits: a, pool, first: empty ? { stock: firstStock, usdg: half } : null, swapQuote: q.data ?? 0n, slip: slipBps(s.slip) }));
+    s.runTxFlow(lpAddFlow(c.base, { sym, usdgUnits: a, pool, first: empty ? { stock: firstStock, usdg: half } : null, slip }));
   };
   return (
     <>
@@ -190,7 +174,7 @@ export function OcLpAddModal({ oc, sym }: { oc: OnchainInfo; sym: string }) {
         </div>
         <div>
           <span>Added as {sym}</span>
-          <b>{sd === undefined ? '—' : empty ? `${fmt(unitsToWad(firstStock, sd), 4)} ${sym}` : q.data ? `~${fmt(unitsToWad(q.data, sd), 4)} ${sym}` : '—'}</b>
+          <b>{sd === undefined ? '—' : empty ? `${fmt(unitsToWad(firstStock, sd), 4)} ${sym}` : plan ? `~${fmt(unitsToWad(plan.stockOut, sd), 4)} ${sym}` : '—'}</b>
         </div>
         <div>
           <span>You earn</span>
@@ -217,7 +201,7 @@ const INT_RE = /^\d{1,3}$/;
 function Offers({ oc }: { oc: OnchainInfo }) {
   const s = useApp();
   const c = useOc(oc);
-  const book = useOfferBook(oc).data;
+  const book = useOfferBook(oc, c.addr, c.proto?.minPositionSize).data;
   if (!s.account)
     return (
       <div className="empty">
@@ -303,7 +287,10 @@ export function OcMakersView({ oc }: { oc: OnchainInfo }) {
   let hint = badBack || badMax;
   let b: { label: string; cls: string; disabled: boolean; onClick?: () => void };
   if (!s.account) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
-  else if (c.guard.blocked) {
+  else if (c.paused) {
+    b = { label: c.paused.label, cls: 'btn-dark', disabled: true };
+    hint = c.paused.hint;
+  } else if (c.guard.blocked) {
     b = { label: GUARD_COPY.blockedShort, cls: 'btn-dark', disabled: true };
     hint = GUARD_COPY.blocked;
   } else if (badBack) b = { label: 'Check your backing', cls: 'btn-dark', disabled: true };

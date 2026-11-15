@@ -3,8 +3,9 @@
  * Chain reads for the real (Phase 3) mode, as react-query hooks: token decimals and protocol constants,
  * the account's vault and wallet balances, allowances and module approvals, the launch guard, oracle
  * prices, the offer book, pools and positions. Every read goes through the app's read RPC (lib/chain.ts;
- * JSON-RPC batched), never the wallet. Positions and activity come from the API's index, with the chain
- * as the source of truth for each open position's current state.
+ * JSON-RPC batched), never the wallet. Positions come from the API's index plus the ids this browser keeps
+ * (and, when the index cannot be used, a scan of the newest positions), with the chain as the source of truth
+ * for each one; activity comes from the index once the API has confirmed the deployment.
  */
 import { useQuery } from '@tanstack/react-query';
 import type { Address } from 'viem';
@@ -12,7 +13,7 @@ import { api, type ActivityDTO, type PositionDTO } from '../api';
 import { publicClient } from '../chain';
 import { BOOK_ABI, ERC20_ABI, ORACLE_ABI, PERPS_ABI, SPOT_ABI, VAULT_ABI } from './abi';
 import type { Deployment, OnchainInfo } from './deployment';
-import type { PoolState } from './quote';
+import { roundTrip, type PoolState } from './quote';
 
 const client = publicClient;
 type A = `0x${string}`;
@@ -28,6 +29,8 @@ export interface Protocol {
   minPositionSize: bigint;
   bond: bigint;
   exitDelay: bigint;
+  /** Largest insurance top-up of a liquidator's reward (1 USDG). */
+  rewardCap: bigint;
 }
 
 /** Decimals of every deployment token and the perps constants. Read once per deployment. */
@@ -42,15 +45,16 @@ export function useProtocol(oc: OnchainInfo | null) {
       const syms = Object.keys(d.tokens);
       const decs = await Promise.all(syms.map((s) => client.readContract({ address: d.tokens[s] as A, abi: ERC20_ABI, functionName: 'decimals' })));
       const p = d.contracts.perpsMarkets as A;
-      const [valueScale, minPositionSize, bond, exitDelay] = await Promise.all([
+      const [valueScale, minPositionSize, bond, exitDelay, rewardCap] = await Promise.all([
         client.readContract({ address: p, abi: PERPS_ABI, functionName: 'valueScale' }),
         client.readContract({ address: p, abi: PERPS_ABI, functionName: 'minPositionSize' }),
         client.readContract({ address: p, abi: PERPS_ABI, functionName: 'FORCED_EXIT_BOND' }),
         client.readContract({ address: p, abi: PERPS_ABI, functionName: 'FORCED_EXIT_DELAY' }),
+        client.readContract({ address: p, abi: PERPS_ABI, functionName: 'keeperRewardCap' }),
       ]);
       const decimals = Object.fromEntries(syms.map((s, i) => [s, Number(decs[i])]));
       for (const [s, v] of Object.entries(decimals)) if (!Number.isInteger(v) || v < 0 || v > 18) throw new Error(`${s} has unsupported decimals ${v}`);
-      return { decimals, valueScale, minPositionSize, bond, exitDelay };
+      return { decimals, valueScale, minPositionSize, bond, exitDelay, rewardCap };
     },
   });
 }
@@ -204,48 +208,147 @@ export interface Offer {
   active: boolean;
 }
 
-/** How many of the newest offers the web scans (the book has no per-market index on chain). */
-export const OFFER_SCAN = 120;
+/**
+ * The offer book has no per-market index on chain (and the API has none), so the web pages through it from the
+ * newest id down (web audit W3-09). Offers that can never fill again are remembered per book and never read
+ * again: inactive (withdrawn) or expired ones, and dust (backing below the maker margin of the smallest
+ * position, or a largest fill below it: backing only shrinks and the largest fill is fixed). So an attacker
+ * cannot push real offers out of view with cheap dust: each refresh reads at most OFFER_READS offers, new ids
+ * first, then the live ones, then further down the book, and keeps going on the next refresh until it reaches
+ * the bottom. Dust offers of the signed-in maker are still listed (and re-read) so they can be withdrawn.
+ */
+export const OFFER_READS = 1500;
+/** Offers read in one JSON-RPC batch. */
+const OFFER_PAGE = 250;
 
-/** The newest OFFER_SCAN offers, read from the maker book. */
-export function useOfferBook(oc: OnchainInfo | null) {
-  return useQuery({
-    queryKey: ['oc-offers', oc?.d.contracts.makerBook],
-    enabled: !!oc,
-    refetchInterval: 15_000,
-    staleTime: 4000,
-    queryFn: () => readOffers(oc!.d),
-  });
+interface BookCache {
+  /** Inactive or expired: never read again. */
+  dead: Set<string>;
+  /** Too small to fill any position: kept for their maker's list, re-read only for that maker. */
+  dust: Map<string, Offer>;
+  /** Fillable offers as last read. */
+  live: Map<string, Offer>;
+  /** Every id at or above `top` is unread; every id below `low` is unread (between them: classified). */
+  top: bigint;
+  low: bigint;
+}
+const books = new Map<string, BookCache>();
+
+/** The smallest maker margin and fill an offer needs to back the smallest position (S/maxL of minPositionSize). */
+export function offerFloor(minPositionSize: bigint): { backing: bigint; fill: bigint } {
+  return { backing: (minPositionSize * 2000n + 9999n) / 10_000n, fill: minPositionSize };
 }
 
-export async function readOffers(d: Deployment): Promise<{ offers: Offer[]; now: bigint }> {
-  const book = d.contracts.makerBook as A;
-  const [next, block] = await Promise.all([client.readContract({ address: book, abi: BOOK_ABI, functionName: 'nextOfferId' }), client.getBlock({ blockTag: 'latest' })]);
-  const ids: bigint[] = [];
-  for (let i = next - 1n; i >= 1n && ids.length < OFFER_SCAN; i--) ids.push(i);
-  const rows = await Promise.all(ids.map((id) => client.readContract({ address: book, abi: BOOK_ABI, functionName: 'offers', args: [id] })));
-  const offers = rows.map(([maker, market, backing, largestFill, openBps, closeBps, expiry, active], i) => ({ id: ids[i]!, maker, market, backing, largestFill, openBps, closeBps, expiry, active }));
-  return { offers, now: block.timestamp };
+/** How an offer read now is kept: dead (never again), dust (too small to fill anything) or live. Pure. */
+export function offerClass(o: Offer, now: bigint, floor: { backing: bigint; fill: bigint }): 'dead' | 'dust' | 'live' {
+  if (!o.active || o.expiry <= now) return 'dead';
+  if (o.backing < floor.backing || o.largestFill < floor.fill) return 'dust';
+  return 'live';
 }
 
 /**
- * The offer a taker opening `size` (USDG base units) on `market` is filled by: active, unexpired, on that
- * market, not the taker's own, large enough (largestFill and backing for the S/maxL maker margin), with the
- * lowest open spread (best entry); ties go to the oldest. Null when none fits.
+ * The fillable offers (paged from the newest, see above), the maker's own dust offers, and the chain time. Once the
+ * protocol constants are read (the dust floor needs minPositionSize). While the scan has not reached the bottom
+ * of the book it continues every second, then every 15 s.
  */
-export function bestOffer(offers: readonly Offer[], market: string, size: bigint, taker: string | undefined, now: bigint): Offer | null {
-  const need = (size * 2000n + 9999n) / 10_000n;
-  const fit = offers.filter(
-    (o) => o.active && o.market.toLowerCase() === market.toLowerCase() && o.expiry > now + 30n && o.largestFill >= size && o.backing >= need && (!taker || o.maker.toLowerCase() !== taker.toLowerCase()),
-  );
-  fit.sort((a, b) => a.openBps - b.openBps || (a.id < b.id ? -1 : 1));
-  return fit[0] ?? null;
+export function useOfferBook(oc: OnchainInfo | null, addr: Address | undefined, minPositionSize: bigint | undefined) {
+  return useQuery({
+    queryKey: ['oc-offers', oc?.d.contracts.makerBook, addr?.toLowerCase() ?? null, minPositionSize?.toString() ?? null],
+    enabled: !!oc && minPositionSize !== undefined,
+    refetchInterval: (q) => (q.state.data && !q.state.data.complete ? 1000 : 15_000),
+    staleTime: 4000,
+    queryFn: () => readOffers(oc!.d, addr, minPositionSize!),
+  });
 }
 
-/** The best offer on `market` whatever the size (for the ticket's quote before a size is typed). */
-export function bestSpread(offers: readonly Offer[], market: string, taker: string | undefined, now: bigint): Offer | null {
-  return bestOffer(offers, market, 0n, taker, now);
+export async function readOffers(d: Deployment, addr: Address | undefined, minPositionSize: bigint): Promise<{ offers: Offer[]; now: bigint; complete: boolean }> {
+  const book = d.contracts.makerBook as A;
+  const [next, block] = await Promise.all([client.readContract({ address: book, abi: BOOK_ABI, functionName: 'nextOfferId' }), client.getBlock({ blockTag: 'latest' })]);
+  const now = block.timestamp;
+  const floor = offerFloor(minPositionSize);
+  const key = `${book}:${floor.backing}`;
+  const c = books.get(key) ?? { dead: new Set<string>(), dust: new Map<string, Offer>(), live: new Map<string, Offer>(), top: next, low: next };
+  books.set(key, c);
+  const me = addr?.toLowerCase();
+  const want: bigint[] = [];
+  const seen = new Set<string>();
+  const add = (id: bigint) => {
+    const k = id.toString();
+    if (want.length < OFFER_READS && !c.dead.has(k) && !seen.has(k)) {
+      seen.add(k);
+      want.push(id);
+    }
+  };
+  for (let i = next - 1n; i >= c.top && i >= 1n; i--) add(i);
+  for (const o of c.live.values()) add(o.id);
+  if (me) for (const o of c.dust.values()) if (o.maker.toLowerCase() === me) add(o.id);
+  let low = c.low;
+  while (low > 1n && want.length < OFFER_READS) {
+    low--;
+    add(low);
+  }
+  for (let i = 0; i < want.length; i += OFFER_PAGE) {
+    const page = want.slice(i, i + OFFER_PAGE);
+    const rows = await Promise.all(page.map((id) => client.readContract({ address: book, abi: BOOK_ABI, functionName: 'offers', args: [id] })));
+    rows.forEach(([maker, market, backing, largestFill, openBps, closeBps, expiry, active], j) => {
+      const o: Offer = { id: page[j]!, maker, market, backing, largestFill, openBps, closeBps, expiry, active };
+      const k = o.id.toString();
+      c.live.delete(k);
+      c.dust.delete(k);
+      const cls = offerClass(o, now, floor);
+      if (cls === 'dead') c.dead.add(k);
+      else (cls === 'dust' ? c.dust : c.live).set(k, o);
+    });
+  }
+  if (next > c.top) c.top = next;
+  c.low = low;
+  const mine = me ? [...c.dust.values()].filter((o) => o.maker.toLowerCase() === me) : [];
+  return { offers: [...c.live.values(), ...mine], now, complete: low <= 1n };
 }
+
+/** What ranking can use to price an offer exactly (else it compares spreads). */
+export interface RankCtx {
+  price: bigint;
+  levHalf: number;
+  long: boolean;
+  valueScale: bigint;
+}
+
+/** Offers that can fill `size` on `market` for `taker`: active, unexpired, not the taker's own, large enough (largestFill, and backing for the S/maxL maker margin). */
+export function fittingOffers(offers: readonly Offer[], market: string, size: bigint, taker: string | undefined, now: bigint): Offer[] {
+  const need = (size * 2000n + 9999n) / 10_000n;
+  return offers.filter(
+    (o) => o.active && o.market.toLowerCase() === market.toLowerCase() && o.expiry > now + 30n && o.largestFill >= size && o.backing >= need && (!taker || o.maker.toLowerCase() !== taker.toLowerCase()),
+  );
+}
+
+/**
+ * The offers that can fill `size`, cheapest first by the whole round trip (web audit W3-03): open spread plus
+ * close spread plus fees, priced exactly (roundTrip) when the oracle price and constants are known, else by the
+ * two spreads. A 2 bps open / 500 bps close offer therefore ranks far behind a 5 / 5 one. Ties: the lower close
+ * spread, then the oldest offer.
+ */
+export function rankOffers(offers: readonly Offer[], market: string, size: bigint, taker: string | undefined, now: bigint, ctx?: RankCtx | null): Offer[] {
+  const fit = fittingOffers(offers, market, size, taker, now);
+  const ref = size > 0n ? size : 1000n * 10n ** 6n;
+  const cost = (o: Offer): bigint | null => (ctx && ctx.price > 0n ? roundTrip({ price: ctx.price, size: ref, levHalf: ctx.levHalf, long: ctx.long, openBps: o.openBps, closeBps: o.closeBps, valueScale: ctx.valueScale }).total : null);
+  const keyed = fit.map((o) => ({ o, c: cost(o) }));
+  keyed.sort((a, b) => {
+    if (a.c !== null && b.c !== null && a.c !== b.c) return a.c < b.c ? -1 : 1;
+    const sa = a.o.openBps + a.o.closeBps;
+    const sb = b.o.openBps + b.o.closeBps;
+    return sa - sb || a.o.closeBps - b.o.closeBps || (a.o.id < b.o.id ? -1 : a.o.id > b.o.id ? 1 : 0);
+  });
+  return keyed.map((x) => x.o);
+}
+
+/** The cheapest offer for `size` by the whole round trip (rankOffers), or null when none fits. */
+export function bestOffer(offers: readonly Offer[], market: string, size: bigint, taker: string | undefined, now: bigint, ctx?: RankCtx | null): Offer | null {
+  return rankOffers(offers, market, size, taker, now, ctx)[0] ?? null;
+}
+
+/** How many of the cheapest offers the ticket lets the user choose from. */
+export const OFFER_CHOICES = 3;
 
 export interface PoolRead extends PoolState {
   sym: string;
@@ -298,50 +401,133 @@ export interface ChainPosition {
 
 const POS_ID = /^\d{1,30}$/;
 
-/** Ids of the account's open positions from the API's index (both roles), with their open transaction. */
+/** At most this many position ids are taken from one API answer (the request asks for 100; W3-05, W3-12). */
+export const MAX_API_POSITIONS = 100;
+
+/** Ids of the account's open positions from the API's index (both roles), with their open transaction. Capped. */
 export function apiOpenPositions(body: unknown): Array<{ id: bigint; openTx: string | null }> {
   if (!Array.isArray(body)) return [];
   const out: Array<{ id: bigint; openTx: string | null }> = [];
-  for (const p of body as Partial<PositionDTO>[]) {
+  for (const p of body.slice(0, MAX_API_POSITIONS) as Partial<PositionDTO>[]) {
     if (!p || typeof p.id !== 'string' || !POS_ID.test(p.id) || p.status !== 'open') continue;
     out.push({ id: BigInt(p.id), openTx: typeof p.openTx === 'string' && /^0x[0-9a-fA-F]{64}$/.test(p.openTx) ? p.openTx : null });
   }
   return out;
 }
 
-/** Position ids this browser opened and the index may not show yet (it stays a few blocks behind). */
-const recent = new Map<string, Map<string, string | null>>();
-export function rememberPosition(addr: string, id: bigint, tx: string | null) {
-  const k = addr.toLowerCase();
-  if (!recent.has(k)) recent.set(k, new Map());
-  recent.get(k)!.set(id.toString(), tx);
+/**
+ * Position ids this browser knows for the account (opened here, or seen open in the index), kept in
+ * localStorage per chain, deployment and account (W3-05) and re-read from the chain on every refresh: the
+ * account's positions stay visible, closable and force-exitable while the API is down or out of step.
+ * Untrusted input like any storage: ids are validated, capped, and each one is checked on chain.
+ */
+export const MAX_KNOWN_POSITIONS = 200;
+const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+export const positionsKey = (d: Deployment, addr: string) => `velum:oc-positions:v1:${d.chainId}:${d.contracts.perpsMarkets}:${addr.toLowerCase()}`;
+const memory = new Map<string, Map<string, string | null>>();
+
+export function loadKnown(d: Deployment, addr: string): Map<string, string | null> {
+  const k = positionsKey(d, addr);
+  const out = new Map<string, string | null>(memory.get(k) ?? []);
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(k) || '{}');
+    if (raw && typeof raw === 'object' && !Array.isArray(raw))
+      for (const [id, tx] of Object.entries(raw).slice(0, MAX_KNOWN_POSITIONS)) if (POS_ID.test(id) && !out.has(id)) out.set(id, typeof tx === 'string' && HASH_RE.test(tx) ? tx : null);
+  } catch {
+    /* storage unavailable or malformed: memory only */
+  }
+  return out;
+}
+
+function saveKnown(d: Deployment, addr: string, m: Map<string, string | null>) {
+  const k = positionsKey(d, addr);
+  const kept = new Map([...m].sort((a, b) => (BigInt(a[0]) > BigInt(b[0]) ? -1 : 1)).slice(0, MAX_KNOWN_POSITIONS));
+  memory.set(k, kept);
+  try {
+    localStorage.setItem(k, JSON.stringify(Object.fromEntries(kept)));
+  } catch {
+    /* storage unavailable: memory only */
+  }
+}
+
+/** A position this browser just opened (the index stays a few blocks behind). */
+export function rememberPosition(oc: OnchainInfo, addr: string, id: bigint, tx: string | null) {
+  const m = loadKnown(oc.d, addr);
+  m.set(id.toString(), tx);
+  saveKnown(oc.d, addr, m);
+}
+
+/**
+ * When the index cannot be used (the API failed, or serves another deployment), the newest positions are read
+ * from the chain to find the account's: SCAN_POSITIONS ids back from the newest on the first refresh, then only
+ * the new ones. Positions are never re-scanned (their taker and maker never change).
+ */
+export const SCAN_POSITIONS = 2000;
+const SCAN_PAGE = 250;
+const scans = new Map<string, { top: bigint; low: bigint; mine: Set<string> }>();
+
+async function scanPositions(d: Deployment, addr: Address): Promise<string[]> {
+  const perps = d.contracts.perpsMarkets as A;
+  const next = await client.readContract({ address: perps, abi: PERPS_ABI, functionName: 'nextPositionId' });
+  const key = `${perps}:${addr.toLowerCase()}`;
+  const st = scans.get(key) ?? { top: next, low: next, mine: new Set<string>() };
+  scans.set(key, st);
+  const floor = next > BigInt(SCAN_POSITIONS) ? next - BigInt(SCAN_POSITIONS) : 1n;
+  const ids: bigint[] = [];
+  for (let i = next - 1n; i >= st.top && i >= 1n; i--) ids.push(i);
+  for (let i = st.low - 1n; i >= floor && i >= 1n; i--) ids.push(i);
+  const me = addr.toLowerCase();
+  for (let i = 0; i < ids.length; i += SCAN_PAGE) {
+    const page = ids.slice(i, i + SCAN_PAGE);
+    const rows = await Promise.all(page.map((id) => client.readContract({ address: perps, abi: PERPS_ABI, functionName: 'getPosition', args: [id] })));
+    rows.forEach((p, j) => {
+      if (p.open && (p.taker.toLowerCase() === me || p.maker.toLowerCase() === me)) st.mine.add(page[j]!.toString());
+    });
+  }
+  if (next > st.top) st.top = next;
+  if (floor < st.low) st.low = floor;
+  return [...st.mine];
+}
+
+export interface PositionsRead {
+  list: ChainPosition[];
+  /** The API's index could not be used (unreachable, erroring, or for another deployment). */
+  indexError: boolean;
 }
 
 export function useChainPositions(oc: OnchainInfo | null, addr: Address | undefined) {
   return useQuery({
-    queryKey: ['oc-positions', oc?.d.contracts.perpsMarkets, addr],
+    queryKey: ['oc-positions', oc?.d.contracts.perpsMarkets, addr, oc?.status === 'mismatch'],
     enabled: !!oc && !!addr,
     refetchInterval: 6000,
     staleTime: 2000,
-    queryFn: () => readPositions(oc!.d, addr!),
+    queryFn: () => readPositions(oc!, addr!),
   });
 }
 
-export async function readPositions(d: Deployment, addr: Address): Promise<ChainPosition[]> {
-  const fromApi = apiOpenPositions(await api.positions(addr, 'open').catch(() => []));
+export async function readPositions(oc: OnchainInfo, addr: Address): Promise<PositionsRead> {
+  const d = oc.d;
+  let indexError = oc.status === 'mismatch';
+  let fromApi: Array<{ id: bigint; openTx: string | null }> = [];
+  if (!indexError) {
+    try {
+      fromApi = apiOpenPositions(await api.positions(addr, 'open'));
+    } catch {
+      indexError = true;
+    }
+  }
+  const known = loadKnown(d, addr);
   const ids = new Map<string, string | null>(fromApi.map((p) => [p.id.toString(), p.openTx]));
-  for (const [id, tx] of recent.get(addr.toLowerCase()) ?? []) if (!ids.has(id)) ids.set(id, tx);
+  for (const [id, tx] of known) if (!ids.has(id)) ids.set(id, tx);
+  if (indexError) for (const id of await scanPositions(d, addr)) if (!ids.has(id)) ids.set(id, null);
   const symOf = new Map(Object.entries(d.tokens).map(([s, a]) => [a.toLowerCase(), s]));
+  const me = addr.toLowerCase();
   const list = await Promise.all(
     [...ids].map(async ([id, tx]) => {
       const p = await client.readContract({ address: d.contracts.perpsMarkets as A, abi: PERPS_ABI, functionName: 'getPosition', args: [BigInt(id)] });
-      const me = addr.toLowerCase();
       const role = p.taker.toLowerCase() === me ? 'taker' : p.maker.toLowerCase() === me ? 'maker' : null;
       const sym = symOf.get(p.market.toLowerCase());
-      if (!p.open || !role || !sym) {
-        recent.get(me)?.delete(id);
-        return null;
-      }
+      if (!p.open || !role || !sym) return null;
       return {
         id: BigInt(id),
         sym,
@@ -356,18 +542,24 @@ export async function readPositions(d: Deployment, addr: Address): Promise<Chain
         openedAt: p.openedAt,
         exitRequestedAt: p.exitRequestedAt,
         exitRequester: p.exitRequester,
-        openTx: tx,
+        openTx: tx ?? known.get(id) ?? null,
       } satisfies ChainPosition;
     }),
   );
-  return list.filter((x): x is ChainPosition => x !== null).sort((a, b) => (a.id > b.id ? -1 : 1));
+  const open = list.filter((x): x is ChainPosition => x !== null).sort((a, b) => (a.id > b.id ? -1 : 1));
+  // Keep exactly the open positions confirmed on chain (closed, foreign or malformed ids are dropped).
+  saveKnown(d, addr, new Map(open.map((p) => [p.id.toString(), p.openTx])));
+  return { list: open, indexError };
 }
 
-/** The account's activity from the API's index, newest first (validated item by item). */
+/**
+ * The account's activity from the API's index, newest first (validated item by item). Only once the API has
+ * confirmed this build's deployment: an index of other contracts would describe someone else's history.
+ */
 export function useOnchainActivity(oc: OnchainInfo | null, addr: Address | undefined) {
   return useQuery({
     queryKey: ['oc-activity', oc?.d.contracts.perpsMarkets, addr],
-    enabled: !!oc && !!addr,
+    enabled: !!oc?.verified && !!addr,
     refetchInterval: 10_000,
     staleTime: 3000,
     queryFn: async () => apiActivity(await api.activity(addr!, 50)),

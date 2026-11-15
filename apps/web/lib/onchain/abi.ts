@@ -120,6 +120,8 @@ export const PERPS_ABI = parseAbi([
   'function bondRefunds(address account) view returns (uint256)',
   'function FORCED_EXIT_BOND() view returns (uint256)',
   'function FORCED_EXIT_DELAY() view returns (uint256)',
+  'function nextPositionId() view returns (uint256)',
+  'function keeperRewardCap() view returns (uint256)',
   'event PositionChanged(uint256 indexed id, address indexed market, uint8 indexed action, address taker, address maker, bool isLong, uint256 qty, uint256 entry, uint256 takerMargin, uint256 makerMargin, uint256 price)',
   'event PositionSettled(uint256 indexed id, uint256 exitPrice, int256 takerPnl, int256 takerFunding, uint256 fee, uint256 takerOut, uint256 makerOut)',
   'event Liquidated(uint256 indexed id, address indexed liquidator, bool takerSide, uint256 price, uint256 penalty, uint256 reward, uint256 shortfall)',
@@ -169,6 +171,7 @@ export const ERC20_ABI = parseAbi([
   'function balanceOf(address account) view returns (uint256)',
   'function allowance(address owner, address spender) view returns (uint256)',
   'function approve(address spender, uint256 amount) returns (bool)',
+  'event Approval(address indexed owner, address indexed spender, uint256 value)',
   'error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)',
   'error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)',
 ]);

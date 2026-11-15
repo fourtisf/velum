@@ -5,7 +5,7 @@ import { WagmiProvider, useConnection } from 'wagmi';
 import { checkLiq, demoTick } from '@/lib/demo';
 import { ENV } from '@/lib/env';
 import { startMarketFeed, useMarkets } from '@/lib/markets';
-import { startOnchainCheck } from '@/lib/onchain/deployment';
+import { REAL_BUILD, startOnchainCheck } from '@/lib/onchain/deployment';
 import { dropLegacyStorage, emptyLedger, loadLedger, recallSession, saveLedger, seedLedger, useApp } from '@/lib/store';
 import { wagmiConfig } from '@/lib/wagmi';
 import { I } from './icons';
@@ -27,7 +27,9 @@ function AccountSync() {
     }
     if (cur === address.toLowerCase()) return;
     const paddr = recallSession(address);
-    if (paddr) s.set({ account: { addr: address, paddr }, ledger: loadLedger(address) ?? seedLedger(), openChain: {} });
+    // A real build never shows the demo, so it never loads a demo ledger either: whatever a simulated
+    // session left in this browser stays separate and untouched (web audit W3-06).
+    if (paddr) s.set({ account: { addr: address, paddr }, ledger: REAL_BUILD ? emptyLedger() : (loadLedger(address) ?? seedLedger()), openChain: {} });
     else if (s.account) s.set({ account: null, ledger: emptyLedger(), openChain: {} });
   }, [address, status]);
 
@@ -52,12 +54,14 @@ function AccountSync() {
 
   useEffect(dropLegacyStorage, []);
 
-  // Persist the demo ledger per wallet (browser only).
+  // Persist the demo ledger per wallet (browser only). Not on a real build (no demo there, W3-06).
   useEffect(
     () =>
-      useApp.subscribe((s, prev) => {
-        if (s.account && s.ledger !== prev.ledger && s.account === prev.account) saveLedger(s.account.addr, s.ledger);
-      }),
+      REAL_BUILD
+        ? undefined
+        : useApp.subscribe((s, prev) => {
+            if (s.account && s.ledger !== prev.ledger && s.account === prev.account) saveLedger(s.account.addr, s.ledger);
+          }),
     [],
   );
   return null;
@@ -75,7 +79,10 @@ function Feeds() {
   useEffect(() => startMarketFeed(), []);
   // Real transactions only when this build carries a deployment and the API serves the same one.
   useEffect(() => startOnchainCheck(), []);
+  // The demo engine (simulated liquidations, maker fills, LP fees) runs only where the demo can be shown:
+  // never on a real build, whatever the API says (web audit W3-06).
   useEffect(() => {
+    if (REAL_BUILD) return;
     const unsub = useMarkets.subscribe((s, p) => {
       if (s.tick !== p.tick) checkLiq();
     });

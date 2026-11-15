@@ -1,7 +1,9 @@
 /**
  * The API's activity items (GET /v1/accounts/:address/activity, Phase 3) as the prototype's activity rows:
  * a title, a line under it and an icon. Amounts arrive as exact decimal strings and are only formatted
- * here; anything malformed shows as a dash, never as a guessed number.
+ * here; anything malformed shows as a dash, never as a guessed number. Words come from a fixed vocabulary
+ * (web audit W3-12): market and token names must be symbols of this build's deployment, an unknown kind is
+ * "Other contract activity", and no text chosen by the API is ever shown.
  */
 import { parseWad } from '@velum/math';
 import type { IconName } from '@/components/icons';
@@ -30,13 +32,24 @@ const signed = (v: unknown): string => {
   return s === '—' ? s : s.startsWith('-') ? `-$${s.slice(1)}` : `+$${s}`;
 };
 
-const str = (v: unknown): string => (typeof v === 'string' && /^[A-Za-z0-9 ._-]{1,40}$/.test(v) ? v : '?');
+/** A whole number shown as such (ids, basis points), else '?'. */
+const num = (v: unknown): string => (typeof v === 'string' && /^\d{1,30}$/.test(v) ? v : typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? String(v) : '?');
 const dp = (sym: string) => (sym === 'USDG' ? 2 : 4);
+/** A 0x address shortened, else '?'. */
+const addr = (v: unknown): string => (typeof v === 'string' && /^0x[0-9a-fA-F]{40}$/.test(v) ? shortH(v) : '?');
 
 const MODULE: Record<string, string> = { perpsMarkets: 'perps market', spotPools: 'spot pools', makerBook: 'maker book' };
 
-export function activityRow(a: ActivityDTO, me: string): ActivityRow {
+/** The fallback for a kind this build does not know: fixed words only. */
+export const OTHER_ACTIVITY = 'Other contract activity';
+
+/**
+ * One activity row. `syms` are the deployment's token symbols: any other market or token name from the API
+ * shows as '?'.
+ */
+export function activityRow(a: ActivityDTO, me: string, syms: ReadonlySet<string>): ActivityRow {
   const d = a.data;
+  const str = (v: unknown): string => (typeof v === 'string' && syms.has(v) ? v : '?');
   const mkt = str(a.market ?? '');
   const t = typeof a.at === 'number' && Number.isFinite(a.at) ? a.at : 0;
   const base = { t, tx: a.tx };
@@ -46,11 +59,11 @@ export function activityRow(a: ActivityDTO, me: string): ActivityRow {
     case 'deposit': {
       const tok = str(d.token);
       const fromMe = typeof d.from === 'string' && d.from.toLowerCase() === me.toLowerCase();
-      return { ...base, icon: 'shieldIn', title: `Shielded ${dec(d.amount, dp(tok))} ${tok}`, sub: fromMe ? 'Public deposit into your vault balance' : `Deposit from ${shortH(String(d.from))}` };
+      return { ...base, icon: 'shieldIn', title: `Shielded ${dec(d.amount, dp(tok))} ${tok}`, sub: fromMe ? 'Public deposit into your vault balance' : `Deposit from ${addr(d.from)}` };
     }
     case 'withdraw': {
       const tok = str(d.token);
-      return { ...base, icon: 'shieldOut', title: `Unshielded ${dec(d.amount, dp(tok))} ${tok}`, sub: `To ${shortH(String(d.to ?? ''))}` };
+      return { ...base, icon: 'shieldOut', title: `Unshielded ${dec(d.amount, dp(tok))} ${tok}`, sub: `To ${addr(d.to)}` };
     }
     case 'approval':
       return { ...base, icon: 'info', title: `${d.approved === false ? 'Revoked' : 'Approved'} the ${MODULE[String(d.module)] ?? 'module'}`, sub: 'Vault approval' };
@@ -61,9 +74,9 @@ export function activityRow(a: ActivityDTO, me: string): ActivityRow {
     case 'position_close':
       return { ...base, icon: 'trade', title: `Closed ${side} ${mkt}`, sub: role === 'taker' ? `At ${dec(d.price)}` : 'Closed by the taker' };
     case 'position_add_margin':
-      return { ...base, icon: 'trade', title: `Added margin to ${mkt} #${str(d.positionId)}`, sub: `Margin now ${dec(role === 'taker' ? d.takerMargin : d.makerMargin)} USDG` };
+      return { ...base, icon: 'trade', title: `Added margin to ${mkt} #${num(d.positionId)}`, sub: `Margin now ${dec(role === 'taker' ? d.takerMargin : d.makerMargin)} USDG` };
     case 'position_remove_margin':
-      return { ...base, icon: 'trade', title: `Removed margin from ${mkt} #${str(d.positionId)}`, sub: `Margin now ${dec(d.takerMargin)} USDG` };
+      return { ...base, icon: 'trade', title: `Removed margin from ${mkt} #${num(d.positionId)}`, sub: `Margin now ${dec(d.takerMargin)} USDG` };
     case 'position_liquidate':
       return { ...base, icon: 'trade', title: `Liquidated ${side} ${mkt}`, sub: `At ${dec(d.price)}` };
     case 'position_forced_exit':
@@ -72,19 +85,19 @@ export function activityRow(a: ActivityDTO, me: string): ActivityRow {
       return {
         ...base,
         icon: 'trade',
-        title: `Settled ${mkt} #${str(d.positionId)}`,
+        title: `Settled ${mkt} #${num(d.positionId)}`,
         sub: d.role === 'maker' ? `${dec(d.payout)} USDG back to your vault` : `P&L ${signed(d.pnl)}, ${dec(d.payout)} USDG back to your vault`,
       };
     case 'forced_exit_requested':
-      return { ...base, icon: 'info', title: `Forced exit requested on ${mkt} #${str(d.positionId)}`, sub: typeof d.settleAfter === 'number' ? `Settles from ${new Date(d.settleAfter).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : '' };
+      return { ...base, icon: 'info', title: `Forced exit requested on ${mkt} #${num(d.positionId)}`, sub: typeof d.settleAfter === 'number' ? `Settles from ${new Date(d.settleAfter).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : '' };
     case 'liquidation_reward':
-      return { ...base, icon: 'trade', title: `Liquidation reward on ${mkt} #${str(d.positionId)}`, sub: `${dec(d.reward)} USDG` };
+      return { ...base, icon: 'trade', title: `Liquidation reward on ${mkt} #${num(d.positionId)}`, sub: `${dec(d.reward)} USDG` };
     case 'offer_posted':
-      return { ...base, icon: 'offer', title: `Posted a ${mkt} offer`, sub: `${dec(d.backing)} USDG backing, ${str(String(d.openSpreadBps))}/${str(String(d.closeSpreadBps))} bps` };
+      return { ...base, icon: 'offer', title: `Posted a ${mkt} offer`, sub: `${dec(d.backing)} USDG backing, ${num(d.openSpreadBps)}/${num(d.closeSpreadBps)} bps` };
     case 'offer_filled':
-      return { ...base, icon: 'offer', title: `Offer #${str(d.offerId)} filled`, sub: `${dec(d.fillSize)} USDG position, ${dec(d.backingLeft)} USDG backing left` };
+      return { ...base, icon: 'offer', title: `Offer #${num(d.offerId)} filled`, sub: `${dec(d.fillSize)} USDG position, ${dec(d.backingLeft)} USDG backing left` };
     case 'offer_withdrawn':
-      return { ...base, icon: 'offer', title: `Withdrew offer #${str(d.offerId)}`, sub: `${dec(d.returned)} USDG back to your vault` };
+      return { ...base, icon: 'offer', title: `Withdrew offer #${num(d.offerId)}`, sub: `${dec(d.returned)} USDG back to your vault` };
     case 'swap': {
       const tin = str(d.tokenIn);
       const tout = str(d.tokenOut);
@@ -105,7 +118,7 @@ export function activityRow(a: ActivityDTO, me: string): ActivityRow {
     case 'cover_paid':
       return { ...base, icon: 'info', title: 'Shortfall cover paid', sub: `${dec(d.paid)} USDG` };
     default:
-      return { ...base, icon: 'info', title: a.kind.replace(/_/g, ' '), sub: '' };
+      return { ...base, icon: 'info', title: OTHER_ACTIVITY, sub: '' };
   }
 }
 

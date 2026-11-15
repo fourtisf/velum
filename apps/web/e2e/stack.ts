@@ -4,7 +4,9 @@
  *    /v1/deployment, positions and activity for the anvil deployment (chain 31337);
  *  - the on-chain indexer from apps/workers (startOnchain without hot keys: indexer only);
  *  - market snapshots in Redis (authenticated like the workers write them) so /v1/markets has prices;
- *  - a price pusher (the deployment's relay account on anvil) every 2 s;
+ *  - a price pusher (the deployment's relay account on anvil) every 2 s, each push carrying its observation time
+ *    (OracleAdapter.pushPrices(tokens, prices, observedAt), on-chain audit M-1: the chain time of a fresh block, so it is
+ *    never in the future, at most a few seconds old when it lands, and newer than the last one);
  *  - seed liquidity and maker offers from anvil's public test accounts;
  *  - a control port for the browser test: set a price, warp time, fund or allowlist a throwaway wallet.
  * Only anvil's public test accounts and throwaway keys sign. Nothing here talks to a public network.
@@ -41,7 +43,12 @@ const ACC = {
 
 const MOCK = parseAbi(['function mint(address to, uint256 amount)', 'function approve(address spender, uint256 amount) returns (bool)']);
 const VAULT = parseAbi(['function deposit(address token, uint256 amount, address to) returns (uint256)', 'function setApproval(address module, bool ok)', 'function addToAllowlist(address[] accounts)']);
-const ORACLE = parseAbi(['function pushPrices(address[] tokens, uint256[] prices)', 'function latest(address token) view returns (uint256 p, uint256 updatedAt)', 'function lagging(address token) view returns (bool)']);
+const ORACLE = parseAbi([
+  'function pushPrices(address[] tokens, uint256[] prices, uint256 observedAt)',
+  'function relayed(address token) view returns (uint128 price, uint64 updatedAt, uint64 pushedAt)',
+  'function latest(address token) view returns (uint256 p, uint256 updatedAt)',
+  'function lagging(address token) view returns (bool)',
+]);
 const SPOT = parseAbi(['function addLiquidity(address stock, uint256 maxStock, uint256 maxUsdg, uint256 minShares, uint256 deadline) returns (uint256, uint256, uint256)']);
 const BOOK = parseAbi(['function postOffer(address market, uint256 backing, uint256 largestFill, uint16 openSpreadBps, uint16 closeSpreadBps, uint64 expiry) returns (uint256)']);
 
@@ -74,12 +81,33 @@ async function main() {
   const c = d.contracts as Record<string, Address>;
   const target: Record<string, bigint> = { TSLA: 39165n * 10n ** 16n, AMZN: 23340n * 10n ** 16n };
 
-  // ---- prices: pushed on chain every 2 s, and authenticated snapshots for /v1/markets every second
-  const push = async () => {
+  // ---- prices: pushed on chain every 2 s, and authenticated snapshots for /v1/markets every second.
+  // Pushes run one at a time (the timer and /warp share them). Each carries the chain's current time as its
+  // observation time: an empty block is mined first (anvil only mines on demand, so the latest block can be
+  // minutes old, and a push more than 10 s after its observation is refused) and its time is used. The
+  // contract also wants it newer than the last observation and the push in a later second than the last push
+  // (anvil can mine several blocks in one second), so when the chain has not moved on yet the next block is
+  // dated one second later.
+  let queue: Promise<void> = Promise.resolve();
+  const pushNow = async () => {
     const syms = Object.keys(target).filter((s) => t[s]);
-    await send(ACC.relayer, c.oracle, ORACLE, 'pushPrices', [syms.map((s) => t[s]), syms.map((s) => target[s])]);
+    await rpc('evm_mine');
+    const [block, ...rel] = await Promise.all([pub.getBlock({ blockTag: 'latest' }), ...syms.map((s) => pub.readContract({ address: c.oracle, abi: ORACLE, functionName: 'relayed', args: [t[s]!] }))]);
+    const need = rel.reduce((m, [, updatedAt, pushedAt]) => [m, updatedAt + 1n, pushedAt + 1n].reduce((a, b) => (a > b ? a : b)), 0n);
+    let observedAt = block.timestamp;
+    if (observedAt < need) {
+      observedAt = need;
+      await rpc('evm_setNextBlockTimestamp', [Number(need)]);
+    }
+    await send(ACC.relayer, c.oracle, ORACLE, 'pushPrices', [syms.map((s) => t[s]), syms.map((s) => target[s]), observedAt]);
+  };
+  const push = (): Promise<void> => {
+    const run = queue.then(pushNow);
+    queue = run.catch(() => undefined);
+    return run;
   };
   await push();
+  console.log('[stack] first prices pushed');
 
   // ---- seed: the maker deposits, adds liquidity and posts offers (allowlisted first when guarded)
   if (guardAdmin) await send(guardAdmin, c.vault, VAULT, 'addToAllowlist', [[ACC.maker]]);
@@ -99,6 +127,7 @@ async function main() {
     await send(ACC.maker, c.makerBook, BOOK, 'postOffer', [t[sym], 10_000n * E6, 5_000n * E6, 5, 5, now + 90n * 86_400n]);
   }
 
+  console.log('[stack] liquidity and offers seeded');
   // ---- the API from this tree, for chain 31337 (loadEnv only accepts the configured network's chain id)
   const { buildApp } = fromApi('./src/app') as typeof import('../../api/src/app');
   const { loadEnv } = fromApi('./src/env') as typeof import('../../api/src/env');
@@ -108,9 +137,13 @@ async function main() {
   const { cacheKeys } = fromApi('@velum/config') as typeof import('../../../packages/config/src/index');
   const { PrismaClient } = fromApi('@velum/db') as typeof import('@velum/db');
   const { Redis } = fromApi('ioredis') as typeof import('ioredis');
+  const { parseRedisUrl } = fromApi('@velum/config') as typeof import('../../../packages/config/src/index');
+  // A unix socket (onchain-e2e.sh): the on-chain workers refuse any other Redis (audit M-3).
+  const conn = parseRedisUrl(REDIS);
+  if (!conn.ok) throw new Error(conn.error);
   const env = { ...loadEnv({ ...process.env, VELUM_NETWORK: 'testnet', CHAIN_ID: '', RPC_URL: RPC, DEPLOYMENTS_DIR: DIR, PORT_API: String(API_PORT), RATE_LIMIT_READ_PER_MIN: '5000', LOG_LEVEL: 'warn' }), chainId: CHAIN_ID };
   const prisma = new PrismaClient({ datasources: { db: { url: DB } } });
-  const redis = new Redis(REDIS, { maxRetriesPerRequest: 1 });
+  const redis = new Redis({ ...conn.options, maxRetriesPerRequest: 1 });
   const mac = createCacheMac(DB, 'testnet');
   const app = await buildApp({
     env,
@@ -122,6 +155,7 @@ async function main() {
     rateLimitRedis: redis,
   });
   await app.listen({ host: '127.0.0.1', port: API_PORT });
+  console.log(`[stack] API on 127.0.0.1:${API_PORT}`);
 
   const writeSnapshots = async () => {
     const at = Date.now();
@@ -138,7 +172,7 @@ async function main() {
   const { startOnchain } = fromWorkers('./src/onchain/index') as typeof import('../../workers/src/onchain/index');
   const { loadOnchainEnv } = fromWorkers('./src/onchain/env') as typeof import('../../workers/src/onchain/env');
   const quiet = { debug: () => undefined, info: () => undefined, warn: (m: string, x?: object) => console.error('[indexer]', m, JSON.stringify(x ?? {})), error: (m: string, x?: object) => console.error('[indexer]', m, JSON.stringify(x ?? {})) };
-  const bull = new Redis(REDIS, { maxRetriesPerRequest: null });
+  const bull = new Redis({ ...conn.options, maxRetriesPerRequest: null });
   const handle = await startOnchain({
     env: loadOnchainEnv({ ONCHAIN_WORKERS: 'true', DEPLOYMENTS_DIR: DIR, CONFIRMATIONS: '1', INDEXER_POLL_MS: '500' }),
     chainId: CHAIN_ID,
@@ -215,6 +249,9 @@ async function main() {
 
   console.log(JSON.stringify({ ready: true, apiPort: API_PORT, ctlPort: CTL_PORT, guarded: !!guardAdmin, vault: c.vault }));
   const stop = async () => {
+    // Never outlive the test: onchain-e2e.sh stops Redis and PostgreSQL right after, and a close waiting on
+    // them would keep this process (and its ports) alive into the next phase.
+    setTimeout(() => process.exit(0), 3000).unref();
     timers.forEach(clearInterval);
     await handle.stop().catch(() => undefined);
     await app.close().catch(() => undefined);

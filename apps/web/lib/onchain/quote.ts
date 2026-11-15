@@ -176,3 +176,120 @@ export function stockForUsdg(usdg: bigint, price: bigint, valueScale: bigint): b
 
 /** USDG value (base units) of `qty` tokens at `price`, rounded down. */
 export const valueOfQty = (qty: bigint, price: bigint, valueScale: bigint): bigint => mulDivDown(qty, price, valueScale);
+
+/* ---------------------------------------------------------------- offers: the full cost of a round trip */
+
+/**
+ * A spread above this needs an explicit acknowledgement in the review (web audit W3-03). 50 bps is 0.5% of the
+ * position's size: ten times the 5 bps the reference maker quotes, more than eight times the 0.06% taker fee,
+ * and 2.5% of the margin at 5x, lost at the close even if the price never moves. MakerBook allows up to 500 bps
+ * (5%: a quarter of the margin at 5x), so a taker must not drift into such an offer without seeing it.
+ */
+export const HIGH_SPREAD_BPS = 50;
+
+export interface RoundTrip {
+  /** Lost to the open and close spreads at an unchanged price (USDG base units). */
+  spread: bigint;
+  /** The 0.06% open fee plus the 0.06% close fee on exit notional. */
+  fees: bigint;
+  /** spread + fees: what opening and closing right away costs at an unchanged price. */
+  total: bigint;
+}
+
+/**
+ * Opening `size` against an offer and closing it at the same oracle `price`, as the contracts compute it
+ * (openQuote, exitPrice, closeFee, takerPnl): the honest cost of an offer, its close spread included. Funding
+ * is left out (it does not depend on the offer).
+ */
+export function roundTrip(p: { price: bigint; size: bigint; levHalf: number; long: boolean; openBps: number; closeBps: number; valueScale: bigint }): RoundTrip {
+  const q = openQuote({ price: p.price, size: p.size, levHalf: p.levHalf, long: p.long, openBps: p.openBps, slipBps: 0n, valueScale: p.valueScale });
+  const exit = exitPrice(p.price, p.long, p.closeBps);
+  const pnl = takerPnl(p.long, q.qty, q.entry, exit, p.valueScale);
+  const fees = q.fee + closeFee(q.qty, exit, p.valueScale);
+  const spread = pnl < 0n ? -pnl : 0n;
+  return { spread, fees, total: spread + fees };
+}
+
+/** Whether taking this offer needs the explicit acknowledgement (either spread above HIGH_SPREAD_BPS). */
+export const highSpread = (o: { openBps: number; closeBps: number }): boolean => o.closeBps > HIGH_SPREAD_BPS || o.openBps > HIGH_SPREAD_BPS;
+
+/**
+ * The most a taker can make on one position: the maker's margin (S/maxL, 20% of size). Beyond about a 10% move
+ * the maker side is liquidated and the taker receives the pool (contracts/README.md, simplifications).
+ */
+export const takerProfitCap = (size: bigint): bigint => mulDivUp(size, PERPS.imBps, BPS);
+
+/* ---------------------------------------------------------------- close on a liquidatable position */
+
+export interface LiquidationQuote {
+  /** The taker's side is the one liquidated (else the maker's). */
+  takerSide: boolean;
+  /** The taker's share of the pool after the penalty (USDG base units). */
+  takerOut: bigint;
+  /** The 1% penalty the liquidated side pays (capped at its claim). */
+  penalty: bigint;
+  /** The liquidator half of the penalty, paid to the closing taker (the liquidator). */
+  reward: bigint;
+  /** The insurance top-up of the reward when the loser cannot pay it (at most the cap, if the epoch allows). */
+  topUp: bigint;
+  /** A shortfall the taker files as a cover claim (maker side insolvent). */
+  shortfall: bigint;
+}
+
+/**
+ * What `close` pays when the position is liquidatable (PerpsLiquidation._liquidationSplit with the taker as
+ * liquidator): the oracle price with no close spread and no close fee; the liquidated side pays 1% of notional
+ * (capped at its claim), half of it back to the liquidator (here the taker), topped up from insurance to half
+ * the full penalty (at most `rewardCap`) when the loser cannot pay. `takerClaim` is PerpsMarkets.takerClaimAt
+ * at that price (funding included). Null when neither side is below maintenance.
+ */
+export function liquidationQuote(p: { takerClaim: bigint; takerMargin: bigint; makerMargin: bigint; qty: bigint; price: bigint; valueScale: bigint; rewardCap: bigint }): LiquidationQuote | null {
+  const pool = p.takerMargin + p.makerMargin;
+  const makerClaim = pool - p.takerClaim;
+  const notional = mulDivUp(p.qty, p.price, p.valueScale);
+  const req = mulDivUp(notional, PERPS.mmBps, BPS);
+  let takerSide: boolean;
+  if (p.takerClaim < req && p.takerClaim <= makerClaim) takerSide = true;
+  else if (makerClaim < req) takerSide = false;
+  else return null;
+  const loserClaim = takerSide ? p.takerClaim : makerClaim;
+  const fullPenalty = mulDivUp(notional, PERPS.penaltyBps, BPS);
+  let penalty = 0n;
+  let loserOut = 0n;
+  let shortfall = 0n;
+  if (loserClaim <= 0n) shortfall = -loserClaim;
+  else {
+    penalty = loserClaim < fullPenalty ? loserClaim : fullPenalty;
+    loserOut = loserClaim - penalty;
+  }
+  const winnerOut = pool - loserOut - penalty;
+  const reward = penalty / 2n;
+  const target = fullPenalty / 2n < p.rewardCap ? fullPenalty / 2n : p.rewardCap;
+  return { takerSide, takerOut: takerSide ? loserOut : winnerOut, penalty, reward, topUp: reward < target ? target - reward : 0n, shortfall: takerSide ? 0n : shortfall };
+}
+
+/* ---------------------------------------------------------------- add liquidity: the reviewed plan */
+
+export interface LpAddPlan {
+  /** USDG swapped into the stock. */
+  half: bigint;
+  /** Stock the swap returns at the reviewed reserves, and its minimum (slippage). */
+  stockOut: bigint;
+  minStock: bigint;
+  /** Shares the add mints at the reserves the user's own swap leaves (reviewed), and their minimum. */
+  shares: bigint;
+  minShares: bigint;
+}
+
+/**
+ * The two-step add (swap half of `usdg` into the stock, then add both) planned from the reserves the user
+ * reviewed (web audit W3-07): the add's `minShares` comes from the pool as the user's own swap leaves it, not
+ * from live reserves read just before the second transaction (which anyone can move in between).
+ */
+export function lpAddPlan(pool: PoolState, usdg: bigint, slip: bigint): LpAddPlan {
+  const half = usdg / 2n;
+  const stockOut = poolOut(half, pool.usdgReserve, pool.stockReserve);
+  const after: PoolState = { stockReserve: pool.stockReserve - stockOut, usdgReserve: pool.usdgReserve + half, totalShares: pool.totalShares };
+  const shares = sharesFor(after, stockOut, usdg - half);
+  return { half, stockOut, minStock: minOut(stockOut, slip), shares, minShares: minOut(shares, slip) };
+}

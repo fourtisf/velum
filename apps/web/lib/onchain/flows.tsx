@@ -5,14 +5,17 @@
  * are exact (an ERC-20 approve of exactly the deposit, never unlimited) and module approvals are asked only
  * when missing, both checked on chain when the step runs. Every trade carries a non-zero price limit or
  * minimum from the slippage setting.
+ *
+ * Receipts are built only from the expected events of the expected contract (web audit W3-04): a step whose
+ * confirmed receipt lacks them fails with ReceiptMismatch instead of showing what did not happen.
  */
-import { parseEventLogs, type Address, type TransactionReceipt } from 'viem';
+import { getAddress, parseEventLogs, type Address, type TransactionReceipt } from 'viem';
 import { publicClient } from '../chain';
 import { fmt, fmtLev, shortH } from '../format';
-import { BOOK_ABI, ERC20_ABI, PERPS_ABI, SPOT_ABI, VAULT_ABI } from './abi';
+import { BOOK_ABI, ERC20_ABI, PERPS_ABI, PERPS_ACTION, SPOT_ABI, VAULT_ABI } from './abi';
 import type { OnchainInfo } from './deployment';
-import type { Row, TxFlowSpec, TxRunCtx, TxStepSpec } from './flow';
-import { closeLimit, minOut, openLimit, removeQuote, sharesFor, type OpenQuote, type PoolState } from './quote';
+import { ReceiptMismatch, type Row, type TxFlowSpec, type TxRunCtx, type TxStepSpec } from './flow';
+import { closeLimit, highSpread, lpAddPlan, minOut, openLimit, removeQuote, roundTrip, sharesFor, takerProfitCap, type LiquidationQuote, type OpenQuote, type PoolState } from './quote';
 import { MODULES, rememberPosition, type ChainPosition, type ModuleKey, type Offer, type Protocol } from './reads';
 import { unitsToWad } from './units';
 
@@ -42,12 +45,31 @@ export function exact(units: bigint, decimals: number, sym?: string): string {
 export const approx = (units: bigint, decimals: number, dp = 2): string => fmt(unitsToWad(units, decimals), dp);
 /** A 1e18 price as USDG with 2 decimals. */
 export const price = (p: bigint): string => fmt(p, 2);
+/** `part` as a percentage of `whole` with 2 decimals (integer math). */
+export const pctOf = (part: bigint, whole: bigint): string => (whole > 0n ? `${(Number((part * 10_000n) / whole) / 100).toFixed(2)}%` : '—');
 
 const dec = (b: FlowBase, sym: string): number => b.proto.decimals[sym]!;
 const token = (b: FlowBase, sym: string): A => b.oc.d.tokens[sym] as A;
 const usdg = (b: FlowBase, units: bigint) => exact(units, dec(b, 'USDG'), 'USDG');
 
 const MODULE_NAME: Record<ModuleKey, string> = { perps: 'perps market', spot: 'spot pools', book: 'maker book' };
+
+type Args = Record<string, unknown>;
+const same = (a: unknown, b: string): boolean => typeof a === 'string' && a.toLowerCase() === b.toLowerCase();
+const big = (v: unknown): bigint => (typeof v === 'bigint' ? v : 0n);
+
+/** The events `abi` decodes from the logs `address` emitted in `r` (logs of any other contract are ignored). */
+function events(abi: readonly unknown[], r: TransactionReceipt, address: string): Array<{ eventName: string; args: Args }> {
+  const logs = r.logs.filter((l) => l.address.toLowerCase() === address.toLowerCase());
+  return parseEventLogs({ abi: abi as never, logs }) as unknown as Array<{ eventName: string; args: Args }>;
+}
+
+/** The one expected event (name, emitter, matching arguments) of a confirmed receipt, or ReceiptMismatch. */
+export function expectEvent(r: TransactionReceipt, address: string, abi: readonly unknown[], name: string, match: (a: Args) => boolean = () => true): Args {
+  const ev = events(abi, r, address).find((e) => e.eventName === name && match(e.args));
+  if (!ev) throw new ReceiptMismatch(name);
+  return ev.args;
+}
 
 /** One-time module approval in the vault, skipped when already given (read on chain when the step runs). */
 export function moduleStep(b: FlowBase, m: ModuleKey): TxStepSpec {
@@ -57,15 +79,14 @@ export function moduleStep(b: FlowBase, m: ModuleKey): TxStepSpec {
     t: `Allow the Velum ${MODULE_NAME[m]} to use your vault balance`,
     d: 'A one-time approval in the vault, only for this contract',
     label: 'Approval',
+    idempotent: true,
     call: async (ctx) => {
       const ok = await publicClient.readContract({ address: vault, abi: VAULT_ABI, functionName: 'approved', args: [ctx.account, target] });
       return ok ? null : { address: vault, abi: VAULT_ABI, functionName: 'setApproval', args: [target, true] };
     },
+    after: (r, ctx) => void expectEvent(r, vault, VAULT_ABI, 'ModuleApproval', (a) => same(a.account, ctx.account) && same(a.module, target) && a.approved === true),
   };
 }
-
-const events = <T extends readonly unknown[]>(abi: T, r: TransactionReceipt) => parseEventLogs({ abi: abi as never, logs: r.logs }) as unknown as Array<{ eventName: string; args: Record<string, unknown> }>;
-const big = (v: unknown): bigint => (typeof v === 'bigint' ? v : 0n);
 
 /* ---------------------------------------------------------------- vault */
 
@@ -88,10 +109,12 @@ export function depositFlow(b: FlowBase, sym: string, units: bigint): TxFlowSpec
         t: `Approve exactly ${amount}`,
         d: 'Lets the Velum vault take this amount from your wallet, and nothing more',
         label: 'Token approval',
+        idempotent: true,
         call: async (ctx) => {
           const have = await publicClient.readContract({ address: t, abi: ERC20_ABI, functionName: 'allowance', args: [ctx.account, vault] });
           return have >= units ? null : { address: t, abi: ERC20_ABI, functionName: 'approve', args: [vault, units] };
         },
+        after: (r, ctx) => void expectEvent(r, t, ERC20_ABI, 'Approval', (a) => same(a.owner, ctx.account) && same(a.spender, vault)),
       },
       {
         t: `Deposit ${amount}`,
@@ -99,37 +122,48 @@ export function depositFlow(b: FlowBase, sym: string, units: bigint): TxFlowSpec
         label: 'Deposit',
         call: () => ({ address: vault, abi: VAULT_ABI, functionName: 'deposit', args: [t, units, b.account] }),
         after: (r, ctx) => {
-          const ev = events(VAULT_ABI, r).find((e) => e.eventName === 'Deposited');
-          ctx.out.received = big(ev?.args.amount);
+          ctx.out.received = big(expectEvent(r, vault, VAULT_ABI, 'Deposited', (a) => same(a.from, ctx.account) && same(a.to, b.account) && same(a.token, t)).amount);
         },
       },
     ],
-    done: (ctx) => ({ rows: [['Token', sym], ['Deposited', exact(big(ctx.out.received) || units, dec(b, sym), sym)], ['Vault balance', 'Updated']], toast: `Shielded ${sym}` }),
+    done: (ctx) => ({ rows: [['Token', sym], ['Deposited', exact(big(ctx.out.received), dec(b, sym), sym)], ['Vault balance', 'Updated']], toast: `Shielded ${sym}` }),
     ...b,
     d: b.oc.d,
   };
 }
 
+/** The full checksummed address, flagged when it is not the connected wallet (web audit W3-08). */
+function Dest({ to, mine }: { to: Address; mine: boolean }) {
+  return (
+    <span className={mine ? undefined : 'down'} style={{ wordBreak: 'break-all' }}>
+      {to}
+    </span>
+  );
+}
+
 /** Unshield = withdraw from the vault to a wallet address. Never blocked by the launch guard. */
-export function withdrawFlow(b: FlowBase, sym: string, units: bigint, to: Address): TxFlowSpec {
+export function withdrawFlow(b: FlowBase, sym: string, units: bigint, dest: Address): TxFlowSpec {
   const vault = b.oc.d.contracts.vault as A;
   const amount = exact(units, dec(b, sym), sym);
+  const to = getAddress(dest);
+  const mine = to.toLowerCase() === b.account.toLowerCase();
+  const destRows: Row[] = [['To', <Dest key="to" to={to} mine={mine} />], ...(mine ? [] : ([['Destination', <span key="w" className="down">Not your connected wallet</span>]] as Row[]))];
   return {
     title: `Unshield ${sym}`,
-    review: [
-      ['Withdraw', amount],
-      ['To', shortH(to)],
-      ['Visible onchain', 'The address, the token and the amount'],
-    ],
+    review: [['Withdraw', amount], ...destRows, ['Visible onchain', 'The address, the token and the amount']],
+    note: mine ? undefined : 'This address is not the wallet you are connected with. Check every character: a withdrawal cannot be undone.',
     steps: [
       {
         t: `Withdraw ${amount}`,
-        d: `To ${shortH(to)}`,
+        d: `To ${shortH(to)}${mine ? ' (your wallet)' : ''}`,
         label: 'Withdrawal',
         call: () => ({ address: vault, abi: VAULT_ABI, functionName: 'withdraw', args: [token(b, sym), units, to] }),
+        after: (r, ctx) => {
+          ctx.out.amount = big(expectEvent(r, vault, VAULT_ABI, 'Withdrawn', (a) => same(a.from, ctx.account) && same(a.to, to) && same(a.token, token(b, sym))).amount);
+        },
       },
     ],
-    done: () => ({ rows: [['Token', sym], ['Withdrawn', amount], ['To', shortH(to)]], toast: `Unshielded ${sym}` }),
+    done: (ctx) => ({ rows: [['Token', sym], ['Withdrawn', exact(big(ctx.out.amount), dec(b, sym), sym)], ...destRows], toast: `Unshielded ${sym}` }),
     ...b,
     d: b.oc.d,
   };
@@ -150,10 +184,19 @@ export interface OpenInput {
   oraclePrice: bigint;
 }
 
+/** The statement to tick before taking an offer with a high spread (web audit W3-03), or undefined. */
+export function spreadAck(b: FlowBase, i: OpenInput): string | undefined {
+  if (!highSpread(i.offer)) return undefined;
+  const rt = roundTrip({ price: i.oraclePrice, size: i.size, levHalf: i.levHalf, long: i.long, openBps: i.offer.openBps, closeBps: i.offer.closeBps, valueScale: b.proto.valueScale });
+  return `I accept this offer's ${i.offer.openBps} bps open and ${i.offer.closeBps} bps close spread: opening and closing at an unchanged price costs about ${approx(rt.total, dec(b, 'USDG'))} USDG, ${pctOf(rt.total, i.q.takerMargin)} of my margin.`;
+}
+
 export function openFlow(b: FlowBase, i: OpenInput): TxFlowSpec {
   const perps = b.oc.d.contracts.perpsMarkets as A;
   const Side = i.long ? 'Long' : 'Short';
   const ud = dec(b, 'USDG');
+  const rt = roundTrip({ price: i.oraclePrice, size: i.size, levHalf: i.levHalf, long: i.long, openBps: i.offer.openBps, closeBps: i.offer.closeBps, valueScale: b.proto.valueScale });
+  const cap = takerProfitCap(i.size);
   return {
     title: `Open ${i.long ? 'long' : 'short'} ${i.sym}`,
     review: [
@@ -168,8 +211,11 @@ export function openFlow(b: FlowBase, i: OpenInput): TxFlowSpec {
       ['Position (est.)', `${fmt(i.q.qty, 4)} ${i.sym}`],
       ['Liquidation (est.)', i.q.liq ? price(i.q.liq) : 'None'],
       ['Maker offer', `#${i.offer.id} (${i.offer.openBps} bps open, ${i.offer.closeBps} bps close spread)`],
+      ['Round trip (est.)', `${approx(rt.total, ud)} USDG (${pctOf(rt.total, i.q.takerMargin)} of margin)`],
+      ['Profit cap', `${usdg(b, cap)} (maker margin, 20% of size)`],
     ],
-    note: 'Phase 3: this position is public onchain (size, side, entry and owner). The liquidation price excludes funding.',
+    note: `Phase 3: this position is public onchain (size, side, entry and owner). The liquidation price excludes funding. The round trip is what opening and closing right away costs at an unchanged price: both spreads (this maker's close spread is ${i.offer.closeBps} bps) and both 0.06% fees. Your profit is capped at the maker's margin: past about a 10% move in your favour the maker side is liquidated and you receive the whole pool.`,
+    ack: spreadAck(b, i),
     steps: [
       moduleStep(b, 'perps'),
       {
@@ -179,14 +225,13 @@ export function openFlow(b: FlowBase, i: OpenInput): TxFlowSpec {
         waitFor: ['StalePrice', 'PriceLagging'],
         call: () => ({ address: perps, abi: PERPS_ABI, functionName: 'open', args: [i.offer.id, token(b, i.sym), i.long, i.size, i.levHalf, i.q.priceLimit] }),
         after: (r, ctx) => {
-          const ev = events(PERPS_ABI, r).find((e) => e.eventName === 'PositionChanged');
-          if (!ev) return;
-          const id = big(ev.args.id);
+          const ev = expectEvent(r, perps, PERPS_ABI, 'PositionChanged', (a) => Number(a.action) === PERPS_ACTION.open && same(a.taker, ctx.account) && same(a.market, token(b, i.sym)) && a.isLong === i.long);
+          const id = big(ev.id);
           ctx.out.id = id;
-          ctx.out.entry = big(ev.args.entry);
-          ctx.out.qty = big(ev.args.qty);
-          ctx.out.margin = big(ev.args.takerMargin);
-          rememberPosition(ctx.account, id, r.transactionHash);
+          ctx.out.entry = big(ev.entry);
+          ctx.out.qty = big(ev.qty);
+          ctx.out.margin = big(ev.takerMargin);
+          rememberPosition(b.oc, ctx.account, id, r.transactionHash);
         },
       },
     ],
@@ -198,6 +243,7 @@ export function openFlow(b: FlowBase, i: OpenInput): TxFlowSpec {
         ['Entry', price(big(ctx.out.entry))],
         ['Margin', exact(big(ctx.out.margin), ud, 'USDG')],
         ['Fee', usdg(b, i.q.fee)],
+        ['Close spread', `${i.offer.closeBps} bps (maker offer #${i.offer.id})`],
         ['Position ID', `#${String(ctx.out.id ?? '')}`],
       ],
       toast: `${Side} opened on ${i.sym}`,
@@ -209,44 +255,61 @@ export function openFlow(b: FlowBase, i: OpenInput): TxFlowSpec {
 
 export interface CloseInput {
   pos: ChainPosition;
+  /** The oracle price the quote used. */
+  price: bigint;
   exit: bigint;
   fee: bigint;
-  /** Estimated return (claim at exit minus the fee, at least 0). */
+  /** Estimated return of a plain close (claim at exit minus the fee, at least 0). */
   estOut: bigint;
   slip: bigint;
+  /** The position is liquidatable now: the close settles as a liquidation with you as liquidator (W3-10). */
+  liq: LiquidationQuote | null;
 }
 
 export function closeFlow(b: FlowBase, i: CloseInput): TxFlowSpec {
   const perps = b.oc.d.contracts.perpsMarkets as A;
   const limit = closeLimit(i.exit, i.pos.long, i.slip);
   const ud = dec(b, 'USDG');
+  const head: Row[] = [
+    ['Position', `#${i.pos.id}: ${fmt(i.pos.qty, 4)} ${i.pos.sym} ${i.pos.long ? 'long' : 'short'}`],
+    ['Price limit', `${i.pos.long ? 'At least' : 'At most'} ${price(limit)} (${Number(i.slip) / 100}% slippage)`],
+  ];
+  const l = i.liq;
+  const review: Row[] = l
+    ? [
+        ...head,
+        ['Settles as', <span key="l" className="down">Liquidation ({l.takerSide ? 'your side' : "the maker's side"} is below maintenance)</span>],
+        ['Exit (est.)', `${price(i.price)} (oracle, no spread or fee)`],
+        [l.takerSide ? 'Penalty you pay (1%)' : "Penalty the maker pays (1%)", usdg(b, l.penalty)],
+        ['Returned (est.)', usdg(b, l.takerOut)],
+        ['Liquidator reward to you (est.)', l.topUp > 0n ? `${usdg(b, l.reward)}, up to ${usdg(b, l.reward + l.topUp)} with the insurance top-up` : usdg(b, l.reward)],
+        ...(l.shortfall > 0n ? ([['Cover claim (est.)', `${usdg(b, l.shortfall)} the maker could not pay, filed for you`]] as Row[]) : []),
+        ['Total back to your vault (est.)', usdg(b, l.takerOut + l.reward)],
+      ]
+    : [...head, ['Exit (est.)', price(i.exit)], ['Close fee (0.06%)', usdg(b, i.fee)], ['Returned (est.)', usdg(b, i.estOut)]];
   return {
     title: `Close ${i.pos.long ? 'long' : 'short'} ${i.pos.sym}`,
-    review: [
-      ['Position', `#${i.pos.id}: ${fmt(i.pos.qty, 4)} ${i.pos.sym} ${i.pos.long ? 'long' : 'short'}`],
-      ['Exit (est.)', price(i.exit)],
-      ['Price limit', `${i.pos.long ? 'At least' : 'At most'} ${price(limit)} (${Number(i.slip) / 100}% slippage)`],
-      ['Close fee (0.06%)', usdg(b, i.fee)],
-      ['Returned (est.)', usdg(b, i.estOut)],
-    ],
-    note: 'Settles at the oracle price minus the close spread your maker committed to. If the position is liquidatable now, it settles as a liquidation instead.',
+    review,
+    note: l
+      ? 'This position can be liquidated right now, so closing settles it as a liquidation with you as the liquidator: the liquidator half of the penalty comes back to you. The price limit is checked against the spread-adjusted exit and does not cover the penalty.'
+      : 'Settles at the oracle price minus the close spread your maker committed to. If the position becomes liquidatable before it confirms, it settles as a liquidation instead.',
     steps: [
       {
-        t: 'Settling at the current price',
+        t: l ? 'Settling as a liquidation' : 'Settling at the current price',
         d: `Only at or ${i.pos.long ? 'above' : 'below'} ${price(limit)}, no maker signature needed`,
         label: 'Close',
         waitFor: ['PriceLagging', 'StalePrice'],
         call: () => ({ address: perps, abi: PERPS_ABI, functionName: 'close', args: [i.pos.id, limit] }),
         after: (r, ctx) => {
-          const evs = events(PERPS_ABI, r);
-          const s = evs.find((e) => e.eventName === 'PositionSettled');
-          ctx.out.liquidated = evs.some((e) => e.eventName === 'Liquidated');
-          if (s) {
-            ctx.out.exit = big(s.args.exitPrice);
-            ctx.out.pnl = big(s.args.takerPnl);
-            ctx.out.fee = big(s.args.fee);
-            ctx.out.out = big(s.args.takerOut);
-          }
+          const s = expectEvent(r, perps, PERPS_ABI, 'PositionSettled', (a) => big(a.id) === i.pos.id);
+          const liq = events(PERPS_ABI, r, perps).find((e) => e.eventName === 'Liquidated' && big(e.args.id) === i.pos.id);
+          ctx.out.liquidated = !!liq;
+          ctx.out.reward = liq && same(liq.args.liquidator, ctx.account) ? big(liq.args.reward) : 0n;
+          ctx.out.shortfall = liq && liq.args.takerSide === false ? big(liq.args.shortfall) : 0n;
+          ctx.out.exit = big(s.exitPrice);
+          ctx.out.pnl = big(s.takerPnl);
+          ctx.out.fee = big(s.fee);
+          ctx.out.out = big(s.takerOut);
         },
       },
     ],
@@ -256,7 +319,14 @@ export function closeFlow(b: FlowBase, i: CloseInput): TxFlowSpec {
         ['P&L', `${big(ctx.out.pnl) >= 0n ? '+' : ''}${exact(big(ctx.out.pnl), ud, 'USDG')}`],
         [ctx.out.liquidated ? 'Penalty' : 'Fee', exact(big(ctx.out.fee), ud, 'USDG')],
         ['Returned', exact(big(ctx.out.out), ud, 'USDG')],
-        ...(ctx.out.liquidated ? ([['Settled as', 'Liquidation (the position was below maintenance)']] as Row[]) : []),
+        ...(ctx.out.liquidated
+          ? ([
+              ['Liquidator reward to you', exact(big(ctx.out.reward), ud, 'USDG')],
+              ...(big(ctx.out.shortfall) > 0n ? ([['Cover claim filed', exact(big(ctx.out.shortfall), ud, 'USDG')]] as Row[]) : []),
+              ['Total back to your vault', exact(big(ctx.out.out) + big(ctx.out.reward), ud, 'USDG')],
+              ['Settled as', 'Liquidation (the position was below maintenance)'],
+            ] as Row[])
+          : []),
       ],
       toast: 'Position closed',
     }),
@@ -270,6 +340,7 @@ export function marginFlow(b: FlowBase, pos: ChainPosition, add: boolean, units:
   const amount = usdg(b, units);
   const current = pos.role === 'taker' ? pos.takerMargin : pos.makerMargin;
   const after = add ? current + units : current - units;
+  const action = add ? PERPS_ACTION.addMargin : PERPS_ACTION.removeMargin;
   return {
     title: `${add ? 'Add' : 'Remove'} margin`,
     review: [
@@ -286,6 +357,7 @@ export function marginFlow(b: FlowBase, pos: ChainPosition, add: boolean, units:
         label: add ? 'Add margin' : 'Remove margin',
         waitFor: add ? undefined : ['StalePrice', 'PriceLagging'],
         call: () => ({ address: perps, abi: PERPS_ABI, functionName: add ? 'addMargin' : 'removeMargin', args: [pos.id, units] }),
+        after: (r) => void expectEvent(r, perps, PERPS_ABI, 'PositionChanged', (a) => big(a.id) === pos.id && Number(a.action) === action),
       },
     ],
     done: () => ({ rows: [['Position', `#${pos.id}`], [add ? 'Added' : 'Removed', amount], ['Margin now', usdg(b, after)]], toast: add ? 'Margin added' : 'Margin removed' }),
@@ -304,6 +376,7 @@ export function forcedExitFlow(b: FlowBase, pos: ChainPosition): TxFlowSpec {
       ['Position', `#${pos.id} ${pos.sym} ${pos.long ? 'long' : 'short'}`],
       ['Bond', `${bond} (claimable with "Claim bond refund" once the position closes)`],
       ['Settles', `After ${days} days, by anyone`],
+      ...(pos.role === 'taker' ? ([['Exit price', `The oracle price then, minus the ${pos.closeBps} bps close spread, plus the 0.06% fee`]] as Row[]) : []),
     ],
     note:
       pos.role === 'taker'
@@ -316,8 +389,7 @@ export function forcedExitFlow(b: FlowBase, pos: ChainPosition): TxFlowSpec {
         label: 'Forced exit request',
         call: () => ({ address: perps, abi: PERPS_ABI, functionName: 'requestForcedExit', args: [pos.id], value: b.proto.bond }),
         after: (r, ctx) => {
-          const ev = events(PERPS_ABI, r).find((e) => e.eventName === 'ForcedExitRequested');
-          ctx.out.settleAfter = big(ev?.args.settleAfter);
+          ctx.out.settleAfter = big(expectEvent(r, perps, PERPS_ABI, 'ForcedExitRequested', (a) => big(a.id) === pos.id && same(a.requester, ctx.account)).settleAfter);
         },
       },
     ],
@@ -347,9 +419,9 @@ export function settleExitFlow(b: FlowBase, pos: ChainPosition): TxFlowSpec {
         waitFor: ['StalePrice', 'PriceLagging'],
         call: () => ({ address: perps, abi: PERPS_ABI, functionName: 'settleForcedExit', args: [pos.id] }),
         after: (r, ctx) => {
-          const s = events(PERPS_ABI, r).find((e) => e.eventName === 'PositionSettled');
-          ctx.out.out = big(s?.args.takerOut);
-          ctx.out.makerOut = big(s?.args.makerOut);
+          const s = expectEvent(r, perps, PERPS_ABI, 'PositionSettled', (a) => big(a.id) === pos.id);
+          ctx.out.out = big(s.takerOut);
+          ctx.out.makerOut = big(s.makerOut);
         },
       },
     ],
@@ -364,8 +436,17 @@ export function claimBondFlow(b: FlowBase, amount: bigint): TxFlowSpec {
   return {
     title: 'Claim your forced-exit bond',
     review: [['Bond refund', exact(amount, 18, 'ETH')]],
-    steps: [{ t: 'Claiming the bond', label: 'Bond claim', call: () => ({ address: perps, abi: PERPS_ABI, functionName: 'claimBond', args: [] }) }],
-    done: () => ({ rows: [['Claimed', exact(amount, 18, 'ETH')]], toast: 'Bond claimed' }),
+    steps: [
+      {
+        t: 'Claiming the bond',
+        label: 'Bond claim',
+        call: () => ({ address: perps, abi: PERPS_ABI, functionName: 'claimBond', args: [] }),
+        after: (r, ctx) => {
+          ctx.out.claimed = big(expectEvent(r, perps, PERPS_ABI, 'BondClaimed', (a) => same(a.account, ctx.account)).amount);
+        },
+      },
+    ],
+    done: (ctx) => ({ rows: [['Claimed', exact(big(ctx.out.claimed), 18, 'ETH')]], toast: 'Bond claimed' }),
     ...b,
     d: b.oc.d,
   };
@@ -410,8 +491,7 @@ export function swapFlow(b: FlowBase, i: SwapInput): TxFlowSpec {
         outToken: b.oc.d.tokens[i.to],
         call: async () => ({ address: sp, abi: SPOT_ABI, functionName: 'swap', args: [token(b, i.from), token(b, i.to), i.amountIn, i.min, await deadline()] }),
         after: (r, ctx) => {
-          const ev = events(SPOT_ABI, r).find((e) => e.eventName === 'Swapped');
-          ctx.out.got = big(ev?.args.amountOut);
+          ctx.out.got = big(expectEvent(r, sp, SPOT_ABI, 'Swapped', (a) => same(a.account, ctx.account) && same(a.tokenIn, token(b, i.from)) && same(a.tokenOut, token(b, i.to))).amountOut);
         },
       },
     ],
@@ -432,71 +512,63 @@ export interface LpAddInput {
   sym: string;
   /** USDG to add in value (base units); half is swapped into the stock when the pool has liquidity. */
   usdgUnits: bigint;
+  /** The pool as reviewed (the plan and its minimums come from it, W3-07). */
   pool: PoolState;
   /** Stock and USDG for a first deposit (empty pool): both from the vault, at the oracle price. */
   first: { stock: bigint; usdg: bigint } | null;
-  /** Expected stock from swapping half (non-empty pool). */
-  swapQuote: bigint;
   slip: bigint;
 }
 
 export function lpAddFlow(b: FlowBase, i: LpAddInput): TxFlowSpec {
   const sp = b.oc.d.contracts.spotPools as A;
   const sd = dec(b, i.sym);
-  const half = i.usdgUnits / 2n;
+  const ud = dec(b, 'USDG');
   const stockTok = token(b, i.sym);
   const steps: TxStepSpec[] = [moduleStep(b, 'spot')];
   const review: Row[] = [['Pool', `${i.sym} / USDG`]];
+  const added = (r: TransactionReceipt, ctx: TxRunCtx) => {
+    const ev = expectEvent(r, sp, SPOT_ABI, 'LiquidityAdded', (a) => same(a.account, ctx.account) && same(a.stock, stockTok));
+    ctx.out.shares = big(ev.shares);
+    ctx.out.usdgIn = big(ev.usdgAmount);
+    ctx.out.stockIn = big(ev.stockAmount);
+  };
   if (i.first) {
     const shares = sharesFor(i.pool, i.first.stock, i.first.usdg);
-    review.push(['Add', `${exact(i.first.usdg, dec(b, 'USDG'), 'USDG')} and ${exact(i.first.stock, sd, i.sym)}`], ['Starting price', 'The oracle price now (first deposit sets it)']);
+    review.push(['Add', `${exact(i.first.usdg, ud, 'USDG')} and ${exact(i.first.stock, sd, i.sym)}`], ['Starting price', 'The oracle price now (first deposit sets it)']);
     steps.push({
       t: `Adding ${i.sym} and USDG`,
       d: 'The first deposit sets the pool price',
       label: 'Add liquidity',
       call: async () => ({ address: sp, abi: SPOT_ABI, functionName: 'addLiquidity', args: [stockTok, i.first!.stock, i.first!.usdg, shares, await deadline()] }),
-      after: (r, ctx) => {
-        const ev = events(SPOT_ABI, r).find((e) => e.eventName === 'LiquidityAdded');
-        ctx.out.shares = big(ev?.args.shares);
-        ctx.out.usdgIn = big(ev?.args.usdgAmount);
-        ctx.out.stockIn = big(ev?.args.stockAmount);
-      },
+      after: added,
     });
   } else {
-    const min1 = minOut(i.swapQuote, i.slip);
+    const plan = lpAddPlan(i.pool, i.usdgUnits, i.slip);
     review.push(
-      ['Swapped into ' + i.sym, `${exact(half, dec(b, 'USDG'), 'USDG')} → at least ${exact(min1, sd, i.sym)}`],
-      ['Added as USDG', `Up to ${exact(i.usdgUnits - half, dec(b, 'USDG'), 'USDG')}`],
+      ['Swapped into ' + i.sym, `${exact(plan.half, ud, 'USDG')} → at least ${exact(plan.minStock, sd, i.sym)}`],
+      ['Added as USDG', `Up to ${exact(i.usdgUnits - plan.half, ud, 'USDG')}`],
+      ['Pool shares (est.)', `${plan.shares.toString()} (at least ${plan.minShares.toString()})`],
       ['Slippage', `${Number(i.slip) / 100}% on the swap and on the shares`],
     );
     steps.push(
       {
         t: `Swapping half into ${i.sym}`,
-        d: `Only at or above ${exact(min1, sd, i.sym)}`,
+        d: `Only at or above ${exact(plan.minStock, sd, i.sym)}`,
         label: 'Swap',
         outToken: stockTok,
-        call: async () => ({ address: sp, abi: SPOT_ABI, functionName: 'swap', args: [token(b, 'USDG'), stockTok, half, min1, await deadline()] }),
+        call: async () => ({ address: sp, abi: SPOT_ABI, functionName: 'swap', args: [token(b, 'USDG'), stockTok, plan.half, plan.minStock, await deadline()] }),
         after: (r, ctx) => {
-          ctx.out.stockGot = big(events(SPOT_ABI, r).find((e) => e.eventName === 'Swapped')?.args.amountOut);
+          ctx.out.stockGot = big(expectEvent(r, sp, SPOT_ABI, 'Swapped', (a) => same(a.account, ctx.account) && same(a.tokenOut, stockTok)).amountOut);
         },
       },
       {
         t: 'Adding both to the pool',
-        d: 'Only the amounts matching the pool ratio are taken; the rest stays in your vault',
+        d: `At least ${plan.minShares.toString()} pool shares; only the amounts matching the pool ratio are taken, the rest stays in your vault`,
         label: 'Add liquidity',
-        call: async (ctx: TxRunCtx) => {
-          const stockGot = big(ctx.out.stockGot);
-          const [sr, ur, ts] = await publicClient.readContract({ address: sp, abi: SPOT_ABI, functionName: 'pools', args: [stockTok] });
-          const shares = sharesFor({ stockReserve: sr, usdgReserve: ur, totalShares: ts }, stockGot, i.usdgUnits - half);
-          const min = minOut(shares, i.slip);
-          return { address: sp, abi: SPOT_ABI, functionName: 'addLiquidity', args: [stockTok, stockGot, i.usdgUnits - half, min > 0n ? min : 1n, await deadline()] };
-        },
-        after: (r, ctx) => {
-          const ev = events(SPOT_ABI, r).find((e) => e.eventName === 'LiquidityAdded');
-          ctx.out.shares = big(ev?.args.shares);
-          ctx.out.usdgIn = big(ev?.args.usdgAmount);
-          ctx.out.stockIn = big(ev?.args.stockAmount);
-        },
+        // The minimum comes from the reviewed pool as the user's own swap leaves it, never from reserves read
+        // now (anyone can move them between the two transactions).
+        call: async (ctx: TxRunCtx) => ({ address: sp, abi: SPOT_ABI, functionName: 'addLiquidity', args: [stockTok, big(ctx.out.stockGot), i.usdgUnits - plan.half, plan.minShares > 0n ? plan.minShares : 1n, await deadline()] }),
+        after: added,
       },
     );
   }
@@ -508,7 +580,7 @@ export function lpAddFlow(b: FlowBase, i: LpAddInput): TxFlowSpec {
     done: (ctx) => ({
       rows: [
         ['Pool', `${i.sym} / USDG`],
-        ['Added', `${exact(big(ctx.out.usdgIn), dec(b, 'USDG'), 'USDG')} and ${approx(big(ctx.out.stockIn), sd, 4)} ${i.sym}`],
+        ['Added', `${exact(big(ctx.out.usdgIn), ud, 'USDG')} and ${approx(big(ctx.out.stockIn), sd, 4)} ${i.sym}`],
         ['Pool shares', big(ctx.out.shares).toString()],
       ],
       toast: 'Liquidity added',
@@ -525,6 +597,7 @@ export function lpRemoveFlow(b: FlowBase, sym: string, shares: bigint, pool: Poo
   const minU = minOut(q.usdg, slip);
   const sd = dec(b, sym);
   const ud = dec(b, 'USDG');
+  const stockTok = token(b, sym);
   return {
     title: `Remove liquidity from ${sym}`,
     review: [
@@ -537,11 +610,11 @@ export function lpRemoveFlow(b: FlowBase, sym: string, shares: bigint, pool: Poo
         t: 'Returning your share',
         d: `As ${sym} and USDG to your vault balance`,
         label: 'Remove liquidity',
-        call: async () => ({ address: sp, abi: SPOT_ABI, functionName: 'removeLiquidity', args: [token(b, sym), shares, minS > 0n ? minS : 1n, minU > 0n ? minU : 1n, await deadline()] }),
+        call: async () => ({ address: sp, abi: SPOT_ABI, functionName: 'removeLiquidity', args: [stockTok, shares, minS > 0n ? minS : 1n, minU > 0n ? minU : 1n, await deadline()] }),
         after: (r, ctx) => {
-          const ev = events(SPOT_ABI, r).find((e) => e.eventName === 'LiquidityRemoved');
-          ctx.out.stock = big(ev?.args.stockAmount);
-          ctx.out.usdg = big(ev?.args.usdgAmount);
+          const ev = expectEvent(r, sp, SPOT_ABI, 'LiquidityRemoved', (a) => same(a.account, ctx.account) && same(a.stock, stockTok));
+          ctx.out.stock = big(ev.stockAmount);
+          ctx.out.usdg = big(ev.usdgAmount);
         },
       },
     ],
@@ -585,7 +658,7 @@ export function postOfferFlow(b: FlowBase, i: OfferInputOnchain): TxFlowSpec {
         label: 'Post offer',
         call: async () => ({ address: book, abi: BOOK_ABI, functionName: 'postOffer', args: [token(b, i.sym), i.backing, i.largestFill, i.openBps, i.closeBps, (await publicClient.getBlock({ blockTag: 'latest' })).timestamp + i.duration] }),
         after: (r, ctx) => {
-          ctx.out.id = big(events(BOOK_ABI, r).find((e) => e.eventName === 'OfferPosted')?.args.id);
+          ctx.out.id = big(expectEvent(r, book, BOOK_ABI, 'OfferPosted', (a) => same(a.maker, ctx.account) && same(a.market, token(b, i.sym))).id);
         },
       },
     ],
@@ -617,7 +690,7 @@ export function withdrawOfferFlow(b: FlowBase, o: Offer, sym: string): TxFlowSpe
         label: 'Withdraw offer',
         call: () => ({ address: book, abi: BOOK_ABI, functionName: 'withdrawOffer', args: [o.id] }),
         after: (r, ctx) => {
-          ctx.out.returned = big(events(BOOK_ABI, r).find((e) => e.eventName === 'OfferWithdrawn')?.args.returned);
+          ctx.out.returned = big(expectEvent(r, book, BOOK_ABI, 'OfferWithdrawn', (a) => big(a.id) === o.id && same(a.maker, ctx.account)).returned);
         },
       },
     ],

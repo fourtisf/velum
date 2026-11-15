@@ -2,7 +2,8 @@
 # End-to-end test of the web's real (Phase 3) mode against a LOCAL stack, in a browser:
 #   anvil (chain 31337) with the contracts deployed by `forge script contracts/script/Deploy.s.sol`, twice:
 #   unguarded, then with the launch guard on; the API and the indexer from this tree (apps/web/e2e/stack.ts)
-#   on their own PostgreSQL and Redis on non-default ports; the web built for the local chain with each
+#   on their own PostgreSQL (non-default port) and Redis (a unix socket only: the on-chain workers refuse any
+#   other Redis, audit M-3); the web built for the local chain with each
 #   deployment (next build, DEPLOYMENTS_DIR); Nginx with the production CSP (plus the local RPC origin);
 #   Playwright (pre-installed) with a mock EIP-6963 wallet that signs real transactions with throwaway keys.
 # Nothing touches a system service, a public network or a real key. Everything started is stopped.
@@ -11,7 +12,9 @@
 #
 # Settings: FOUNDRY_BIN (~/.foundry/bin), PG_BIN (/usr/lib/postgresql/16/bin), E2E_SCRATCH (a new directory
 # under /var/tmp: PostgreSQL cannot run from every temporary directory), E2E_KEEP=1 keeps it, E2E_OUT (where
-# screenshots and the report go, default <scratch>/out), E2E_PHASES (default "unguarded guarded").
+# screenshots and the report go, default <scratch>/out), E2E_PHASES (default "unguarded guarded"), E2E_ADV=1 (also
+# run the adversarial cases of the web audit, e2e/adv/adv.e2e.cjs, after the unguarded phase; E2E_ADV_CASES limits
+# them to the named cases).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -20,7 +23,6 @@ E2E="${WEB}/e2e"
 FOUNDRY_BIN="${FOUNDRY_BIN:-${HOME}/.foundry/bin}"
 PG_BIN="${PG_BIN:-/usr/lib/postgresql/16/bin}"
 PG_PORT="${E2E_PG_PORT:-5461}"
-REDIS_PORT="${E2E_REDIS_PORT:-6421}"
 ANVIL_PORT="${E2E_ANVIL_PORT:-8665}"
 API_PORT="${E2E_API_PORT:-4791}"
 CTL_PORT="${E2E_CTL_PORT:-4792}"
@@ -41,36 +43,51 @@ say() { printf '\n== %s\n' "$*"; }
 die() { printf 'web onchain-e2e: %s\n' "$*" >&2; exit 1; }
 as_pg() { if [ "$(id -u)" = 0 ]; then unshare --user --map-user=1000 --map-group=1000 "$@"; else "$@"; fi; }
 
-for port in "${PG_PORT}" "${REDIS_PORT}" "${ANVIL_PORT}" "${API_PORT}" "${CTL_PORT}" "${WEB_PORT}" "${PROXY_PORT}"; do
+for port in "${PG_PORT}" "${ANVIL_PORT}" "${API_PORT}" "${CTL_PORT}" "${WEB_PORT}" "${PROXY_PORT}"; do
   if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then die "port ${port} is in use"; fi
 done
 [ -x "${FOUNDRY_BIN}/forge" ] && [ -x "${FOUNDRY_BIN}/anvil" ] || die "forge and anvil not found in ${FOUNDRY_BIN}"
 [ -x "${PG_BIN}/initdb" ] || die "PostgreSQL server binaries not found in ${PG_BIN}"
 command -v redis-server >/dev/null && command -v nginx >/dev/null || die "redis-server and nginx are required"
 mkdir -p "${SCRATCH}"/{pg,redis,tree/packages,nginx/logs,nginx/tmp,nginx/snippets} "${OUT}"
+# The Redis socket path must stay short (sun_path: 107 bytes; REDIS_URL allows 100 characters).
+REDIS_DIR="${SCRATCH}/redis"
+if [ "${#REDIS_DIR}" -gt 80 ]; then REDIS_DIR="$(mktemp -d /tmp/velum-web-e2e-redis.XXXXXX)"; fi
+REDIS_SOCK="${REDIS_DIR}/redis.sock"
 
 PIDS=()
 cleanup() {
   set +e
   [ -f "${SCRATCH}/nginx/nginx.pid" ] && nginx -p "${SCRATCH}/nginx" -c "${SCRATCH}/nginx/nginx.conf" -s quit 2>/dev/null
-  for p in "${PIDS[@]}"; do pkill -TERM -P "${p}" 2>/dev/null; kill "${p}" 2>/dev/null; done
+  for p in "${PIDS[@]}"; do stop_tree "${p}"; done
   if [ -f "${SCRATCH}/pg/data/postmaster.pid" ]; then kill -INT "$(head -1 "${SCRATCH}/pg/data/postmaster.pid")" 2>/dev/null; fi
-  redis-cli -p "${REDIS_PORT}" -a "${REDIS_PASSWORD}" --no-auth-warning shutdown nosave >/dev/null 2>&1
+  redis-cli -s "${REDIS_SOCK}" -a "${REDIS_PASSWORD}" --no-auth-warning shutdown nosave >/dev/null 2>&1
   sleep 1
+  [ "${REDIS_DIR}" != "${SCRATCH}/redis" ] && rm -rf "${REDIS_DIR}"
   if [ "${E2E_KEEP:-0}" = 1 ]; then echo "kept ${SCRATCH}"; else rm -rf "${SCRATCH}/pg" "${SCRATCH}/redis" "${SCRATCH}/tree"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-wait_http() { for _ in $(seq 1 120); do curl -s -o /dev/null "$1" && return 0; sleep 0.5; done; die "$1 did not come up"; }
+wait_http() { for _ in $(seq 1 "${2:-120}"); do curl -s -m 5 -o /dev/null "$1" && return 0; sleep 0.5; done; die "$1 did not come up"; }
+# Stops a process started here and its children (tsx runs stack.ts in a child node process), then waits for it.
+stop_tree() {
+  local p="$1" kids
+  kids="$(pgrep -P "${p}" 2>/dev/null || true)"
+  kill -TERM "${p}" ${kids} 2>/dev/null || true
+  for _ in $(seq 1 20); do kill -0 "${p}" ${kids} 2>/dev/null || return 0; sleep 0.5; done
+  kill -KILL "${p}" ${kids} 2>/dev/null || true
+}
 
-say "PostgreSQL 127.0.0.1:${PG_PORT}, Redis 127.0.0.1:${REDIS_PORT}, anvil 127.0.0.1:${ANVIL_PORT}"
+say "PostgreSQL 127.0.0.1:${PG_PORT}, Redis ${REDIS_SOCK}, anvil 127.0.0.1:${ANVIL_PORT}"
 as_pg "${PG_BIN}/initdb" -D "${SCRATCH}/pg/data" -U velum --auth=trust -E UTF8 >"${SCRATCH}/pg/initdb.log" 2>&1
 as_pg "${PG_BIN}/pg_ctl" -D "${SCRATCH}/pg/data" -l "${SCRATCH}/pg/pg.log" -o "-p ${PG_PORT} -c unix_socket_directories='' -c listen_addresses=127.0.0.1" -w start >/dev/null \
   || { tail -5 "${SCRATCH}/pg/pg.log"; die "PostgreSQL did not start"; }
 export DATABASE_URL="postgresql://velum@127.0.0.1:${PG_PORT}/postgres?schema=public"
-redis-server --port "${REDIS_PORT}" --bind 127.0.0.1 --dir "${SCRATCH}/redis" --save "" --appendonly no \
-  --requirepass "${REDIS_PASSWORD}" --daemonize yes --logfile "${SCRATCH}/redis/redis.log"
-export REDIS_URL="redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_PORT}/0"
+redis-server --port 0 --unixsocket "${REDIS_SOCK}" --unixsocketperm 700 --dir "${REDIS_DIR}" --save "" --appendonly no \
+  --requirepass "${REDIS_PASSWORD}" --daemonize yes --logfile "${REDIS_DIR}/redis.log"
+for _ in $(seq 1 50); do [ -S "${REDIS_SOCK}" ] && break; sleep 0.1; done
+[ -S "${REDIS_SOCK}" ] || die "Redis did not start"
+export REDIS_URL="unix://:${REDIS_PASSWORD}@${REDIS_SOCK}"
 "${FOUNDRY_BIN}/anvil" --port "${ANVIL_PORT}" --chain-id 31337 --silent >"${SCRATCH}/anvil.log" 2>&1 &
 PIDS+=($!)
 for _ in $(seq 1 50); do "${FOUNDRY_BIN}/cast" chain-id --rpc-url "${RPC}" >/dev/null 2>&1 && break; sleep 0.2; done
@@ -119,7 +136,8 @@ for phase in ${PHASES}; do
     "${ROOT}/apps/workers/node_modules/.bin/tsx" "${E2E}/stack.ts" >"${SCRATCH}/stack-${phase}.log" 2>&1 &
   PIDS+=($!)
   STACK_PID=$!
-  wait_http "http://127.0.0.1:${CTL_PORT}/info"
+  # Seeding sends a few dozen transactions; allow for a loaded machine.
+  wait_http "http://127.0.0.1:${CTL_PORT}/info" 360
   (cd "${WEB}" && exec node_modules/.bin/next start -p "${WEB_PORT}" -H 127.0.0.1) >"${SCRATCH}/next-${phase}.log" 2>&1 &
   PIDS+=($!)
   NEXT_PID=$!
@@ -138,11 +156,18 @@ for phase in ${PHASES}; do
   NODE_PATH="${NODE_PATH_PW}" E2E_BASE="http://127.0.0.1:${PROXY_PORT}" E2E_RPC="${RPC}" E2E_CTL="http://127.0.0.1:${CTL_PORT}" E2E_OUT="${OUT}" \
     node "${E2E}/onchain.e2e.cjs" "${phase}" 2>&1 | tee "${OUT}/report-${phase}.txt"
   [ "${PIPESTATUS[0]}" = 0 ] || { tail -30 "${SCRATCH}/stack-${phase}.log"; die "phase ${phase} failed"; }
+  if [ "${E2E_ADV:-0}" = 1 ] && [ "${phase}" = unguarded ]; then
+    say "Phase ${phase}: adversarial cases (e2e/adv)"
+    # shellcheck disable=SC2086
+    NODE_PATH="${NODE_PATH_PW}" E2E_BASE="http://127.0.0.1:${PROXY_PORT}" E2E_RPC="${RPC}" E2E_CTL="http://127.0.0.1:${CTL_PORT}" E2E_OUT="${OUT}" \
+      node "${E2E}/adv/adv.e2e.cjs" ${E2E_ADV_CASES:-} 2>&1 | tee "${OUT}/report-adversarial.txt"
+    [ "${PIPESTATUS[0]}" = 0 ] || { tail -30 "${SCRATCH}/stack-${phase}.log"; die "adversarial cases failed"; }
+  fi
 
   nginx -p "${SCRATCH}/nginx" -c "${SCRATCH}/nginx/nginx.conf" -s quit
-  pkill -TERM -P "${NEXT_PID}" 2>/dev/null || true
-  kill "${NEXT_PID}" "${STACK_PID}" 2>/dev/null || true
-  for _ in $(seq 1 20); do (exec 3<>"/dev/tcp/127.0.0.1/${WEB_PORT}") 2>/dev/null || (exec 3<>"/dev/tcp/127.0.0.1/${CTL_PORT}") 2>/dev/null || break; sleep 0.5; done
+  stop_tree "${NEXT_PID}"
+  stop_tree "${STACK_PID}"
+  for _ in $(seq 1 20); do (exec 3<>"/dev/tcp/127.0.0.1/${WEB_PORT}") 2>/dev/null || (exec 3<>"/dev/tcp/127.0.0.1/${CTL_PORT}") 2>/dev/null || (exec 3<>"/dev/tcp/127.0.0.1/${API_PORT}") 2>/dev/null || break; sleep 0.5; done
 done
 
 say "web on-chain end-to-end test passed (screenshots and reports in ${OUT})"

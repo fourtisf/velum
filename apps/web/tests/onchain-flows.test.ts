@@ -45,8 +45,9 @@ const D: Deployment = {
   priceRelayer: null,
   guardian: null,
 };
-const OC: OnchainInfo = { d: D, markets: ['AMZN', 'TSLA'], closeOnly: null };
-const PROTO: Protocol = { decimals: { USDG: 6, TSLA: 18, AMZN: 18 }, valueScale: VS, minPositionSize: 10n * E6, bond: 10n ** 15n, exitDelay: 7n * 86_400n };
+const OC: OnchainInfo = { d: D, markets: ['AMZN', 'TSLA'], closeOnly: null, verified: true, status: 'on', mismatch: null };
+const PROTO: Protocol = { decimals: { USDG: 6, TSLA: 18, AMZN: 18 }, valueScale: VS, minPositionSize: 10n * E6, bond: 10n ** 15n, exitDelay: 7n * 86_400n, rewardCap: E6 };
+const SYMS = new Set(Object.keys(D.tokens));
 const ME = A(77);
 const BASE = { oc: OC, proto: PROTO, account: ME };
 const CTX: ErrorContext = {
@@ -175,7 +176,7 @@ describe('flow builders', () => {
 
   it('close: a non-zero limit from the slippage (at least for longs)', async () => {
     const pos: ChainPosition = { id: 7n, sym: 'TSLA', role: 'taker', long: true, levHalf: 4, closeBps: 5, qty: E18, entry: 400n * E18, takerMargin: 200n * E6, makerMargin: 80n * E6, openedAt: 1n, exitRequestedAt: 0n, exitRequester: A(0), openTx: null };
-    const f = closeFlow(BASE, { pos, exit: 399n * E18, fee: 239_400n, estOut: 199n * E6, slip: 100n });
+    const f = closeFlow(BASE, { pos, price: 400n * E18, exit: 399n * E18, fee: 239_400n, estOut: 199n * E6, slip: 100n, liq: null });
     const call = await f.steps[0]!.call(ctx());
     expect(call).toMatchObject({ functionName: 'close', args: [7n, (399n * E18 * 9900n) / 10_000n] });
     expect(text(f.review)).toMatch(/At least [\d,.]+ \(1% slippage\)/);
@@ -237,7 +238,7 @@ describe('flow builders', () => {
 describe('offer book', () => {
   const o = (id: number, x: Partial<Offer> = {}): Offer => ({ id: BigInt(id), maker: A(9), market: D.tokens.TSLA!, backing: 1000n * E6, largestFill: 1000n * E6, openBps: 10, closeBps: 5, expiry: 2000n, active: true, ...x });
 
-  it('the lowest open spread that fits the size, never the taker’s own, inactive or expiring offers', () => {
+  it('the cheapest round trip that fits the size, never the taker’s own, inactive or expiring offers', () => {
     const list = [o(1, { openBps: 20 }), o(2, { openBps: 5, maker: ME }), o(3, { openBps: 6, active: false }), o(4, { openBps: 7, expiry: 1010n }), o(5, { openBps: 8, largestFill: 100n * E6 }), o(6, { openBps: 9 }), o(7, { openBps: 9 })];
     expect(bestOffer(list, D.tokens.TSLA!, 500n * E6, ME, 1000n)?.id).toBe(6n);
     expect(bestOffer(list, D.tokens.TSLA!, 50n * E6, ME, 1000n)?.id).toBe(5n);
@@ -282,11 +283,19 @@ describe('activity rows', () => {
   const item = (kind: string, data: Record<string, unknown>, market: string | null = 'TSLA'): ActivityDTO => ({ kind, tx: '0x' + 'c'.repeat(64), block: 1, logIndex: 0, at: 1000, contract: A(5), market, token: null, positionId: null, data });
 
   it('deposits, opens, swaps and settlements read like the prototype rows', () => {
-    expect(activityRow(item('deposit', { token: 'USDG', amount: '2000', from: ME, to: ME }), ME)).toMatchObject({ title: 'Shielded 2,000.00 USDG', icon: 'shieldIn' });
-    expect(activityRow(item('position_open', { role: 'taker', side: 'short', qty: '1.5', entry: '391.85', takerMargin: '250' }), ME).title).toBe('Opened short TSLA');
-    expect(activityRow(item('swap', { tokenIn: 'USDG', tokenOut: 'TSLA', amountIn: '100', amountOut: '0.2539' }), ME).title).toBe('Swapped 100.00 USDG for 0.2539 TSLA');
-    expect(activityRow(item('position_settled', { role: 'taker', positionId: '2', pnl: '-0.2', payout: '96.32' }), ME).sub).toBe('P&L -$0.20, 96.32 USDG back to your vault');
-    expect(activityRow(item('weird_new_kind', {}), ME).title).toBe('weird new kind');
+    expect(activityRow(item('deposit', { token: 'USDG', amount: '2000', from: ME, to: ME }), ME, SYMS)).toMatchObject({ title: 'Shielded 2,000.00 USDG', icon: 'shieldIn' });
+    expect(activityRow(item('position_open', { role: 'taker', side: 'short', qty: '1.5', entry: '391.85', takerMargin: '250' }), ME, SYMS).title).toBe('Opened short TSLA');
+    expect(activityRow(item('swap', { tokenIn: 'USDG', tokenOut: 'TSLA', amountIn: '100', amountOut: '0.2539' }), ME, SYMS).title).toBe('Swapped 100.00 USDG for 0.2539 TSLA');
+    expect(activityRow(item('position_settled', { role: 'taker', positionId: '2', pnl: '-0.2', payout: '96.32' }), ME, SYMS).sub).toBe('P&L -$0.20, 96.32 USDG back to your vault');
+  });
+
+  it('a fixed vocabulary: unknown kinds, markets, tokens, ids and addresses never show API text (W3-12)', () => {
+    expect(activityRow(item('weird_new_kind', {}), ME, SYMS).title).toBe('Other contract activity');
+    expect(activityRow(item('URGENT_your_vault_is_compromised_withdraw_now', {}), ME, SYMS).title).toBe('Other contract activity');
+    expect(activityRow(item('position_open', { role: 'taker', side: 'long', qty: '1', entry: '1', takerMargin: '1' }, 'Visit velum-support now'), ME, SYMS).title).toBe('Opened long ?');
+    expect(activityRow(item('deposit', { token: 'FREE MONEY', amount: '1', from: 'call support' }), ME, SYMS)).toMatchObject({ title: 'Shielded 1.0000 ?', sub: 'Deposit from ?' });
+    expect(activityRow(item('offer_filled', { offerId: 'go to evil.example', fillSize: '1', backingLeft: '1' }), ME, SYMS).title).toBe('Offer #? filled');
+    expect(activityRow(item('withdraw', { token: 'USDG', amount: '5', to: 'support desk' }), ME, SYMS).sub).toBe('To ?');
   });
 
   it('malformed amounts show a dash, never a guess', () => {

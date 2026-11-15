@@ -88,8 +88,8 @@ const head = (
 
 export function PortfolioView() {
   const oc = useOnchain();
-  const signedIn = useApp((s) => !!s.account);
-  return oc && signedIn ? <OcPortfolio oc={oc} /> : <DemoPortfolioView />;
+  // A real build never shows the demo portfolio, signed in or not (web audit W3-02).
+  return oc ? <OcPortfolio oc={oc} /> : <DemoPortfolioView />;
 }
 
 function DemoPortfolioView() {

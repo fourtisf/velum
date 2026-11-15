@@ -24,7 +24,7 @@ import { useApp } from '@/lib/store';
 import { I } from '../icons';
 import { TxLink } from '../modals/TxFlow';
 import { Av, Pv } from '../ui';
-import { OcActList, OcPosTable } from './Positions';
+import { OcActList, OcPosTable, PositionsNote } from './Positions';
 import { useOc, type OcContext } from './useOc';
 
 const DUST_UNITS = 0n;
@@ -33,13 +33,16 @@ const tokName = (t: string) => (t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? '
 /** Totals of what the account holds in the contracts, in USDG base units (null while a price is missing). */
 function useTotals(oc: OnchainInfo, c: OcContext) {
   const prices = useAllOracle(oc).data;
-  const positions = useChainPositions(oc, c.addr).data ?? [];
-  const book = useOfferBook(oc).data;
+  const read = useChainPositions(oc, c.addr);
+  const positions = read.data?.list ?? [];
+  const book = useOfferBook(oc, c.addr, c.proto?.minPositionSize).data;
   const pools = usePools(oc, c.addr).data ?? {};
   const mine = (book?.offers ?? []).filter((o) => o.active && c.addr && o.maker.toLowerCase() === c.addr.toLowerCase());
-  if (!c.proto || !c.acct || !prices) return { total: null, inPositions: null, prices, positions };
+  const pos = { positions, positionsRead: !!read.data, positionsFailed: read.isError && !read.data, indexError: !!read.data?.indexError };
+  // Until the positions are read, the total is unknown (a dash), never a total without them.
+  if (!c.proto || !c.acct || !prices || !read.data) return { total: null, inPositions: null, prices, ...pos };
   const p = Object.fromEntries(Object.entries(prices).map(([k, v]) => [k, v?.price ?? null]));
-  return { ...vaultTotals({ vault: c.acct.vault, decimals: c.proto.decimals, prices: p, positions, offers: mine, pools, valueScale: c.proto.valueScale }), prices, positions };
+  return { ...vaultTotals({ vault: c.acct.vault, decimals: c.proto.decimals, prices: p, positions, offers: mine, pools, valueScale: c.proto.valueScale }), prices, ...pos };
 }
 
 /** The total next to the address in the header: what the account holds in the contracts. */
@@ -100,7 +103,7 @@ export function OcAccountCard({ oc }: { oc: OnchainInfo }) {
       </aside>
     );
   const ud = c.dec('USDG');
-  const last = act?.[0] ? activityRow(act[0], c.addr ?? '') : null;
+  const last = act?.[0] ? activityRow(act[0], c.addr ?? '', new Set(Object.keys(oc.d.tokens))) : null;
   return (
     <aside className="card acct">
       <h2>
@@ -123,7 +126,7 @@ export function OcAccountCard({ oc }: { oc: OnchainInfo }) {
       <GuardRows c={c} />
       <div className="lastc">
         {ONCHAIN.chainLastLabel}
-        <b>{last ? last.title : ONCHAIN.noTx}</b>
+        <b>{last ? last.title : oc.verified ? ONCHAIN.noTx : '—'}</b>
         {last ? (
           <code>
             <TxLink hash={last.tx} />
@@ -170,7 +173,23 @@ export function OcPortfolio({ oc }: { oc: OnchainInfo }) {
   const s = useApp();
   const c = useOc(oc);
   const t = useTotals(oc, c);
-  if (!s.account || !c.addr) return null;
+  if (!s.account || !c.addr)
+    return (
+      <>
+        <div className="vhead">
+          <div>
+            <h1 className="vtitle">Portfolio</h1>
+          </div>
+        </div>
+        <div className="card empty" style={{ padding: '72px 20px' }}>
+          <p style={{ fontSize: 17, color: 'var(--text)', fontWeight: 500 }}>Connect your wallet to see your vault account.</p>
+          <p>{ONCHAIN.acctConnect}</p>
+          <button className="btn btn-white btn-lg" onClick={() => s.openModal({ kind: 'connect' })}>
+            Connect wallet
+          </button>
+        </div>
+      </>
+    );
   const ud = c.dec('USDG');
   const syms = ['USDG', ...oc.markets];
   const vaultToks = syms.filter((x) => (c.acct?.vault[x] ?? 0n) > DUST_UNITS);
@@ -297,6 +316,13 @@ export function OcPortfolio({ oc }: { oc: OnchainInfo }) {
           {t.positions.length ? (
             <div style={{ marginTop: 8 }}>
               <OcPosTable oc={oc} list={t.positions} wide />
+              <PositionsNote indexError={t.indexError} failed={false} empty={false} />
+            </div>
+          ) : !t.positionsRead ? (
+            <div className="empty">{t.positionsFailed ? <PositionsNote indexError={false} failed empty /> : <p>Loading your positions…</p>}</div>
+          ) : t.indexError ? (
+            <div className="empty">
+              <PositionsNote indexError failed={false} empty />
             </div>
           ) : (
             <div className="empty">
@@ -365,6 +391,12 @@ export function OcMoveModal({ oc, kind }: { oc: OnchainInfo; kind: 'shield' | 'u
   const bad = amountHint(amt) || (units && !units.ok ? `${t} has ${d} decimals: use at most ${d} decimal places.` : '');
   const over = a > have;
   const refusal = kind === 'shield' && t ? depositRefusal(c.guard, t, a) : null;
+  // Deposits wait for the API to confirm this build's deployment; withdrawals never do (W3-02).
+  const paused = kind === 'shield' ? c.paused : null;
+  const dest = to.trim();
+  const destOk = kind === 'unshield' && checkPublicAddress(dest) === 'ok';
+  const destFull = destOk ? getAddress(dest.toLowerCase()) : null;
+  const destMine = !!destFull && !!c.addr && destFull.toLowerCase() === c.addr.toLowerCase();
   const go = () => {
     if (!c.base || !t) return;
     if (kind === 'unshield') {
@@ -381,7 +413,12 @@ export function OcMoveModal({ oc, kind }: { oc: OnchainInfo; kind: 'shield' | 'u
     <>
       {head}
       <p className="m-text">{ONCHAIN.moveText(kind)}</p>
-      {kind === 'shield' && c.guard.blocked ? (
+      {paused ? (
+        <div className="boxnote warn" role="status">
+          <I.info />
+          <span>{paused.hint}</span>
+        </div>
+      ) : kind === 'shield' && c.guard.blocked ? (
         <div className="boxnote warn" role="alert">
           <I.info />
           <span>{GUARD_COPY.blocked}</span>
@@ -435,15 +472,21 @@ export function OcMoveModal({ oc, kind }: { oc: OnchainInfo; kind: 'shield' | 'u
             <label htmlFor="mv-to">To public address</label>
           </div>
           <div className="inp sm">
-            <input id="mv-to" autoComplete="off" spellCheck={false} maxLength={42} aria-describedby="mv-hint" style={{ fontSize: 13 }} value={to} onChange={(e) => (setTo(e.target.value), setHint(''))} />
+            <input id="mv-to" autoComplete="off" spellCheck={false} maxLength={42} aria-describedby="mv-hint mv-dest" style={{ fontSize: 13 }} value={to} onChange={(e) => (setTo(e.target.value), setHint(''))} />
           </div>
+          {destFull ? (
+            <p id="mv-dest" className="ph-sub" style={{ paddingTop: 6, wordBreak: 'break-all' }}>
+              {destMine ? 'Your connected wallet: ' : <b className="down">Not your connected wallet: </b>}
+              <span className={destMine ? undefined : 'down'}>{destFull}</span>
+            </p>
+          ) : null}
         </>
       ) : null}
       <div className="boxnote warn">
         <I.info />
         <span>{ONCHAIN.moveNote(kind)}</span>
       </div>
-      <button className="btn btn-white btn-block" disabled={!t || !!bad || a <= 0n || over || !!refusal || !c.base} onClick={go}>
+      <button className="btn btn-white btn-block" disabled={!t || !!bad || a <= 0n || over || !!refusal || !!paused || !c.base} onClick={go}>
         {kind === 'shield' ? 'Shield' : 'Unshield'} {t}
       </button>
       <p className="hint" id="mv-hint">

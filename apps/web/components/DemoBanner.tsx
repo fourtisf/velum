@@ -18,13 +18,20 @@ export function DemoBanner() {
   const feedStale = useMarkets((s) => s.feedStale);
   const lastOkAt = useMarkets((s) => s.lastOkAt);
   const oc = useOnchain();
-  // Real transactions (a live Phase 3 deployment): say so, with the testnet notice in full on testnet.
+  // A real build (a Phase 3 deployment compiled in): never the demo, from the first paint (web audit W3-02).
+  // Real transactions once the API confirms the deployment; until then why new trades are paused.
   if (oc)
     return (
       <div className="demo-bar" role="note">
         <span className="badge acc hide-sm">{ONCHAIN.bannerBadge}</span>
         <GuardBannerBadge oc={oc} />
-        <span aria-live="polite">{ONCHAIN.banner}</span>
+        {oc.verified ? (
+          <span aria-live="polite">{ONCHAIN.banner}</span>
+        ) : (
+          <span aria-live="polite" className={oc.status === 'checking' ? undefined : 'stale-msg'}>
+            {ONCHAIN.verifyBanner(oc.status === 'on' ? 'checking' : oc.status, oc.mismatch)}
+          </span>
+        )}
       </div>
     );
   if (!ENV.demoMode)

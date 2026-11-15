@@ -697,7 +697,8 @@ function FlowModal({ flow }: { flow: FlowSpec }) {
       // On mainnet, say plainly on every receipt that nothing touched the chain.
       setResult({ rows: receiptRows(r.rows) });
       set({ modalLocked: false });
-      toast(r.toast, r.warn);
+      // A demo toast says it was simulated, like the dialog title (web audit W3-06).
+      toast(SIM.toast(r.toast), r.warn);
     })();
     return () => {
       cancelled = true;

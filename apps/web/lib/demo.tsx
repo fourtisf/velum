@@ -16,6 +16,7 @@ import { DEMO_PARAMS, PARAMS, perpsCalc, spotCalc, swapCalc } from './calc';
 import { P, SIM } from './copy';
 import { dp, fmt, fmtFloor, fmtLev, receiptId, sgnUsd, sig4, uid, usd } from './format';
 import { livePrice, mk, tokPx } from './markets';
+import { REAL_BUILD } from './onchain/deployment';
 import { NO_COMMIT, addBal, bal, chainSaw, demoChainEvent, logAct, useApp, type FlowResult, type Ledger, type Offer } from './store';
 
 const app = () => useApp.getState();
@@ -175,7 +176,7 @@ export function closePos(id: string) {
  */
 export function checkLiq() {
   const s = app();
-  if (!s.account || !s.ledger.positions.length) return;
+  if (REAL_BUILD || !s.account || !s.ledger.positions.length) return;
   const hit = s.ledger.positions.flatMap((p) => {
     const price = livePrice(p.sym);
     return price !== null && isLiquidatable(p, price, PARAMS) ? [{ p, price }] : [];
@@ -195,13 +196,13 @@ export function checkLiq() {
     }
     return next;
   });
-  for (const { p } of hit) s.toast(`${p.sym} ${p.side} liquidated`, true);
+  for (const { p } of hit) s.toast(SIM.toast(`${p.sym} ${p.side} liquidated`), true);
 }
 
 /** Demo maker fills and LP fee growth (prototype tick). */
 export function demoTick() {
   const s = app();
-  if (!s.account) return;
+  if (REAL_BUILD || !s.account) return;
   const { offers, lp } = s.ledger;
   if (!offers.length && !Object.keys(lp).length) return;
   s.setLedger((l) => ({

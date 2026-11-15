@@ -161,6 +161,8 @@ export function simCopy(mainnet: boolean) {
     visibleRow: (_value: string): [string, string] => ['Demo', 'Simulated, nothing is sent onchain'],
     /** Flow dialog title: says up front that the action is simulated. */
     flowTitle: (title: string) => `Simulated: ${title}`,
+    /** A toast from the demo engine (a simulated flow, a simulated liquidation): labelled as such (web audit W3-06). */
+    toast: (msg: string) => `Simulated: ${msg}`,
     /** The row every receipt ends with. */
     receiptDemoRow: ['Demo', 'Simulated, nothing was sent onchain'] as [string, string],
     /** Flow steps for the parts of the privacy layer that do not exist yet. */
@@ -259,10 +261,33 @@ export function onchainCopy(mainnet: boolean) {
     assetsSub: 'Free balance you can trade or unshield. Public onchain until the privacy layer launches.',
     publicSub: 'Anyone can see this. Shield tokens to deposit them into your Velum vault balance.',
     acctConnect: 'Connect a wallet and sign once to open your account. It costs no gas.',
+    // No "Guarded beta" here: that badge follows the vault's guarded() state (components/onchain/Banner.tsx,
+    // web audit W3-11), so it disappears for good once the guard admin opens the vault to the public.
     banner: mainnet
-      ? 'Guarded beta: trades are real onchain transactions and public until the privacy layer launches.'
+      ? 'Trades are real onchain transactions, public until the privacy layer launches.'
       : 'Trades are real testnet transactions, public onchain until the privacy layer launches. Testnet. Test tokens have no value.',
     bannerBadge: 'Onchain',
+    /**
+     * A real build whose deployment the API has not confirmed (lib/onchain/deployment.ts, web audit W3-02):
+     * the banner says why new trades and deposits are paused and that exits still work. Never the word
+     * "real" (the banner says so only once trades are on) and never text from the API's answer.
+     */
+    verifyBanner: (status: 'checking' | 'unavailable' | 'missing' | 'mismatch', mismatch: string | null) =>
+      ({
+        checking: "Checking this build's contracts with the Velum API…",
+        unavailable: 'The Velum API is unavailable, so new trades and deposits are paused. Withdrawals, closes and forced exits still work from the chain.',
+        missing: "The Velum API does not list this build's contracts, so new trades and deposits are paused. Withdrawals, closes and forced exits still work from the chain.",
+        mismatch: `The Velum API reports ${mismatch ?? 'different contracts'} for this build, so new trades and deposits are paused. Withdrawals, closes and forced exits still work with this build's contracts.`,
+      })[status] + (mainnet ? '' : ' Testnet. Test tokens have no value.'),
+    /** The trade button while new trades are paused. */
+    pausedLabel: (status: 'checking' | 'unavailable' | 'missing' | 'mismatch') => (status === 'checking' ? 'Checking the contracts…' : 'New trades paused'),
+    /** The hint under a paused trade or deposit button. */
+    pausedHint: (status: 'checking' | 'unavailable' | 'missing' | 'mismatch', mismatch: string | null) =>
+      status === 'checking'
+        ? "New trades open once the Velum API confirms this build's contracts."
+        : status === 'mismatch'
+          ? `The Velum API reports ${mismatch ?? 'different contracts'}, so new trades and deposits are paused. Withdrawals, closes and forced exits still work.`
+          : 'The Velum API cannot confirm the contracts right now, so new trades and deposits are paused. Withdrawals, closes and forced exits still work.',
     perpsNote: `This phase is public: size, side and entry are visible onchain. In the full version they will stay encrypted. Funding and the ${P.penalty} liquidation penalty apply.`,
     spotNote: 'This phase is public: pool reserves and your trade are visible onchain. You own the token, so nothing can be liquidated.',
     swapNote: 'This phase is public: pool reserves and your swap are visible onchain. The minimum protects you if the price moves.',
@@ -285,7 +310,7 @@ export function onchainCopy(mainnet: boolean) {
     notDeployed: (sym: string) => `${sym} isn't in the Velum contracts on ${net} yet.`,
     /** Landing and markets lines that describe trading as simulated, for when it is real. */
     footer: mainnet
-      ? 'An independent project on Robinhood Chain, not affiliated with Robinhood. Guarded beta: trades are real onchain transactions, public until the privacy layer launches.'
+      ? 'An independent project on Robinhood Chain, not affiliated with Robinhood. Trades are real onchain transactions, public until the privacy layer launches.'
       : 'An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet: trades are real testnet transactions, public until the privacy layer launches. Test tokens have no value.',
     faqWho: 'In this phase, anyone: trades are public onchain. Velum is designed so that, once the privacy layer launches, only the maker on the other side sees that one position, against a one-time address, and the public only sees that a position changed.',
     faqOffline: `Velum's contracts hold what you deposit. You can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.${mainnet ? '' : ' On testnet, test tokens have no value.'}`,

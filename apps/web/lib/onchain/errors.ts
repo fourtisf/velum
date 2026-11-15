@@ -186,8 +186,33 @@ export function decodeTxError(e: unknown, ctx: ErrorContext, usdg: string, extra
   return { name: null, message: String((e as Error)?.message ?? e).split('\n')[0]!.slice(0, 200), rejected: false };
 }
 
+/**
+ * The standard Solidity panic codes (docs.soliditylang.org, "Panic via assert and Error via require"). Nothing
+ * beyond them is guessed (web audit W3-12): a panic says which check failed, never why a user's amounts did.
+ */
+export const PANIC_CODES: Readonly<Record<number, string>> = {
+  0x00: 'a generic compiler panic',
+  0x01: 'an internal assertion failed',
+  0x11: 'an arithmetic overflow or underflow',
+  0x12: 'a division or modulo by zero',
+  0x21: 'a value out of range for its type',
+  0x22: 'a malformed storage byte array',
+  0x31: 'a pop from an empty array',
+  0x32: 'an array index out of bounds',
+  0x41: 'too much memory allocated',
+  0x51: 'a call to an uninitialised function',
+};
+
+/** The sentence for a Solidity panic with `code` (a uint256 from the revert data). */
+export function panicSentence(code: unknown): string {
+  const n = typeof code === 'bigint' && code <= 0xffn ? Number(code) : typeof code === 'number' ? code : null;
+  const hex = typeof code === 'bigint' || typeof code === 'number' ? `0x${code.toString(16).padStart(2, '0')}` : null;
+  const what = n !== null ? PANIC_CODES[n] : undefined;
+  return what ? `The contract stopped with ${what} (Solidity panic ${hex}). Nothing was changed.` : `The contract stopped with a Solidity panic${hex ? ` (code ${hex})` : ''}. Nothing was changed.`;
+}
+
 function panicText(e: ContractFunctionRevertedError): string {
-  if (e.data?.errorName === 'Panic') return 'The transaction would fail (an amount is larger than a balance or allowance).';
-  const reason = e.reason ?? (typeof e.data?.args?.[0] === 'string' ? e.data.args[0] : null);
-  return reason ? `The contract refused this transaction: ${reason}` : 'The contract refused this transaction.';
+  if (e.data?.errorName === 'Panic') return panicSentence(e.data.args?.[0]);
+  const reason = typeof e.data?.args?.[0] === 'string' ? e.data.args[0] : null;
+  return reason ? `The contract refused this transaction: ${reason.slice(0, 160)}` : 'The contract refused this transaction.';
 }

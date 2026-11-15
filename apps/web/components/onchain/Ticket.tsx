@@ -6,6 +6,7 @@
  */
 import { PROTOCOL } from '@velum/config';
 import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { MIN_LEVERAGE } from '@/lib/calc';
 import { CLOSED, ONCHAIN } from '@/lib/copy';
@@ -14,14 +15,14 @@ import { useMarket } from '@/lib/markets';
 import { SPOT_ABI } from '@/lib/onchain/abi';
 import { publicClient } from '@/lib/chain';
 import type { OnchainInfo } from '@/lib/onchain/deployment';
-import { approx, exact, openFlow, swapFlow } from '@/lib/onchain/flows';
+import { approx, exact, openFlow, pctOf, swapFlow } from '@/lib/onchain/flows';
 import { GUARD_COPY } from '@/lib/onchain/guard';
-import { leverageHalf, minOut, openQuote, poolFee, slipBps } from '@/lib/onchain/quote';
-import { PRICE_AGE, bestOffer, useOfferBook, useOraclePrice } from '@/lib/onchain/reads';
+import { HIGH_SPREAD_BPS, highSpread, leverageHalf, minOut, openQuote, poolFee, roundTrip, slipBps } from '@/lib/onchain/quote';
+import { OFFER_CHOICES, PRICE_AGE, bestOffer, rankOffers, useOfferBook, useOraclePrice } from '@/lib/onchain/reads';
 import { unitsToInput, unitsToWad, wadToUnits } from '@/lib/onchain/units';
 import { useApp } from '@/lib/store';
 import { I } from '../icons';
-import { useOc } from './useOc';
+import { useOc, type OcContext } from './useOc';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
 const HINT = { perps: 't-size-hint', spot: 't-spot-hint' };
@@ -60,14 +61,36 @@ function priceProblem(o: ReturnType<typeof useOraclePrice>['data'], closed: bool
   return null;
 }
 
+/**
+ * New trades are paused because the API cannot confirm (or contradicts) this build's deployment (W3-02): no
+ * quote, a plain statement of why, and where exits live. While the check is still running the full ticket
+ * shows instead, with its button waiting.
+ */
+function PausedTicket({ c, note }: { c: OcContext; note: string }) {
+  return (
+    <>
+      <div className="boxnote warn" role="status" style={{ marginTop: 0 }}>
+        <I.info />
+        <span>{c.paused!.hint}</span>
+      </div>
+      <SubmitButton b={{ label: c.paused!.label, cls: 'btn-dark', disabled: true }} />
+      <p className="note">
+        <I.lock />
+        <span>{note}</span>
+      </p>
+    </>
+  );
+}
+
 function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
   const s = useApp();
   const m = useMarket(sym);
   const c = useOc(oc);
+  const [pick, setPick] = useState<string | null>(null);
   const connected = !!s.account;
   const deployed = oc.markets.includes(sym);
   const oracle = useOraclePrice(oc, deployed ? sym : null).data;
-  const book = useOfferBook(oc).data;
+  const book = useOfferBook(oc, c.addr, c.proto?.minPositionSize).data;
   const ud = c.dec('USDG');
   const vs = c.proto?.valueScale;
   const free = c.acct?.vault.USDG ?? 0n;
@@ -78,9 +101,13 @@ function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
   const long = s.side === 'long';
   const slip = slipBps(s.slip);
   const token = oc.d.tokens[sym];
-  const offer = book && token ? bestOffer(book.offers, token, size, c.addr, book.now) : null;
-  const quoteOffer = offer ?? (book && token ? bestOffer(book.offers, token, 0n, c.addr, book.now) : null);
+  // The cheapest offers by the whole round trip (open + close spread + fees, W3-03); the user may pick another.
+  const rank = oracle && vs ? { price: oracle.price, levHalf, long, valueScale: vs } : null;
+  const choices = book && token ? rankOffers(book.offers, token, size, c.addr, book.now, rank).slice(0, OFFER_CHOICES) : [];
+  const offer = choices.find((o) => o.id.toString() === pick) ?? choices[0] ?? null;
+  const quoteOffer = offer ?? (book && token ? bestOffer(book.offers, token, 0n, c.addr, book.now, rank) : null);
   const q = oracle && quoteOffer && vs ? openQuote({ price: oracle.price, size, levHalf, long, openBps: quoteOffer.openBps, slipBps: slip, valueScale: vs }) : null;
+  const rt = oracle && quoteOffer && vs && size > 0n ? roundTrip({ price: oracle.price, size, levHalf, long, openBps: quoteOffer.openBps, closeBps: quoteOffer.closeBps, valueScale: vs }) : null;
   const px = (v: string) => (q ? v : '—');
   const bad = amountHint(s.size);
   const problem = priceProblem(oracle, m.closed);
@@ -90,12 +117,19 @@ function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
   else if (!deployed) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = ONCHAIN.notDeployed(sym);
+  } else if (c.paused) {
+    b = { label: c.paused.label, cls: 'btn-dark', disabled: true };
+    hint = c.paused.hint;
   } else if (c.guard.blocked) {
     b = { label: GUARD_COPY.blockedShort, cls: 'btn-dark', disabled: true };
     hint = GUARD_COPY.blocked;
   } else if (oracle?.closeOnly) {
     b = { label: 'Close only', cls: 'btn-dark', disabled: true };
     hint = 'This market only accepts closes right now.';
+  } else if (!problem && book && !quoteOffer) {
+    // The book is read but holds no offer for this market (yet: the scan may still be paging down).
+    b = { label: book.complete ? 'No maker offer' : 'Finding maker offers…', cls: 'btn-dark', disabled: true };
+    if (book.complete) hint = 'No standing offer backs this market right now. Try again later.';
   } else if (problem || !q) b = { label: problem ?? 'Loading…', cls: 'btn-dark', disabled: true };
   else if (bad) b = { label: 'Enter a valid size', cls: 'btn-dark', disabled: true };
   else if (units && !units.ok) {
@@ -109,8 +143,8 @@ function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
     b = { label: `Above the ${PROTOCOL.maxTokensPerPosition}-token limit`, cls: 'btn-dark', disabled: true };
     hint = `One position can hold up to ${PROTOCOL.maxTokensPerPosition} tokens.`;
   } else if (!offer) {
-    b = { label: 'No maker offer for this size', cls: 'btn-dark', disabled: true };
-    hint = 'No standing offer can fill this size right now. Lower the size, or try again later.';
+    b = { label: book?.complete === false ? 'Finding maker offers…' : 'No maker offer for this size', cls: 'btn-dark', disabled: true };
+    if (book?.complete !== false) hint = 'No standing offer can fill this size right now. Lower the size, or try again later.';
   } else if (q.cost > free) {
     b = { label: 'Not enough USDG in your vault', cls: 'btn-dark', disabled: true };
     hint = 'Shield more USDG from Portfolio, or lower the size.';
@@ -121,7 +155,10 @@ function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
       disabled: !c.base,
       onClick: () => c.base && oracle && s.runTxFlow(openFlow(c.base, { sym, long, lev: s.lev, levHalf, size, offer, q, slip, oraclePrice: oracle.price })),
     };
+  if (!hint && offer && highSpread(offer))
+    hint = `This offer's spreads are ${offer.openBps} bps to open and ${offer.closeBps} bps to close (above ${HIGH_SPREAD_BPS} bps): you will be asked to confirm the cost.`;
   if (!hint && q && oracle?.lagging) hint = 'The onchain price is catching up with the market; opening waits for it.';
+  if (c.paused && oc.status !== 'checking' && deployed) return <PausedTicket c={c} note={ONCHAIN.perpsNote} />;
 
   const maxLev = Math.min(m.maxLev || PROTOCOL.maxLeverage, PROTOCOL.maxLeverage);
   const levRange = maxLev - MIN_LEVERAGE;
@@ -179,6 +216,21 @@ function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
         ))}
       </div>
       <Slippage />
+      {choices.length > 1 ? (
+        <>
+          <div className="fl">
+            <span>Maker offer</span>
+            <span>open / close spread</span>
+          </div>
+          <div className="seg full" role="group" aria-label="Maker offer">
+            {choices.map((o) => (
+              <button key={o.id.toString()} className={o.id === offer?.id ? 'on' : ''} aria-pressed={o.id === offer?.id} title={`Offer #${o.id}: ${o.openBps} bps open, ${o.closeBps} bps close`} onClick={() => setPick(o.id.toString())}>
+                {o.openBps} / {o.closeBps} bps
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
       <div className="sumbox">
         <div>
           <span>Entry price</span>
@@ -203,6 +255,14 @@ function PerpsTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
         <div>
           <span>Fee (0.06%)</span>
           <b>{q && ud !== undefined ? approx(q.fee, ud) : '0.00'} USDG</b>
+        </div>
+        <div>
+          <span>Close spread</span>
+          <b className={quoteOffer && quoteOffer.closeBps > HIGH_SPREAD_BPS ? 'down' : undefined}>{quoteOffer ? `${quoteOffer.closeBps} bps` : '—'}</b>
+        </div>
+        <div>
+          <span>Round trip (est.)</span>
+          <b>{rt && q && ud !== undefined ? `${approx(rt.total, ud)} USDG (${pctOf(rt.total, q.takerMargin)} of margin)` : '—'}</b>
         </div>
         <div>
           <span>Funding</span>
@@ -260,6 +320,9 @@ function SpotTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
   else if (!deployed) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = ONCHAIN.notDeployed(sym);
+  } else if (c.paused) {
+    b = { label: c.paused.label, cls: 'btn-dark', disabled: true };
+    hint = c.paused.hint;
   } else if (c.guard.blocked) {
     b = { label: GUARD_COPY.blockedShort, cls: 'btn-dark', disabled: true };
     hint = GUARD_COPY.blocked;
@@ -296,6 +359,7 @@ function SpotTicket({ sym, oc }: { sym: string; oc: OnchainInfo }) {
     s.set({ spotSide: g, spotAmt: g === 'buy' ? '500' : unitsToInput(held > 0n && held < one ? held : one, sd, 4) });
   };
   const priceTxt = oracle ? fmt(oracle.price) : m.noData ? '—' : '—';
+  if (c.paused && oc.status !== 'checking' && deployed) return <PausedTicket c={c} note={ONCHAIN.spotNote} />;
   return (
     <>
       <div className="sides" role="group" aria-label="Buy or sell">

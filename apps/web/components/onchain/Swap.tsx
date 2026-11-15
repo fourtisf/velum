@@ -64,7 +64,10 @@ export function OcSwapView({ oc }: { oc: OnchainInfo }) {
   let btn: { label: string; cls: string; disabled: boolean; onClick?: () => void };
   if (!connected) btn = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
   else if (same) btn = { label: 'Choose two different tokens', cls: 'btn-dark', disabled: true };
-  else if (c.guard.blocked) {
+  else if (c.paused) {
+    btn = { label: c.paused.label, cls: 'btn-dark', disabled: true };
+    hint = c.paused.hint;
+  } else if (c.guard.blocked) {
     btn = { label: GUARD_COPY.blockedShort, cls: 'btn-dark', disabled: true };
     hint = GUARD_COPY.blocked;
   } else if (bad || (units && !units.ok)) {

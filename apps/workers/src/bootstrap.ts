@@ -251,11 +251,12 @@ export async function resetHistoryOnSourceChange(prisma: PrismaClient, redis: Re
  * evidence of a source change. Only candles ending after the market's oldest stored tick are examined
  * (older ones can never be proven: ticks are only ever pruned).
  */
-export const retagUnknownCandlesSql = Prisma.sql`
+export const retagUnknownCandlesSql = (marketId: string, since: Date | null) => Prisma.sql`
   WITH oldest AS (
     SELECT m."id" AS "marketId",
            (SELECT p."at" FROM "PriceTick" p WHERE p."marketId" = m."id" ORDER BY p."at" ASC LIMIT 1) AS "at0"
     FROM "Market" m
+    WHERE m."id" = ${marketId}
   ),
   unknown AS (
     SELECT c."marketId", c."tf", c."t", c."o", c."c", c."t" + w."span" AS "tEnd"
@@ -263,19 +264,28 @@ export const retagUnknownCandlesSql = Prisma.sql`
     JOIN (VALUES ('15m', interval '15 minutes'), ('1h', interval '1 hour'), ('4h', interval '4 hours'), ('1D', interval '1 day')) AS w("tf", "span") ON w."tf" = c."tf"
     JOIN oldest o ON o."marketId" = c."marketId"
     WHERE c."source" IS NULL AND o."at0" IS NOT NULL AND c."t" + w."span" > o."at0"
+      ${since ? Prisma.sql`AND c."t" + w."span" > ${since}` : Prisma.empty}
   ),
+  -- Per candle, its own tick range through the ("marketId", "at") index (final deploy audit N-1): a plain
+  -- join let the planner pair every candle with every tick of its market (time grew with the square of
+  -- the stored history: 66 s for 3 days of ticks, minutes for 7), which kept the workers in start-up past
+  -- deploy.sh's 60 s heartbeat wait.
   proof AS (
-    SELECT u."marketId", u."tf", u."t",
-           min(k."kind") AS "kind",
-           count(DISTINCT k."kind") AS "kinds",
-           bool_or(p."price" = u."o") AS "hasOpen",
-           bool_or(p."price" = u."c") AS "hasClose",
-           max(p."price") AS "hi",
-           min(p."price") AS "lo"
+    SELECT u."marketId", u."tf", u."t", s."kind", s."kinds", s."hasOpen", s."hasClose", s."hi", s."lo"
     FROM unknown u
-    JOIN "PriceTick" p ON p."marketId" = u."marketId" AND p."at" >= u."t" AND p."at" < u."tEnd"
-    CROSS JOIN LATERAL (SELECT CASE p."source" WHEN 'oracle' THEN 'chainlink' ELSE p."source" END AS "kind") k
-    GROUP BY u."marketId", u."tf", u."t"
+    CROSS JOIN LATERAL (
+      SELECT min(k."kind") AS "kind",
+             count(DISTINCT k."kind") AS "kinds",
+             bool_or(p."price" = u."o") AS "hasOpen",
+             bool_or(p."price" = u."c") AS "hasClose",
+             max(p."price") AS "hi",
+             min(p."price") AS "lo",
+             count(*) AS "n"
+      FROM "PriceTick" p
+      CROSS JOIN LATERAL (SELECT CASE p."source" WHEN 'oracle' THEN 'chainlink' ELSE p."source" END AS "kind") k
+      WHERE p."marketId" = u."marketId" AND p."at" >= u."t" AND p."at" < u."tEnd"
+    ) s
+    WHERE s."n" > 0
   )
   UPDATE "Candle" c SET "source" = proof."kind"
   FROM proof
@@ -284,10 +294,49 @@ export const retagUnknownCandlesSql = Prisma.sql`
     AND proof."kinds" = 1 AND proof."kind" IN ('demo', 'robinhood', 'chainlink')
     AND proof."hasOpen" AND proof."hasClose" AND proof."hi" = c."h" AND proof."lo" = c."l"`;
 
-/** Runs retagUnknownCandlesSql; returns how many candles were tagged. */
-export async function retagUnknownCandles(prisma: PrismaClient, log: Logger): Promise<number> {
-  const tagged = await prisma.$executeRaw(retagUnknownCandlesSql);
-  if (tagged) log.info('tagged candles of unknown source from their stored ticks', { candles: tagged });
+export interface RetagOptions {
+  /** Only candles whose bucket ends after this time (start-up tags the recent ones, the rest follows). */
+  since?: Date;
+  /** Statement timeout per market (default 120 s). A market that runs out keeps its candles unknown. */
+  timeoutMs?: number;
+  /** Total time for all markets; once spent, the remaining markets are left for a later run. */
+  budgetMs?: number;
+}
+
+/**
+ * Runs retagUnknownCandlesSql market by market, each in its own transaction with a statement timeout, so
+ * one large history can neither hold the workers' start-up past deploy.sh's heartbeat wait nor leave a
+ * runaway query behind (final deploy audit N-1). A market that fails or times out keeps its candles
+ * unknown (never shown as real on mainnet) and is tried again on the next run. Returns how many candles
+ * were tagged.
+ */
+export async function retagUnknownCandles(prisma: PrismaClient, log: Logger, opts: RetagOptions = {}): Promise<number> {
+  const timeoutMs = Math.max(1000, Math.floor(opts.timeoutMs ?? 120_000));
+  const deadline = opts.budgetMs === undefined ? Infinity : Date.now() + opts.budgetMs;
+  const markets = await prisma.market.findMany({ select: { id: true, symbol: true } });
+  let tagged = 0;
+  for (const m of markets) {
+    const left = Math.min(timeoutMs, deadline - Date.now());
+    if (left < 1000) {
+      log.info('candle tagging time budget spent; the remaining markets are tagged later', { market: m.symbol });
+      break;
+    }
+    try {
+      tagged += await prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(Math.floor(left))}, true)`;
+          return tx.$executeRaw(retagUnknownCandlesSql(m.id, opts.since ?? null));
+        },
+        { timeout: Math.floor(left) + 10_000, maxWait: 10_000 },
+      );
+    } catch (err) {
+      log.warn('could not tag candles of unknown source for a market; they stay unknown and are tried again later', {
+        market: m.symbol,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (tagged) log.info('tagged candles of unknown source from their stored ticks', { candles: tagged, since: opts.since?.toISOString() ?? 'all' });
   return tagged;
 }
 
@@ -296,9 +345,15 @@ export async function retagUnknownCandles(prisma: PrismaClient, log: Logger): Pr
  * other kind of source (resetHistoryOnSourceChange), drop rows dated ahead (dropFutureHistory), then tag
  * the candles an older release wrote without a source where their ticks prove it (retagUnknownCandles).
  */
-export async function prepareHistory(prisma: PrismaClient, redis: Redis, source: PriceSource, log: Logger): Promise<{ reset: boolean; tagged: number }> {
+export async function prepareHistory(
+  prisma: PrismaClient,
+  redis: Redis,
+  source: PriceSource,
+  log: Logger,
+  retag: RetagOptions = {},
+): Promise<{ reset: boolean; tagged: number }> {
   const reset = await resetHistoryOnSourceChange(prisma, redis, source, log);
   await dropFutureHistory(prisma, log);
-  const tagged = await retagUnknownCandles(prisma, log);
+  const tagged = await retagUnknownCandles(prisma, log, retag);
   return { reset, tagged };
 }

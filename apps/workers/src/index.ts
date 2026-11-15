@@ -6,7 +6,7 @@ import { createCacheMac } from '@velum/config/src/cache-mac';
 import { PrismaClient } from '@velum/db';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
-import { demoBackfill, loadLastTickAt, loadLastTickPrices, loadSeries, loadSnapshots, prepareHistory, upsertMarkets } from './bootstrap';
+import { demoBackfill, loadLastTickAt, loadLastTickPrices, loadSeries, loadSnapshots, prepareHistory, retagUnknownCandles, upsertMarkets } from './bootstrap';
 import { CANDLES_WORKER, PRICE_WORKER, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
 import { CANDLE_JOB_OPTIONS, candleJobFromTicks, runCandles, writeCandleCaches } from './jobs/candles';
@@ -18,6 +18,9 @@ import { createLogger } from './lib/log';
 import { redact } from './lib/redact';
 import { retryForever, timeout } from './lib/retry';
 import { pickSource } from './sources';
+
+/** Start-up tags candles of unknown source whose bucket ended in this window; the rest follows in the background. */
+const RECENT_RETAG_MS = 2 * 86_400_000;
 
 const Q_PRICES = 'velum-prices';
 const Q_CANDLES = 'velum-candles';
@@ -63,7 +66,9 @@ async function main(): Promise<void> {
     // Never mix simulated and real price history, never delete it on a guess: only positive evidence of
     // the other kind of source resets, candles of unknown source never count and are tagged where their
     // stored ticks prove the source (audit F-1, F-4). Rows dated ahead are dropped (audit L-1).
-    await prepareHistory(prisma, redis, env.priceSource, log);
+    // Only the recent candles are tagged here (the buckets this process may still write and the series it
+    // loads next); older ones are tagged in the background once the workers are alive (audit N-1).
+    await prepareHistory(prisma, redis, env.priceSource, log, { since: new Date(Date.now() - RECENT_RETAG_MS), timeoutMs: 10_000, budgetMs: 20_000 });
     const snapshots = await loadSnapshots(redis, mac);
     let series = await loadSeries(prisma, marketIds, env.priceSource);
     if (env.priceSource === 'demo') {
@@ -107,15 +112,25 @@ async function main(): Promise<void> {
     await maintenance.upsertJobScheduler('prune-ticks', { every: 3_600_000 }, { name: 'prune', opts: defaultJobOptions });
   });
 
+  // Candle writes and the background history reload below never overlap (one in-process queue), so a
+  // reload can never drop a candle a job is advancing.
+  let historyTail: Promise<unknown> = Promise.resolve();
+  const withHistory = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = historyTail.then(fn, fn);
+    historyTail = run.catch(() => undefined);
+    return run;
+  };
+
   const workers = [
     new Worker(Q_PRICES, async () => runPriceRelay(ctx), { connection: redis, concurrency: 1 }),
     // A queued job's payload is not trusted (audit M-2): the tick is read back from Postgres.
     new Worker<CandleJobData>(
       Q_CANDLES,
-      async (job: Job<CandleJobData>) => {
-        const data = await candleJobFromTicks(ctx, job.data);
-        return data ? runCandles(ctx, data) : 0;
-      },
+      async (job: Job<CandleJobData>) =>
+        withHistory(async () => {
+          const data = await candleJobFromTicks(ctx, job.data);
+          return data ? runCandles(ctx, data) : 0;
+        }),
       { connection: redis, concurrency: 1 },
     ),
     new Worker(Q_MAINTENANCE, async () => runPrune(ctx), { connection: redis, concurrency: 1 }),
@@ -127,6 +142,17 @@ async function main(): Promise<void> {
 
   // Liveness for /v1/health and deploy.sh's post-release check (audit R2-L5): only once start-up worked.
   const stopLiveness = await startLiveness(redis, mac, log);
+
+  // Older candles of unknown source (written by a release before the source tag existed) are tagged now,
+  // market by market with a timeout, then the in-memory series and candle caches are reloaded so charts
+  // show that history (audit N-1, F-1). A failure leaves them unknown until the next start.
+  void withHistory(async () => {
+    const tagged = await retagUnknownCandles(prisma, log, { timeoutMs: 120_000 });
+    if (tagged > 0) {
+      ctx.series = await loadSeries(prisma, marketIds, env.priceSource);
+      await writeCandleCaches(redis, mac, env.priceSource, ctx.series);
+    }
+  }).catch((err: unknown) => log.warn('background candle tagging failed; tried again on the next start', { err: redact(String(err)) }));
 
   log.info('workers started', {
     workers: [PRICE_WORKER, CANDLES_WORKER, 'prune'],

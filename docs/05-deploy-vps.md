@@ -315,8 +315,14 @@ Sets `VELUM_NETWORK`, `NEXT_PUBLIC_VELUM_NETWORK`, `CHAIN_ID`, `NEXT_PUBLIC_CHAI
 rewrite (backs up `.env` first, under the deploy lock), then runs a release. If that release fails,
 nothing mixes networks (R3-04): when its health check fails, the previous `.env` is put back before
 switching back to the previous release (web.env and the CSP follow); when it fails before the switch,
-`.env` and `web.env` are put back and the running release is untouched. Mainnet is read-only in Phase 2:
-real wallet and balances, live Robinhood prices, simulated trades, and the copy says so. Velum contracts go to
+`.env` and `web.env` are put back and the running release is untouched. On mainnet: real wallet and balances,
+live 24/7 prices and candles from the curated Uniswap pools (`PRICE_SOURCE=uniswap`; run
+`sudo PRICE_SOURCE_MAINNET=robinhood bash /srv/velum/deploy/set-network.sh mainnet` for the official Robinhood
+quotes instead), real spot trades through Uniswap from the user's wallet, simulated perps and private account,
+and the copy says which is which. A server already on mainnet switches to Uniswap prices by running
+`sudo bash /srv/velum/deploy/set-network.sh mainnet` again: the workers then clear the Robinhood quote history
+once (different kinds never mix) and build the swap history from the chain, newest first (the 15m and 1h
+charts fill within minutes; full 1D history takes longer on the public RPC). Velum contracts go to
 mainnet before the Phase 5 audit only as the guarded beta (allowlist and caps), with `deploy/deploy-contracts.sh`:
 docs/07-mainnet-guarded-beta.md is its runbook. On mainnet a market with no price snapshot yet
 is served with its seed price, `stale: true` and `source: null` (docs/03); the web shows dashes for it.

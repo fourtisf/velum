@@ -91,3 +91,64 @@ export function candleUpsertSql(rows: CandleUpsert[], opts: CandleUpsertOptions)
       "l" = LEAST("Candle"."l", EXCLUDED."l"),
       "c" = ${close}`;
 }
+
+/** A candle row to store (prices as decimal strings): one bucket's swaps of one processed block range. */
+export interface CandleRow {
+  marketId: string;
+  tf: Timeframe;
+  t: number;
+  o: string;
+  h: string;
+  l: string;
+  c: string;
+}
+
+/** Rows per INSERT in candleMergeSql (8 values each, far below Postgres's 65,535 parameter limit). */
+export const CANDLE_MERGE_BATCH = 2000;
+
+/**
+ * One INSERT … ON CONFLICT for the DEX candles (jobs/dex-candles.ts). Each row is one bucket's aggregate of one
+ * processed block range; a bucket that already holds candles of other blocks merges:
+ *  - 'append': the rows are newer than everything stored (the live cursor): keep the stored open, extend high/low,
+ *    take the new close;
+ *  - 'prepend': the rows are older than everything stored (history, built backwards): take the new open, extend
+ *    high/low, keep the stored close.
+ * Either way the bucket is tagged with `source`. One row per bucket (Postgres refuses to update a row twice in one
+ * statement); at most CANDLE_MERGE_BATCH rows.
+ */
+export function candleMergeSql(rows: CandleRow[], source: PriceSource, mode: 'append' | 'prepend'): Prisma.Sql {
+  if (!rows.length || rows.length > CANDLE_MERGE_BATCH) throw new Error(`candleMergeSql takes 1 to ${CANDLE_MERGE_BATCH} rows`);
+  const dec = (v: string) => Prisma.sql`CAST(${v} AS DECIMAL(38,12))`;
+  const values = rows.map((r) => Prisma.sql`(${r.marketId}, ${r.tf}, CAST(${utcTimestamp(r.t)} AS TIMESTAMP(3)), ${dec(r.o)}, ${dec(r.h)}, ${dec(r.l)}, ${dec(r.c)}, ${source})`);
+  const open = mode === 'prepend' ? Prisma.sql`EXCLUDED."o"` : Prisma.sql`"Candle"."o"`;
+  const close = mode === 'append' ? Prisma.sql`EXCLUDED."c"` : Prisma.sql`"Candle"."c"`;
+  return Prisma.sql`
+    INSERT INTO "Candle" ("marketId", "tf", "t", "o", "h", "l", "c", "source")
+    VALUES ${Prisma.join(values)}
+    ON CONFLICT ("marketId", "tf", "t") DO UPDATE SET
+      "o" = ${open},
+      "h" = GREATEST("Candle"."h", EXCLUDED."h"),
+      "l" = LEAST("Candle"."l", EXCLUDED."l"),
+      "c" = ${close},
+      "source" = EXCLUDED."source"`;
+}
+
+/**
+ * Merges a candle into an in-memory series (oldest first) the way candleMergeSql does in Postgres: an existing bucket
+ * extends high/low and takes the open ('prepend': the candle is older than what the bucket holds) or the close
+ * ('append': newer); a new bucket is inserted in order. The series keeps its newest `max` candles.
+ */
+export function mergeCandle(series: WadCandle[], c: WadCandle, mode: 'append' | 'prepend', max = CANDLE_CACHE_SIZE): void {
+  let lo = 0;
+  let hi = series.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (series[mid]!.t < c.t) lo = mid + 1;
+    else hi = mid;
+  }
+  const at = series[lo];
+  if (at && at.t === c.t) {
+    series[lo] = { t: at.t, o: mode === 'prepend' ? c.o : at.o, h: wmax(at.h, c.h), l: wmin(at.l, c.l), c: mode === 'append' ? c.c : at.c };
+  } else series.splice(lo, 0, { ...c });
+  if (series.length > max) series.splice(0, series.length - max);
+}

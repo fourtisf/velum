@@ -41,7 +41,7 @@ model PriceTick {
   marketId String
   market   Market   @relation(fields: [marketId], references: [id])
   price    Decimal  @db.Decimal(38, 12)
-  source   String                                  // demo | robinhood | oracle (Chainlink)
+  source   String                                  // demo | robinhood | oracle (Chainlink) | uniswap
   at       DateTime @default(now())
 
   @@index([marketId, at])
@@ -57,7 +57,7 @@ model Candle {
   h        Decimal  @db.Decimal(38, 12)
   l        Decimal  @db.Decimal(38, 12)
   c        Decimal  @db.Decimal(38, 12)
-  // demo | robinhood | chainlink: the price source the bucket was built from. NULL = unknown (rows from
+  // demo | robinhood | chainlink | uniswap: the price source the bucket was built from. NULL = unknown (rows from
   // before the column, or written by a release that does not know it): never served as real on mainnet,
   // never evidence of a source change, tagged at start-up only when stored ticks prove it (audit F-1, F-4).
   source   String?

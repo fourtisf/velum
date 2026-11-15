@@ -4,8 +4,8 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 
 > Status: **Phase 2**, a production frontend with demo trading. Wallet connect, public balances,
 > prices and candles are real; trades are simulated in the browser behind a visible "Demo mode" banner.
-> The site runs on testnet, or on mainnet in read-only mode (real wallet and balances, live prices,
-> simulated trades). Velum contracts are not deployed on mainnet; the guarded mainnet beta (allowlisted wallets, small
+> The site runs on testnet, or on mainnet with live 24/7 prices and candles from Uniswap on Robinhood Chain and
+> **real spot trades through Uniswap** from the user's wallet (perps and the private account stay simulated). Velum contracts are not deployed on mainnet; the guarded mainnet beta (allowlisted wallets, small
 > caps, unaudited contracts) is prepared: `docs/07-mainnet-guarded-beta.md`. Claude Code: start with `CLAUDE.md`.
 
 ## What's in this repo
@@ -115,6 +115,32 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
+
+## What changed: live 24/7 prices and real spot through Uniswap (mainnet, November 2026)
+
+- **Why**: the official Robinhood quote is 24/5 and freezes while the US session is closed, so weekend charts were
+  flat lines marked "closed". Stock Tokens trade on Uniswap on Robinhood Chain around the clock (Uniswap holds
+  nearly all of their DEX liquidity), so that is now the price and the chart on mainnet.
+- **Curated pools** (`packages/config/uniswap-mainnet.json`, typed by `packages/config/src/uniswap.ts`): 2 to 4 pools
+  per market (Uniswap v3 and v4, hookless, fee at most 1%), each checked on chain and quoted both ways on
+  2026-11-15. The chain also holds hundreds of look-alike pools with fees up to 99% or hooks: never used.
+- **Workers** (`PRICE_SOURCE=uniswap`): the price is the deepest chart pool's current price (one multicall per tick,
+  block-time dated, jump-guarded). Candles are real swaps (`jobs/dex-candles.ts`): every swap's post-trade price in
+  the bucket of its block time, exact to the second; history builds newest first from the chain and resumes from
+  checkpoints. Live check against mainnet: `apps/workers/e2e/dex/live-dex.e2e.ts` (rebuilds history into a
+  scratch database and compares every recent bucket with an independent per-swap derivation). A first start shows
+  the last weeks within minutes; the full history (several million swaps) takes an hour or more on the public RPC.
+- **API**: a `uniswap` price is live on weekends and holidays (`marketOpen: true`, never `marketClosed`/`quoteFrozen`).
+- **Web**: the Spot ticket and the swap page trade for real from the wallet through the Uniswap Universal Router
+  (`apps/web/lib/uniswap`): on-chain quote from the best curated pool, exact ERC-20 approval to Permit2, exact
+  30-minute Permit2 allowance, swap with the slippage minimum and a deadline, receipt checked from Transfer
+  events. Stock to stock is two swaps through USDG. Public onchain, no Velum fee, a confirmation box before
+  anything is signed. Rehearsed against the deployed contracts with real tokens on a mainnet fork
+  (`apps/web/e2e/uniswap-fork.e2e.ts`: v3 and v4, both token orders, buy and sell, exact amounts, slippage
+  reverts; `apps/web/e2e/uniswap-browser.e2e.cjs`: the mainnet web build with a test wallet buys, sells and swaps
+  stock to stock, every amount checked on chain). Perps, shield/unshield, liquidity and maker offers stay simulated, and the banner says so.
+- **Deploy**: `deploy/set-network.sh mainnet` now sets `PRICE_SOURCE=uniswap` (`PRICE_SOURCE_MAINNET=robinhood`
+  keeps the official quotes). A provider `RPC_URL` makes the first history build much faster.
 
 ## What changed in Phase 2
 

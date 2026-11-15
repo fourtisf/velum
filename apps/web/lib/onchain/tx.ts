@@ -1,7 +1,7 @@
 'use client';
 /**
- * Sends one contract call the safe way: the wallet must be connected to the deployment's chain (never a
- * guess, never mainnet unless the compiled deployment is for mainnet), the call is simulated against the
+ * Sends one contract call the safe way: the wallet must be connected to the target's chain (never a guess, never
+ * mainnet unless the target is on mainnet: the guarded deployment, or the curated Uniswap venue for spot), the call is simulated against the
  * chain first (viem simulateContract, so a revert is shown before the wallet is asked), the account's pending
  * nonce is recorded, then the wallet signs, and the receipt is awaited. Each stage is reported so the flow
  * dialog shows real states: checking, waiting for a fresh price, signature requested, submitted (hash),
@@ -76,14 +76,14 @@ export class TxUnexpected extends Error {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function checkSendable(d: Deployment, account: Address): void {
+export function checkSendable(d: Pick<Deployment, 'chainId'>, account: Address): void {
   const c = getConnection(wagmiConfig);
   const r = sendRefusal({ walletChainId: c.chainId, walletAddress: c.status === 'connected' ? c.address : undefined, account, deploymentChainId: d.chainId, appChainId: ENV.chainId });
   if (r) throw new SendRefused(r);
 }
 
 /** Asks the wallet to switch to the deployment's chain. */
-export async function switchToDeployment(d: Deployment): Promise<void> {
+export async function switchToDeployment(d: Pick<Deployment, 'chainId'>): Promise<void> {
   await switchChain(wagmiConfig, { chainId: d.chainId as typeof ENV.chainId });
 }
 
@@ -119,7 +119,7 @@ export interface SendOptions {
   live: () => boolean;
 }
 
-export async function sendTx(d: Deployment, account: Address, call: TxCall, o: SendOptions): Promise<{ hash: Hash; receipt: TransactionReceipt }> {
+export async function sendTx(d: Pick<Deployment, 'chainId'>, account: Address, call: TxCall, o: SendOptions): Promise<{ hash: Hash; receipt: TransactionReceipt }> {
   checkSendable(d, account);
   o.onStage('checking');
   const until = Date.now() + (o.waitMs ?? 45_000);

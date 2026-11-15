@@ -11,6 +11,8 @@ import { CLOSED, COPY, METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { DemoTag } from '../ui';
 import { OnchainTicket } from '../onchain/lazy';
+import { UniSpotTicket } from '../uniswap/lazy';
+import { UNISWAP } from '@velum/config/src/uniswap';
 import { useTradeMode } from './mode';
 import { useOnchain } from '@/lib/onchain/deployment';
 
@@ -255,12 +257,13 @@ function SpotTicket({ sym }: { sym: string }) {
 
 export function Ticket({ sym }: { sym: string }) {
   const mode = useTradeMode();
-  // Real transactions once a deployment is live (lib/onchain/deployment.ts); otherwise the simulated ticket.
+  // Real transactions once a deployment is live (lib/onchain/deployment.ts); otherwise the simulated ticket, except
+  // Spot on mainnet, which trades for real through Uniswap from the wallet (lib/uniswap).
   const oc = useOnchain();
   if (oc) return <OnchainTicket sym={sym} mode={mode} oc={oc} />;
   return (
     <aside className="card ticket" aria-label="Order ticket">
-      {mode === 'perps' ? <PerpsTicket sym={sym} /> : <SpotTicket sym={sym} />}
+      {mode === 'perps' ? <PerpsTicket sym={sym} /> : UNISWAP ? <UniSpotTicket sym={sym} /> : <SpotTicket sym={sym} />}
     </aside>
   );
 }

@@ -53,11 +53,13 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
   const network: NetworkName = (e.VELUM_NETWORK ?? '').trim().toLowerCase() === 'mainnet' ? 'mainnet' : NETWORK;
 
   const src = (e.PRICE_SOURCE || 'demo').trim().toLowerCase();
-  if (src !== 'demo' && src !== 'chainlink' && src !== 'robinhood') problems.push(`PRICE_SOURCE must be "demo", "robinhood" or "chainlink" (got "${e.PRICE_SOURCE}").`);
+  if (src !== 'demo' && src !== 'chainlink' && src !== 'robinhood' && src !== 'uniswap') problems.push(`PRICE_SOURCE must be "demo", "robinhood", "chainlink" or "uniswap" (got "${e.PRICE_SOURCE}").`);
   // Mainnet shows live prices only (web audit F2): simulated prices must never run under VELUM_NETWORK=mainnet.
   if (network === 'mainnet' && src === 'demo') {
-    problems.push('PRICE_SOURCE=demo (the default) is not allowed with VELUM_NETWORK=mainnet: mainnet shows live prices only. Set PRICE_SOURCE=robinhood (deploy/set-network.sh mainnet does).');
+    problems.push('PRICE_SOURCE=demo (the default) is not allowed with VELUM_NETWORK=mainnet: mainnet shows live prices only. Set PRICE_SOURCE=uniswap (deploy/set-network.sh mainnet does) or robinhood.');
   }
+  // The curated Uniswap pools exist on mainnet only (packages/config/uniswap-mainnet.json).
+  if (network !== 'mainnet' && src === 'uniswap') problems.push('PRICE_SOURCE=uniswap needs VELUM_NETWORK=mainnet: the curated Uniswap pools are on Robinhood Chain mainnet only.');
 
   const logLevel = (e.LOG_LEVEL ?? '').trim();
   if (logLevel && !(LOG_LEVELS as readonly string[]).includes(logLevel)) problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')} (got "${e.LOG_LEVEL}").`);
@@ -68,7 +70,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
     redis: redis.ok ? redis.options : { db: 0 },
     demoMode: bool(e.DEMO_MODE, true),
     pricePollMs: int('PRICE_POLL_MS', e.PRICE_POLL_MS, 2000, 500, 60_000),
-    priceSource: src === 'chainlink' || src === 'robinhood' ? src : 'demo',
+    priceSource: src === 'chainlink' || src === 'robinhood' || src === 'uniswap' ? src : 'demo',
     rpcUrl,
     chainId,
     tickRetentionDays: int('PRICE_TICK_RETENTION_DAYS', e.PRICE_TICK_RETENTION_DAYS, 7, 1, 365),

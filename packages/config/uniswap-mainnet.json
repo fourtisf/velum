@@ -1,0 +1,69 @@
+{
+  "_note": "Uniswap on Robinhood Chain mainnet (4663): the public venue where Stock Tokens trade 24/7. Velum reads prices and candles from the pools below (PRICE_SOURCE=uniswap) and routes real spot trades through the Universal Router from the user's own wallet. Only the curated pools below are ever read or routed through: every one is hookless with a standard fee tier (at most 1%). The chain also holds hundreds of look-alike pools for the same pairs with fees up to 99% or arbitrary hooks; never add a pool without checking it the same way.",
+  "_verification": {
+    "date": "2026-11-15",
+    "contracts": "Addresses from Uniswap's own SDKs (@uniswap/sdk-core 7.22.0 CHAIN_TO_ADDRESSES_MAP[4663] and @uniswap/universal-router-sdk 5.17.0 UNIVERSAL_ROUTER_ADDRESS(V2_1_2, 4663)); each has bytecode on chain, and they reference each other: universalRouter.poolManager(), v4Quoter.poolManager() and stateView.poolManager() return poolManager; quoterV2.factory() returns v3Factory and quoterV2.WETH9() returns weth. Permit2 is the canonical address (bytecode present).",
+    "pools": "v3 pools: v3Factory.getPool(stock, USDG, fee) returned exactly these addresses. v4 pools: found in poolManager Initialize logs for (stock, USDG) with hooks = 0, and each id is keccak256(abi.encode(poolKey)) (checked by apps/workers tests). Each pool quoted through quoterV2 / v4Quoter for 1,000 and 10,000 USDG both ways on 2026-11-15: within about 2% of Robinhood's official quote at 1,000 USDG (the deep ones within 1%). `chart: true` marks the deep pools whose swaps build the price and the candles; the others are routing options only (a trade takes the best quote among all listed pools).",
+    "warning": "Liquidity can move: a quote is always read on chain right before a trade, and a pool that stops quoting is simply not chosen."
+  },
+  "chainId": 4663,
+  "contracts": {
+    "v3Factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",
+    "quoterV2": "0x33e885ed0ec9bf04ecfb19341582aadcb4c8a9e7",
+    "poolManager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+    "stateView": "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b",
+    "v4Quoter": "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+    "universalRouter": "0x204faca1764b154221e35c0d20abb3c525710498",
+    "permit2": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+    "weth": "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
+  },
+  "universalRouterCreationBlock": 65727895,
+  "pools": {
+    "TSLA": [
+      { "version": 3, "address": "0xf4acdaeeb7022862a763c9b1b885e11191c889e3", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 4, "id": "0x8517f8071ae5b831b738052f12125e8e3d6c158b78728aa44ce3b25e5104d32e", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 3, "address": "0xc4f0172d6ac8dd294dd1137d047d5e1893760236", "fee": 500, "tickSpacing": 10, "chart": false },
+      { "version": 3, "address": "0xb349fb08c2712f3a70bad40a4d006b68d67e888b", "fee": 10000, "tickSpacing": 200, "chart": false }
+    ],
+    "AMZN": [
+      { "version": 3, "address": "0x8ac92da74ab5f3b1d024dc1943ad7e15dc4179ef", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 4, "id": "0xefc94885c96b02696b9b45de43eeeb8ac53c0199cab42b4daae4911b96fb8825", "fee": 2400, "tickSpacing": 24, "chart": true },
+      { "version": 4, "id": "0xd32646872e6712af8cf778e34b6bbef1d2ae0bddd83764e1b07333518ad59333", "fee": 3000, "tickSpacing": 60, "chart": false }
+    ],
+    "PLTR": [
+      { "version": 3, "address": "0x851680416a4f4e1c463d45171d61acddbc8554c0", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 4, "id": "0xee430ee1003e1985e1828a01b9a20dad67ad4302994fe2abb4a173de4ac54623", "fee": 10000, "tickSpacing": 200, "chart": true }
+    ],
+    "NVDA": [
+      { "version": 3, "address": "0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3", "fee": 500, "tickSpacing": 10, "chart": true },
+      { "version": 4, "id": "0x3bb34a44f1b2b5f32c034c38a53065a521a47b199700fa9bd19d60985ff24bf1", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 3, "address": "0xb944cec30bd4175855215d767adc81f39e5f7e2b", "fee": 3000, "tickSpacing": 60, "chart": false },
+      { "version": 3, "address": "0xc277560df3689a401ba7dedd7626168b234ceb5e", "fee": 10000, "tickSpacing": 200, "chart": false }
+    ],
+    "NFLX": [
+      { "version": 3, "address": "0x59895c0302f41aeaa129d2fa2442cec01e7ef45e", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 4, "id": "0xe4930a6215f21aa3b37c01adbded3362f56ae31b9a60066f5f9641e601d5111f", "fee": 10000, "tickSpacing": 100, "chart": true }
+    ],
+    "AMD": [
+      { "version": 3, "address": "0x48d284a2a4d3dc1b3da08231fe44317e7e7aa51f", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 4, "id": "0xde9f85fdd9e05a943a52f2c69ffafe3064a3287df03d02c9b431bc92d4781274", "fee": 10000, "tickSpacing": 200, "chart": true }
+    ],
+    "AAPL": [
+      { "version": 4, "id": "0xc748f4671a867db48b552f6b7650bf3255e05f80f00e3f7aad1b17ccb7898fdb", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 3, "address": "0xaae0d815ee56e4092a5e5c2911e676fea50b2d6d", "fee": 500, "tickSpacing": 10, "chart": true },
+      { "version": 3, "address": "0x783c9bbb765047cfdd2b84b92b2ca9f11d34b7ed", "fee": 3000, "tickSpacing": 60, "chart": false }
+    ],
+    "META": [
+      { "version": 4, "id": "0x5875d407a42965b0e768c8925cea290e06fa50603ef34fc99eb92a1050e6ae36", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 3, "address": "0x107a7cb40d8665360ba10e59471af06150a50922", "fee": 3000, "tickSpacing": 60, "chart": true }
+    ],
+    "MSFT": [
+      { "version": 3, "address": "0xeb60bcd1d920ad6e102690ccfc6fb488899e1510", "fee": 3000, "tickSpacing": 60, "chart": true },
+      { "version": 4, "id": "0x9194a557b6a6bb2236b49ea7e2bbccec5d3eeb705aef00903be4b3de1d949579", "fee": 3000, "tickSpacing": 60, "chart": true }
+    ],
+    "COIN": [
+      { "version": 4, "id": "0x007a13fa152f6dc383cad20a8eaab4e1e2538b606936eae2a424f8aa47d6db31", "fee": 10000, "tickSpacing": 200, "chart": true },
+      { "version": 3, "address": "0x3a6ec0aa6c702323414d449b5f60f4b742a82ded", "fee": 500, "tickSpacing": 10, "chart": true }
+    ]
+  }
+}

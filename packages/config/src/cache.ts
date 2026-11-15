@@ -32,11 +32,25 @@ export const CANDLE_CACHE_SIZE = 300;
 /** Clock skew allowed between processes: anything dated further ahead than this is rejected. */
 export const MAX_FUTURE_SKEW_MS = 30_000;
 
-/** demo = simulated; robinhood = official quotes from api.robinhood.com/rhj/prices; chainlink = on-chain feeds. */
-export type PriceSource = 'demo' | 'robinhood' | 'chainlink';
-export const PRICE_SOURCES: readonly PriceSource[] = ['demo', 'robinhood', 'chainlink'];
+/**
+ * demo = simulated; robinhood = official quotes from api.robinhood.com/rhj/prices (24/5, frozen while the US session is
+ * closed); chainlink = on-chain feeds; uniswap = the curated Uniswap pools on Robinhood Chain mainnet, where Stock
+ * Tokens trade 24/7 (price = the deepest pool's current price, candles = real swaps; src/uniswap.ts).
+ */
+export type PriceSource = 'demo' | 'robinhood' | 'chainlink' | 'uniswap';
+export const PRICE_SOURCES: readonly PriceSource[] = ['demo', 'robinhood', 'chainlink', 'uniswap'];
 /** Sources of real prices: the only ones mainnet shows, live or as history. */
-export const REAL_PRICE_SOURCES: readonly PriceSource[] = ['robinhood', 'chainlink'];
+export const REAL_PRICE_SOURCES: readonly PriceSource[] = ['robinhood', 'chainlink', 'uniswap'];
+
+/**
+ * The kind of history a source writes. Candles of different kinds are never mixed (index.ts resets stored history
+ * when the kind changes): simulated prices, quotes of the underlying stock (Robinhood, Chainlink: one price per poll,
+ * frozen while the US session is closed) and onchain trades (Uniswap swaps, 24/7).
+ */
+export type PriceKind = 'demo' | 'quote' | 'dex';
+export const priceKindOf = (s: PriceSource): PriceKind => (s === 'demo' ? 'demo' : s === 'uniswap' ? 'dex' : 'quote');
+/** Sources whose market trades 24/7 onchain: the US session calendar and the frozen-quote rule do not apply. */
+export const isAlwaysOpenSource = (s: PriceSource | string | null | undefined): boolean => s === 'uniswap';
 
 export interface MarketSnapshot {
   symbol: string;

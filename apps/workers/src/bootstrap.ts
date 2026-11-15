@@ -10,6 +10,7 @@ import {
   TIMEFRAMES,
   cacheKeys,
   parseSnapshot,
+  priceKindOf,
   type MarketSnapshot,
   type PriceSource,
 } from '@velum/config';
@@ -218,26 +219,27 @@ export async function demoBackfill(
 }
 
 /**
- * Never mix simulated and real price history. The decision rests on positive evidence in Postgres, not
- * on a cache key: a PriceTick of the other kind of source, or a Candle tagged with the other kind (audit
- * I-7). A candle of unknown source (NULL: written before the column existed, or by a release that does
- * not know it, audit F-1) is never evidence. With evidence, candles, cached snapshots and the other
- * kind's ticks are removed once; demo backfill then re-seeds if the new source is demo. Without it
- * nothing is deleted. Switching between two real sources keeps history.
+ * Never mix kinds of price history (packages/config priceKindOf): simulated prices, quotes of the underlying stock
+ * (Robinhood, Chainlink) and onchain trades (Uniswap swaps). The decision rests on positive evidence in Postgres, not
+ * on a cache key: a PriceTick of another kind, or a Candle tagged with another kind (audit I-7). A candle of unknown
+ * source (NULL: written before the column existed, or by a release that does not know it, audit F-1) is never
+ * evidence. With evidence, candles, cached snapshots and the other kinds' ticks are removed once; demo backfill then
+ * re-seeds if the new source is demo, and the DEX candles rebuild from the chain if it is uniswap. Without it nothing
+ * is deleted. Switching between two sources of the same kind (Robinhood and Chainlink) keeps history.
  */
 export async function resetHistoryOnSourceChange(prisma: PrismaClient, redis: Redis, source: PriceSource, log: Logger): Promise<boolean> {
-  const real = source !== 'demo';
-  const rows = real
-    ? await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT (EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" = 'demo') OR EXISTS (SELECT 1 FROM "Candle" WHERE "source" = 'demo')) AS found`
-    : await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT (EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" <> 'demo') OR EXISTS (SELECT 1 FROM "Candle" WHERE "source" IN ('robinhood', 'chainlink'))) AS found`;
+  const kind = priceKindOf(source);
+  // Tick sources ("oracle" is Chainlink) and candle sources of every kind but this one.
+  const otherTicks = { demo: ['robinhood', 'oracle', 'uniswap'], quote: ['demo', 'uniswap'], dex: ['demo', 'robinhood', 'oracle'] }[kind];
+  const otherCandles = { demo: ['robinhood', 'chainlink', 'uniswap'], quote: ['demo', 'uniswap'], dex: ['demo', 'robinhood', 'chainlink'] }[kind];
+  const rows = await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT (EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" IN (${Prisma.join(otherTicks)})) OR EXISTS (SELECT 1 FROM "Candle" WHERE "source" IN (${Prisma.join(otherCandles)}))) AS found`;
   await redis.set(cacheKeys.priceSource(), source).catch(() => undefined);
   if (!rows[0]?.found) return false;
   await prisma.$executeRaw`DELETE FROM "Candle"`;
-  if (real) await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" = 'demo'`;
-  else await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" <> 'demo'`;
+  await prisma.$executeRaw`DELETE FROM "PriceTick" WHERE "source" IN (${Prisma.join(otherTicks)})`;
   const keys = [...MARKETS.flatMap((m) => [cacheKeys.price(m.symbol), ...TIMEFRAMES.map((tf) => cacheKeys.candles(m.symbol, tf))]), cacheKeys.demoSeeded()];
   await redis.del(...keys);
-  log.info('price source changed kind; cleared stored history so real and simulated prices never mix', { source });
+  log.info('price source changed kind; cleared stored history so different kinds of prices never mix', { source, kind });
   return true;
 }
 

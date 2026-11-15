@@ -5,8 +5,9 @@ export type Refusal = 'not-connected' | 'account-changed' | 'wrong-chain' | 'dep
 
 /**
  * Why nothing may be sent right now, or null. Pure (unit-tested). A transaction goes out only when the
- * wallet's chain, the deployment's chain and this app's chain are the same, so nothing is ever sent on
- * Robinhood Chain mainnet (4663) unless the deployment compiled into this build is for 4663.
+ * wallet's chain, the target's chain and this app's chain are the same, so nothing is ever sent on
+ * Robinhood Chain mainnet (4663) unless the target is itself on 4663: the deployment compiled into a mainnet
+ * build (the guarded beta), or the curated Uniswap venue a mainnet build routes spot trades through.
  */
 export function sendRefusal(p: { walletChainId: number | undefined; walletAddress: string | undefined; account: string; deploymentChainId: number; appChainId: number }): Refusal | null {
   if (!p.walletAddress) return 'not-connected';

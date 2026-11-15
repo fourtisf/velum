@@ -22,7 +22,9 @@ import { redact } from './lib/redact';
 import { retryForever, timeout } from './lib/retry';
 import { loadOnchainSettings, type OnchainEnv } from './onchain/env';
 import { redisRefusal, removeOnchainSchedulers, startDisabledStatus, startOnchain, type OnchainHandle } from './onchain/index';
-import { pickSource } from './sources';
+import { pickSource, uniswapClient } from './sources';
+import { DexCandles } from './jobs/dex-candles';
+import { UNISWAP } from '@velum/config/src/uniswap';
 
 /** Start-up tags candles of unknown source whose bucket ended in this window; the rest follows in the background. */
 const RECENT_RETAG_MS = 2 * 86_400_000;
@@ -30,6 +32,8 @@ const RECENT_RETAG_MS = 2 * 86_400_000;
 const Q_PRICES = 'velum-prices';
 const Q_CANDLES = 'velum-candles';
 const Q_MAINTENANCE = 'velum-maintenance';
+const Q_DEX = 'velum-dex';
+const DEX_SCHEDULER = 'dex-candles';
 
 /** Set once SIGTERM/SIGINT arrived: start-up retries stop, and their rejection is not an error. */
 const stop = new AbortController();
@@ -100,6 +104,9 @@ async function main(): Promise<void> {
   const prices = new Queue(Q_PRICES, { connection: redis, defaultJobOptions });
   const candles = new Queue<CandleJobData>(Q_CANDLES, { connection: redis, defaultJobOptions });
   const maintenance = new Queue(Q_MAINTENANCE, { connection: redis, defaultJobOptions });
+  const dexQueue = new Queue(Q_DEX, { connection: redis, defaultJobOptions });
+  // PRICE_SOURCE=uniswap: candles come from real swaps (jobs/dex-candles.ts), not from price-relay's poll ticks.
+  const dex = env.priceSource === 'uniswap' && UNISWAP ? new DexCandles({ client: uniswapClient(env.rpcUrl), cfg: UNISWAP, chainId: env.chainId }) : null;
 
   const ctx: WorkerContext = {
     env,
@@ -115,15 +122,20 @@ async function main(): Promise<void> {
     lastTickAt,
     lastTickPrice,
     mac,
-    // A failed candle write is retried (audit L9); runCandles keeps retries from rewinding closes.
-    enqueueCandles: async (data) => {
-      await candles.add('tick', data, CANDLE_JOB_OPTIONS);
-    },
+    // A failed candle write is retried (audit L9); runCandles keeps retries from rewinding closes. With the DEX
+    // candles, poll ticks never become candles (the swaps do).
+    enqueueCandles: dex
+      ? async () => undefined
+      : async (data) => {
+          await candles.add('tick', data, CANDLE_JOB_OPTIONS);
+        },
   };
 
   await retry('job schedulers (Redis)', async () => {
     await prices.upsertJobScheduler(PRICE_WORKER, { every: env.pricePollMs }, { name: 'tick', opts: defaultJobOptions });
     await maintenance.upsertJobScheduler('prune-ticks', { every: 3_600_000 }, { name: 'prune', opts: defaultJobOptions });
+    if (dex) await dexQueue.upsertJobScheduler(DEX_SCHEDULER, { every: Math.max(env.pricePollMs, 2000) }, { name: 'dex', opts: defaultJobOptions });
+    else await dexQueue.removeJobScheduler(DEX_SCHEDULER);
   });
 
   // Candle writes and the background history reload below never overlap (one in-process queue), so a
@@ -148,6 +160,16 @@ async function main(): Promise<void> {
       { connection: redis, concurrency: 1 },
     ),
     new Worker(Q_MAINTENANCE, async () => runPrune(ctx), { connection: redis, concurrency: 1 }),
+    // DEX candles: one step at a time, serialized with the history reload below; nothing is read from an RPC that
+    // serves another chain (audit I-5).
+    new Worker(
+      Q_DEX,
+      async () => {
+        if (!dex || chain.state() === 'mismatch') return 0;
+        return withHistory(() => dex.step(ctx));
+      },
+      { connection: redis, concurrency: 1 },
+    ),
   ];
   for (const w of workers) {
     w.on('failed', (job, err) => log.error('job failed', { queue: w.name, job: job?.name, err: err.message }));
@@ -184,7 +206,7 @@ async function main(): Promise<void> {
   const stopDisabledStatus = onchainDisabled ? startDisabledStatus({ redis, mac, chainId: env.chainId, reason: onchainDisabled, log }) : null;
 
   log.info('workers started', {
-    workers: [PRICE_WORKER, CANDLES_WORKER, 'prune', ...(onchain ? ['onchain'] : [])],
+    workers: [PRICE_WORKER, dex ? 'dex-candles' : CANDLES_WORKER, 'prune', ...(onchain ? ['onchain'] : [])],
     onchainDisabled: onchainDisabled ?? undefined,
     source: ctx.source.name,
     pollMs: env.pricePollMs,
@@ -204,7 +226,7 @@ async function main(): Promise<void> {
     stopDisabledStatus?.();
     await onchain?.stop().catch(() => undefined);
     await Promise.allSettled(workers.map((w) => w.close()));
-    await Promise.allSettled([prices.close(), candles.close(), maintenance.close()]);
+    await Promise.allSettled([prices.close(), candles.close(), maintenance.close(), dexQueue.close()]);
     await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
     process.exit(0);
   };

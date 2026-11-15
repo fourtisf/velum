@@ -45,7 +45,7 @@ export const P = {
  * Where the prices on screen come from right now (lib/markets.ts priceOrigin). 'closed': a real source,
  * but every market is closed, so the prices are the last quotes (mainnet).
  */
-export type PriceOrigin = 'robinhood' | 'chainlink' | 'closed' | 'demo' | 'loading' | 'none';
+export type PriceOrigin = 'uniswap' | 'robinhood' | 'chainlink' | 'closed' | 'demo' | 'loading' | 'none';
 
 /**
  * One sentence naming the price source, only when it is the real one (audit web F2), and saying when
@@ -54,6 +54,8 @@ export type PriceOrigin = 'robinhood' | 'chainlink' | 'closed' | 'demo' | 'loadi
  */
 export function priceSourceText(origin: PriceOrigin, mainnet = IS_MAINNET): string {
   switch (origin) {
+    case 'uniswap':
+      return 'Live onchain prices from Uniswap on Robinhood Chain, 24/7.';
     case 'robinhood':
       return "Prices from Robinhood's public Stock Token API.";
     case 'chainlink':
@@ -70,6 +72,22 @@ export function priceSourceText(origin: PriceOrigin, mainnet = IS_MAINNET): stri
 }
 
 /** A market the API reports closed (staleReason marketClosed): last price shown, marked, not tradable on mainnet. */
+/**
+ * Real spot trading through Uniswap on Robinhood Chain mainnet (lib/uniswap): what the ticket, the swap page and the
+ * banner say. Plain about what is real (spot swaps from the wallet, public onchain) and what is still simulated (perps,
+ * the private account, privacy).
+ */
+export const UNI = {
+  spotNote: 'A real trade from your wallet through Uniswap on Robinhood Chain. Public onchain, not private. Velum adds no fee, and you own the token, so nothing can be liquidated.',
+  swapSub: 'Trade USDG and Stock Tokens through Uniswap on Robinhood Chain, straight from your wallet. Stock to stock routes through USDG in two swaps.',
+  swapNote: 'Public onchain. The minimum protects you: if the price moves past it, the swap is refused and nothing is traded.',
+  banner: 'Spot trades are real Uniswap swaps from your wallet. Perps and the private account are simulated.',
+  badge: 'Live spot',
+  gasHint: 'You need a little ETH on Robinhood Chain to pay the gas.',
+  noPools: (sym: string) => `${sym} has no curated Uniswap pool yet.`,
+  noLiquidity: 'The Uniswap pools cannot fill this amount right now. Try a smaller amount.',
+} as const;
+
 export const CLOSED = {
   label: 'Market closed',
   tag: 'closed',

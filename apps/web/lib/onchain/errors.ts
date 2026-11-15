@@ -5,7 +5,18 @@
  * short message.
  */
 import { BaseError, ContractFunctionRevertedError, UserRejectedRequestError, decodeErrorResult, formatUnits, type Hex } from 'viem';
+import { UNI_ERRORS_ABI } from '../uniswap/abi';
 import { ALL_ERRORS_ABI } from './abi';
+
+/** A Uniswap error inside a Universal Router ExecutionFailed, or null. */
+function decodeUniError(data: Hex): { name: string; args: readonly unknown[] } | null {
+  try {
+    const d = decodeErrorResult({ abi: UNI_ERRORS_ABI, data });
+    return { name: d.errorName, args: (d.args ?? []) as readonly unknown[] };
+  } catch {
+    return null;
+  }
+}
 
 export interface ErrorContext {
   /** Symbol of a token address (lower or mixed case), or null when unknown. */
@@ -139,6 +150,26 @@ export function describeRevert(name: string, args: readonly unknown[], ctx: Erro
       return 'Your wallet does not hold enough of this token.';
     case 'SafeERC20FailedOperation':
       return 'The token transfer failed: check your wallet balance and approval.';
+    // Uniswap (lib/uniswap): the Universal Router wraps a failed command's own error in ExecutionFailed.
+    case 'ExecutionFailed': {
+      const inner = typeof a[1] === 'string' ? decodeUniError(a[1] as Hex) : null;
+      return inner ? describeRevert(inner.name, inner.args, ctx, usdg, extra) : 'The Uniswap router refused this swap. Nothing was traded.';
+    }
+    case 'V3TooLittleReceived':
+    case 'V4TooLittleReceived':
+    case 'V3TooLittleReceivedPerHop':
+    case 'V4TooLittleReceivedPerHop':
+      return 'The pool price moved past your slippage limit, so the swap was refused and nothing was traded. Try again, or allow more slippage.';
+    case 'TransactionDeadlinePassed':
+      return 'The swap waited too long and its deadline passed. Nothing was traded. Try again.';
+    case 'AllowanceExpired':
+    case 'InsufficientAllowance':
+      return 'The Permit2 allowance for the Uniswap router is missing or expired. Start the trade again to renew it.';
+    case 'V3InvalidSwap':
+    case 'V3InvalidAmountOut':
+    case 'PoolNotInitialized':
+    case 'PriceLimitAlreadyExceeded':
+      return 'The Uniswap pool could not fill this swap. Nothing was traded. Try a smaller amount.';
     default:
       return `The contract refused this transaction (${name}).`;
   }
@@ -174,7 +205,7 @@ export function decodeTxError(e: unknown, ctx: ErrorContext, usdg: string, extra
     const raw = rawData(e);
     if (raw) {
       try {
-        const d = decodeErrorResult({ abi: ALL_ERRORS_ABI, data: raw });
+        const d = decodeErrorResult({ abi: [...ALL_ERRORS_ABI, ...UNI_ERRORS_ABI.filter((e) => !ALL_ERRORS_ABI.some((x) => x.name === e.name))], data: raw });
         return { name: d.errorName, message: describeRevert(d.errorName, d.args ?? [], ctx, usdg, extra), rejected: false };
       } catch {
         /* not one of ours: fall through */

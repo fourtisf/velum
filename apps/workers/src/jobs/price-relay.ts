@@ -1,6 +1,8 @@
 import { cacheKeys, type PriceSource } from '@velum/config';
+import { toDecimalString } from '@velum/math';
+import type { WadCandle } from '../lib/candles';
 import { buildSnapshot, quoteConfirmed, quoteTime } from '../lib/snapshot';
-import { PRICE_WORKER, type CandleJobData, type WorkerContext } from '../context';
+import { PRICE_WORKER, seriesKey, type CandleJobData, type WorkerContext } from '../context';
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -17,6 +19,17 @@ export async function refreshOpen24h(ctx: WorkerContext, now: number): Promise<v
   if (now - ctx.lastOpenRefresh < OPEN_REFRESH_MS) return;
   ctx.lastOpenRefresh = now;
   const since = now - DAY;
+  if (ctx.source.name === 'uniswap') {
+    // The DEX candles hold the real trade history (backfilled from the chain): the price 24h ago is the close of the
+    // last 15-minute bucket that started at or before then. Without one (history still building), the ticks below.
+    let missing = false;
+    for (const symbol of ctx.marketIds.keys()) {
+      const open = open24hFromCandles(ctx.series.get(seriesKey(symbol, '15m')) ?? [], since);
+      if (open) ctx.open24h.set(symbol, open);
+      else missing = true;
+    }
+    if (!missing) return;
+  }
   await Promise.all(
     [...ctx.marketIds].map(async ([symbol, marketId]) => {
       const first = await ctx.prisma.priceTick.findFirst({
@@ -30,6 +43,19 @@ export async function refreshOpen24h(ctx: WorkerContext, now: number): Promise<v
       if (!demo || fullDay || !ctx.open24h.has(symbol)) ctx.open24h.set(symbol, first.price.toFixed());
     }),
   );
+}
+
+/**
+ * The price at `since` from a 15-minute series (oldest first): the close of the last bucket starting at or before
+ * `since` (the last trade by then), or null when the series does not reach back that far.
+ */
+export function open24hFromCandles(series: readonly WadCandle[], since: number): string | null {
+  let pick: WadCandle | undefined;
+  for (const c of series) {
+    if (c.t > since) break;
+    pick = c;
+  }
+  return pick ? toDecimalString(pick.c) : null;
 }
 
 /**

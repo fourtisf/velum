@@ -40,7 +40,7 @@ export interface LiveMarket {
   hist: number[];
   dir: 1 | -1;
   stale: boolean;
-  /** Price source reported by the API: 'demo' (simulated), 'robinhood' or 'chainlink'. */
+  /** Price source reported by the API: 'demo' (simulated), 'robinhood', 'chainlink' or 'uniswap'. */
   priceSource: string;
   /** No live price: the API reports none (source null, no usable price, or on mainnet a source that is not real) or nothing has arrived yet. Displayed as a dash. */
   noData: boolean;
@@ -123,7 +123,7 @@ export const apiPrice = (s: unknown): Wad | null => {
 const pctChange = (price: Wad, open: Wad) => (open > 0n ? (toNumber(price - open) / toNumber(open)) * 100 : 0);
 
 /** The price sources mainnet accepts as real data (audit web F2); anything else there is no data. */
-export const REAL_SOURCES: readonly string[] = ['robinhood', 'chainlink'];
+export const REAL_SOURCES: readonly string[] = ['robinhood', 'chainlink', 'uniswap'];
 
 /** `updatedAt` from the API (ms since epoch, or an ISO string), or null when missing or unreadable. */
 export function apiTime(v: unknown): number | null {
@@ -369,6 +369,7 @@ export function priceOrigin(s: Pick<MarketsState, 'bySym' | 'source'> & Partial<
   const live = Object.values(s.bySym).filter((m) => !m.noData);
   const real = live.filter((m) => REAL_SOURCES.includes(m.priceSource));
   if (mainnet && real.length > 0 && real.every((m) => m.closed)) return 'closed';
+  if (live.some((m) => m.priceSource === 'uniswap')) return 'uniswap';
   if (live.some((m) => m.priceSource === 'robinhood')) return 'robinhood';
   if (live.some((m) => m.priceSource === 'chainlink')) return 'chainlink';
   return live.length ? 'demo' : 'none';

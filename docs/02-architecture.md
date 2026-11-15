@@ -76,18 +76,44 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
   `PriceTick` rows in Postgres → a BullMQ job naming the tick time → the `candles` worker reads that
   tick back from Postgres (a queued job's payload is never trusted) and builds 15m/1h/4h/1D candles,
   each tagged with its price source.
-- **Candle sources.** `Candle.source` is `demo`, `robinhood`, `chainlink`, or NULL for *unknown*: rows
+- **Candle sources.** `Candle.source` is `demo`, `robinhood`, `chainlink`, `uniswap`, or NULL for *unknown*: rows
   from before the column, or written by a release that predates it (the previous release keeps running
   while a new one migrates, and `deploy.sh` switches back to it when a release fails its checks).
   Unknown is never evidence and never real: the workers clear history only on positive evidence of the
   other kind of source (a demo tick or demo-tagged candle when starting with a real source, or the
-  reverse), the mainnet API serves only candles tagged `robinhood` or `chainlink`, and nothing unknown is
+  reverse), the mainnet API serves only candles tagged `robinhood`, `chainlink` or `uniswap`, and nothing unknown is
   deleted. On every start the workers tag an unknown candle when its stored ticks prove the source: all
   ticks in its bucket of one kind, its open and close among their prices, its high and low their highest
   and lowest (`retagUnknownCandles` in apps/workers/src/bootstrap.ts). Candles older than the oldest
   stored tick (`PRICE_TICK_RETENTION_DAYS`, default 7) cannot be proven and stay unknown: kept in
   Postgres, not shown on mainnet. An operator who knows a server never ran demo prices can tag them by
   hand: `UPDATE "Candle" SET "source" = 'robinhood' WHERE "source" IS NULL;` (audit F-1, F-4).
+- **DEX prices and candles (`PRICE_SOURCE=uniswap`, mainnet; the default of `deploy/set-network.sh mainnet`).**
+  Stock Tokens trade on Uniswap on Robinhood Chain around the clock, while the official Robinhood quote is 24/5
+  and frozen while the US session is closed (which drew flat "closed" charts on weekends). Only the curated pools
+  in `packages/config/uniswap-mainnet.json` are read: hookless, fee tier at most 1%, each checked on chain (the
+  chain also holds hundreds of look-alike pools with fees up to 99% or arbitrary hooks). `price-relay` reads, in
+  one multicall through `RPC_URL`, every chart pool's current state and the block time; the price is the marginal
+  price of the pool with the most in-range USDG (at least 1,000 USDG), rounded down to 4 decimals, behind the same
+  jump guard as the Robinhood source, and only from a block at most 60 s old. Candles come from the chart pools'
+  Swap events (`apps/workers/src/jobs/dex-candles.ts`), never from poll ticks: each swap's post-trade price in the
+  bucket of its block's timestamp, exact to the second (logs on Robinhood Chain carry no block time, so bucket
+  boundaries are located by block: `lib/block-clock.ts`). Two checkpoints (`IndexerCheckpoint` rows
+  `uniswap-candles:*` and `uniswap-history:*`): the live cursor follows the head, the history cursor walks back
+  from where live started, so the newest candles appear within a minute of a fresh start and older history
+  fills in behind (a full rebuild reads several million swaps: on the public RPC the last weeks are in within
+  minutes and the whole history takes an hour or more; a provider `RPC_URL` is faster). Live rows merge as newer and history rows as older (`candleMergeSql`),
+  so the result is the same in any order; each range commits its candles and its checkpoint in one transaction.
+  A changed pool list or a live checkpoint whose block left the chain rebuilds from scratch. Switching between
+  kinds of history (simulated, stock quotes, DEX trades) clears stored history once (`priceKindOf`).
+- **Real spot through Uniswap (mainnet, web).** The Spot ticket and the swap page trade from the connected wallet
+  through the Universal Router (`apps/web/lib/uniswap`): the best on-chain quote among the market's curated pools,
+  an exact ERC-20 approval to Permit2 and an exact 30-minute Permit2 allowance for the router (each only when
+  short), then the swap with the minimum from the slippage setting and a 20-minute deadline. Stock to stock is two
+  swaps through USDG. Receipts are read from the tokens' Transfer events. Public onchain, no Velum fee, no Velum
+  contract involved; perps and the private account stay simulated. Rehearsed against the deployed contracts on a
+  mainnet fork: `apps/web/e2e/uniswap-fork.e2e.ts` (calldata, v3 and v4, both token orders) and
+  `apps/web/e2e/uniswap-browser.e2e.cjs` (the mainnet web build with a test wallet: buy, sell, stock to stock).
 - The API serves `stale` with a reason: no snapshot, pipeline outdated, a demo price on mainnet, the
   US-equity session closed (`usEquitySession` in packages/config: Robinhood's 24/5 window minus NYSE
   holidays), a quote frozen for 15 minutes, or a quote not yet seen to change since the workers started

@@ -9,6 +9,8 @@ import { mk, usePriceTick } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
 import { OcSwapView } from '../onchain/lazy';
+import { UniSwapView } from '../uniswap/lazy';
+import { UNISWAP } from '@velum/config/src/uniswap';
 import { I } from '../icons';
 
 const TOKS = ['USDG', ...MARKETS.map((m) => m.symbol)];
@@ -30,7 +32,8 @@ function TokenSelect({ id, label, value, onChange }: { id: string; label: string
 
 export function SwapView() {
   const oc = useOnchain();
-  return oc ? <OcSwapView oc={oc} /> : <DemoSwapView />;
+  // Mainnet without a Velum deployment: real swaps through Uniswap from the wallet (lib/uniswap).
+  return oc ? <OcSwapView oc={oc} /> : UNISWAP ? <UniSwapView /> : <DemoSwapView />;
 }
 
 function DemoSwapView() {

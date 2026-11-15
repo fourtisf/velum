@@ -192,14 +192,18 @@ the deployment does not list.
 - `fundingPerHour`, `openInterest`: demo values on testnet, where `demo` is `true`; on mainnet they are
   `null` and `demo` is `false` until they have a real source (Phase 3). `demo` describes these two
   numbers; where the price comes from is `source`.
-- `source`: `demo` (simulated), `robinhood` (official quotes), `chainlink`, or `null` before the first
+- `source`: `demo` (simulated), `robinhood` (official quotes), `chainlink`, `uniswap` (the curated Uniswap
+  pools on Robinhood Chain mainnet, live 24/7: docs/02 "DEX prices and candles"), or `null` before the first
   tick (the seed price is returned then; clients must not show it as live, the web shows dashes).
 - `updatedAt`: the **quote time**: when the quote behind `price` last changed (a new Robinhood bid/ask,
   a Chainlink round, a demo tick). Upstream response times advance while a closed market's bid/ask stays
   frozen for days, so they are not used. `quoteAge`: seconds since then (null without a price).
-- `marketOpen`: whether the 24/5 US-equity session for Stock Tokens is open now: Sunday 20:00 to Friday
-  20:00 US Eastern, minus NYSE holidays (packages/config `usEquitySession`, sources cited there). Early
-  closes and unscheduled closures are not in the calendar; `quoteFrozen` covers them.
+- `marketOpen`: whether the market of this price trades now. For the stock quote sources (`robinhood`,
+  `chainlink`) the 24/5 US-equity session for Stock Tokens: Sunday 20:00 to Friday 20:00 US Eastern, minus
+  NYSE holidays (packages/config `usEquitySession`, sources cited there); early closes and unscheduled
+  closures are not in the calendar, `quoteFrozen` covers them. For `uniswap` always `true`: the pools trade
+  24/7 onchain, so `marketClosed` and `quoteFrozen` never apply to it (it goes `outdated` if the workers
+  stop reading the pools).
 - `stale`: true when the price must not be treated as live. Clients do not trade on a stale price on
   mainnet (the web shows the last price as stale and disables trading). `staleReason` says why:
 
@@ -233,8 +237,9 @@ pass the jump guard (a move over 25% needs three agreeing quotes) against the ne
 From the workers' cache when it is authenticated and validates (aligned, increasing bucket times, none
 in the future, low/high bracketing open/close, written for this network), otherwise from Postgres: never
 a bucket dated ahead of now. On mainnet only real history: the cache only when it was built from a real
-price source (it records its source and network), Postgres only candles tagged `robinhood` or
-`chainlink`. Candles of unknown source (older than the source column and not proven by stored ticks,
+price source (it records its source and network), Postgres only candles tagged `robinhood`,
+`chainlink` or `uniswap`. With `uniswap` every candle is built from real swaps (each swap's post-trade pool
+price in the bucket of its block's timestamp), so candles keep moving on weekends and holidays. Candles of unknown source (older than the source column and not proven by stored ticks,
 docs/02) are kept but not served on mainnet; testnet serves every candle.
 
 ### `GET /v1/pools`

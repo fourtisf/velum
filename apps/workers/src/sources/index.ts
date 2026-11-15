@@ -5,12 +5,15 @@ import { floatToDec, stepPrice, type Rng } from '../lib/demo';
 import type { Logger } from '../lib/log';
 import { redactUrls } from '../lib/redact';
 import { MAX_PRICE_WAD, robinhoodSource, type PriceReader } from './robinhood';
+import { uniswapClient, uniswapSource } from './uniswap';
+import { UNISWAP } from '@velum/config/src/uniswap';
 import type { PriceSource } from '@velum/config';
 
 export { redactUrls };
 // The Robinhood source lives in its own module (no database code in its imports), so the signer process can use it
 // (on-chain audit M-2); re-exported here for the workers and the tests.
 export * from './robinhood';
+export * from './uniswap';
 
 /** Random walk from the last price (or seed) for every market, 2-decimal prices. */
 export function demoSource(rng: Rng = Math.random): PriceReader {
@@ -118,6 +121,10 @@ export function chainlinkSource(rpcUrl: string, feeds: Record<string, Address>, 
 
 export function pickSource(kind: PriceSource, rpcUrl: string, log: Logger, chainOk?: () => boolean): PriceReader {
   if (kind === 'robinhood') return robinhoodSource(log);
+  if (kind === 'uniswap') {
+    if (!UNISWAP) throw new Error('PRICE_SOURCE=uniswap but this network has no curated Uniswap pools (mainnet only).');
+    return uniswapSource(uniswapClient(rpcUrl), UNISWAP, log, chainOk);
+  }
   if (kind === 'chainlink') {
     if (Object.keys(PRICE_FEEDS).length === 0) {
       // Fail loudly rather than run simulated prices under a "real" label.

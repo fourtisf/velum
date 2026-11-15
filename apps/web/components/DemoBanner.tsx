@@ -1,6 +1,7 @@
 'use client';
 import { IS_MAINNET } from '@velum/config';
-import { ONCHAIN } from '@/lib/copy';
+import { ONCHAIN, UNI } from '@/lib/copy';
+import { UNISWAP } from '@velum/config/src/uniswap';
 import { ENV } from '@/lib/env';
 import { useMarkets } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
@@ -9,7 +10,8 @@ import { GuardBannerBadge } from './onchain/lazy';
 const hhmm = (t: number) => new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
 /**
- * Required by the roadmap: visible whenever trades are simulated. Testnet keeps the prototype's words,
+ * Required by the roadmap: visible whenever trades are simulated. On mainnet, where Spot trades for real through
+ * Uniswap (lib/uniswap), it says which trades are real and which are simulated. Testnet keeps the prototype's words,
  * with "Testnet. Test tokens have no value." in full at every width (CLAUDE.md §1.4).
  * Mainnet never simulates prices (no local fallback): when the live feed is stale it says trading is
  * paused instead (audit round 2, M4).
@@ -42,9 +44,9 @@ export function DemoBanner() {
     );
   return (
     <div className="demo-bar" role="note">
-      <span className="badge acc hide-sm">Demo mode</span>
+      <span className="badge acc hide-sm">{UNISWAP ? UNI.badge : 'Demo mode'}</span>
       <span aria-live="polite">
-        <span className="show-sm">Demo mode. </span>
+        {UNISWAP ? null : <span className="show-sm">Demo mode. </span>}
         {IS_MAINNET ? (
           <>
             {feedStale ? (
@@ -52,7 +54,7 @@ export function DemoBanner() {
                 Live prices are unavailable{lastOkAt ? ` since ${hhmm(lastOkAt)}` : ''}, so trading is paused.{' '}
               </b>
             ) : null}
-            Trades are simulated. Your tokens never leave your wallet.
+            {UNISWAP ? UNI.banner : 'Trades are simulated. Your tokens never leave your wallet.'}
           </>
         ) : (
           // The full notice at every width, 360 px included (audit web F11).

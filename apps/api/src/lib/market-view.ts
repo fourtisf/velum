@@ -1,4 +1,4 @@
-import { DEMO, PROTOCOL, QUOTE_FROZEN_AFTER_MS, usEquitySession, type MarketSeed, type MarketSnapshot, type NetworkName } from '@velum/config';
+import { DEMO, PROTOCOL, QUOTE_FROZEN_AFTER_MS, isAlwaysOpenSource, usEquitySession, type MarketSeed, type MarketSnapshot, type NetworkName } from '@velum/config';
 import { WAD, bps, maintenanceMargin, parseWad, toDecimalString, wdiv, wmul, type Wad } from '@velum/math';
 
 export const MAX_PRICE_AGE_MS = PROTOCOL.oracleMaxAgeSeconds * 1000;
@@ -9,7 +9,8 @@ export const MAX_PRICE_AGE_MS = PROTOCOL.oracleMaxAgeSeconds * 1000;
  *  - unavailable  the cache could not be read (Redis down); the last known price is shown, not live
  *  - outdated     the workers have not confirmed the quote with the source for over MAX_PRICE_AGE_MS
  *  - demoSource   a simulated price on mainnet (never live there)
- *  - marketClosed the US-equity session for Stock Tokens is closed (weekend or US market holiday)
+ *  - marketClosed the US-equity session for Stock Tokens is closed (weekend or US market holiday); never for Uniswap
+ *                 prices, which trade 24/7 onchain
  *  - quoteFrozen  the source keeps repeating a quote that has not changed for QUOTE_FROZEN_AFTER_MS, or
  *                 price-relay started without a previous snapshot and has not yet seen the quote change
  *                 (snapshot `unconfirmed`, audit F-6: its quote time is unknown)
@@ -21,14 +22,18 @@ export interface PriceState {
   /** True when the price must not be treated as live (clients: not tradable on mainnet). */
   stale: boolean;
   staleReason: StaleReason | null;
-  /** Whether the 24/5 US-equity session for Stock Tokens is open now (weekends and US holidays closed). */
+  /**
+   * Whether the market of this price trades now: for the stock quote sources (Robinhood, Chainlink) the 24/5
+   * US-equity session (weekends and US holidays closed); for Uniswap always (it trades 24/7 onchain).
+   */
   marketOpen: boolean;
   /** Seconds since the quote last changed (the snapshot's quote time), null without a snapshot. */
   quoteAge: number | null;
 }
 
 export function priceState(snap: MarketSnapshot | undefined, now: number, network: NetworkName, cacheOk = true): PriceState {
-  const marketOpen = usEquitySession(now).open;
+  // A Uniswap price trades 24/7: its market is always open (the session calendar is for the stock quote sources).
+  const marketOpen = isAlwaysOpenSource(snap?.source) || usEquitySession(now).open;
   const quoteAge = snap ? Math.max(0, Math.floor((now - snap.updatedAt) / 1000)) : null;
   const stale = (staleReason: StaleReason | null): PriceState => ({ stale: staleReason !== null, staleReason, marketOpen, quoteAge });
   if (!cacheOk) return stale('unavailable');
@@ -36,6 +41,9 @@ export function priceState(snap: MarketSnapshot | undefined, now: number, networ
   if (snap.source === 'demo' && network === 'mainnet') return stale('demoSource');
   if (now - (snap.checkedAt ?? snap.updatedAt) > MAX_PRICE_AGE_MS) return stale('outdated');
   if (snap.source === 'demo') return stale(null);
+  // Uniswap trades 24/7 onchain: the US session calendar and the frozen-quote rule do not apply to it. Its price is
+  // live while the workers keep reading the pools (checkedAt above).
+  if (isAlwaysOpenSource(snap.source)) return stale(null);
   if (!marketOpen) return stale('marketClosed');
   if (snap.unconfirmed || now - snap.updatedAt > QUOTE_FROZEN_AFTER_MS) return stale('quoteFrozen');
   return stale(null);
@@ -60,7 +68,7 @@ export interface MarketView extends PriceState {
   takerFeeBps: number;
   maintenanceMargin: string;
   spark: string[];
-  /** Where the price came from: "demo" (simulated), "robinhood" or "chainlink". null before the first tick. */
+  /** Where the price came from: "demo" (simulated), "robinhood", "chainlink" or "uniswap". null before the first tick. */
   source: string | null;
   /** Quote time of the price (when it last changed), null before the first tick. */
   updatedAt: number | null;

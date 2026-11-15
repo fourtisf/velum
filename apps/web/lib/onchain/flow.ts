@@ -12,9 +12,17 @@ import type { TxCall } from './tx';
 
 export type Row = [ReactNode, ReactNode];
 
+/**
+ * What the flow dialog needs of where the transactions go: the chain (sendTx refuses any other, lib/onchain/refusal.ts)
+ * and the tokens it may name, with their decimals for wording errors. A Velum deployment (Phase 3) or the curated
+ * Uniswap venue on mainnet (lib/uniswap/flows.tsx).
+ */
+export type FlowTarget = Pick<Deployment, 'chainId' | 'tokens'>;
+export type FlowProto = Pick<Protocol, 'decimals'>;
+
 export interface TxRunCtx {
-  d: Deployment;
-  proto: Protocol;
+  d: FlowTarget;
+  proto: FlowProto;
   account: Address;
   /** Values a step passes to later steps and to the receipt (e.g. the amount a swap returned). */
   out: Record<string, unknown>;
@@ -60,8 +68,8 @@ export interface TxFlowSpec {
   steps: TxStepSpec[];
   /** The receipt and toast once every step is confirmed. */
   done: (ctx: TxRunCtx) => { rows: Row[]; toast: string };
-  d: Deployment;
-  proto: Protocol;
+  d: FlowTarget;
+  proto: FlowProto;
   account: Address;
 }
 

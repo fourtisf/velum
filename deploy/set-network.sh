@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Switch Velum between Robinhood Chain testnet and mainnet, then run a release. Run as root:
 #   sudo bash /srv/velum/deploy/set-network.sh mainnet      (or testnet)
-# Mainnet in Phase 2: real wallet, public balances and live Robinhood prices; trades simulated.
+# Mainnet: real wallet, public balances, live 24/7 prices and candles from Uniswap on Robinhood Chain (PRICE_SOURCE=uniswap),
+# real spot trades through Uniswap from the user's wallet; perps and the private account stay simulated.
 # This script never deploys contracts. Velum contracts stay off mainnet until the Phase 5 audit.
 # Afterwards you may put a provider RPC (Alchemy, QuickNode, …) in RPC_URL / NEXT_PUBLIC_RPC_URL
 # (edit .env as root) and run a release; the Content-Security-Policy follows NEXT_PUBLIC_RPC_URL.
@@ -15,9 +16,13 @@ BASE="$(cd "$(dirname "${SELF}")/.." && pwd)"
 # shellcheck source=deploy/lib/common.sh
 . "${BASE}/deploy/lib/common.sh"
 NET="${1:-}"
-# Mainnet uses live official Robinhood quotes; testnet keeps simulated prices (PRICE_SOURCE=demo).
+# Mainnet prices come from the curated Uniswap pools (24/7, docs/02-architecture.md "DEX prices and candles"); set
+# PRICE_SOURCE_MAINNET=robinhood to use the official Robinhood quotes (24/5, frozen while the US session is closed)
+# instead. Testnet keeps simulated prices (PRICE_SOURCE=demo).
+MAINNET_SRC="${PRICE_SOURCE_MAINNET:-uniswap}"
+case "${MAINNET_SRC}" in uniswap|robinhood) ;; *) die "PRICE_SOURCE_MAINNET must be uniswap or robinhood." ;; esac
 case "${NET}" in
-  mainnet) CHAIN_ID=4663;  RPC=https://rpc.mainnet.chain.robinhood.com; EXPLORER=https://robinhoodchain.blockscout.com; SRC=robinhood ;;
+  mainnet) CHAIN_ID=4663;  RPC=https://rpc.mainnet.chain.robinhood.com; EXPLORER=https://robinhoodchain.blockscout.com; SRC="${MAINNET_SRC}" ;;
   testnet) CHAIN_ID=46630; RPC=https://rpc.testnet.chain.robinhood.com; EXPLORER=https://explorer.testnet.chain.robinhood.com; SRC=demo ;;
   *) die "Usage: sudo bash deploy/set-network.sh mainnet|testnet" ;;
 esac

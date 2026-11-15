@@ -34,6 +34,17 @@ touching mainnet. The owner's approvals so far:
     optional SDKs (Base Account, Safe, Tempo) are no longer installed; MetaMask still connects as an injected
     EIP-6963 wallet. Each connector is imported from its own `wagmi/connectors/<name>` path.
 
+- **2026-11-16: live 24/7 prices and real spot on mainnet through Uniswap.** Asked by the owner ("real candles,
+  no 'closed'"; "buy in spot for real, free, e.g. from Uniswap"):
+  - Mainnet prices and candles come from the curated Uniswap pools on Robinhood Chain (`PRICE_SOURCE=uniswap`,
+    now the default of `deploy/set-network.sh mainnet`; `PRICE_SOURCE_MAINNET=robinhood` keeps the official
+    quotes). Candles are built from real swaps, so they move on weekends; no paid data service is involved.
+  - The Spot ticket and the swap page send **real** swaps from the user's own wallet through Uniswap's Universal
+    Router (public onchain, not private, no Velum fee; exact approvals only). This is not a Velum contract on
+    mainnet and Velum never holds funds or keys. Perps, the private account, shield/unshield, liquidity and maker
+    offers stay simulated and are labelled so; real perps need Velum's own contracts (the guarded beta,
+    docs/07) or another venue, an open owner decision.
+
 ## Phase 1 — Live today (static)
 **Build:** nothing; serve `prototype/index.html`.
 **Accept when:** `https://<domain>` loads the prototype over HTTPS; all demo flows work;

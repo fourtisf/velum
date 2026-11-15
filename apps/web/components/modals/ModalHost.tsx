@@ -4,7 +4,7 @@ import { WAD, type Wad } from '@velum/math';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRejectedRequestError, type Address, type Hex } from 'viem';
-import { useAccount, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
+import { ConnectorAlreadyConnectedError, useAccount, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
 import { getAccount, signMessage } from 'wagmi/actions';
 import { accountFingerprint, buildSignMessage, checkPublicAddress, checkSignature, derivePrivateAddress, isPrivateAddress } from '@/lib/account';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
@@ -57,8 +57,12 @@ function Head({ title, closable = true }: { title: string; closable?: boolean })
 }
 
 /* ---------- connect ---------- */
+/** wagmi refuses to connect a connector that is already the current connection. */
+const alreadyConnected = (e: unknown) => e instanceof ConnectorAlreadyConnectedError || (e as { name?: string })?.name === 'ConnectorAlreadyConnectedError';
+
 function ConnectModal({ error }: { error?: string }) {
   const { connectors, connectAsync, isPending } = useConnect();
+  const config = useConfig();
   const openModal = useApp((s) => s.openModal);
   const [err, setErr] = useState(error ?? '');
   const [busy, setBusy] = useState<string | null>(null);
@@ -66,13 +70,26 @@ function ConnectModal({ error }: { error?: string }) {
   const detected = connectors.filter((x, i, all) => x.type === 'injected' && x.id !== 'injected' && all.findIndex((y) => y.name === x.name) === i);
   const generic = connectors.find((x) => x.id === 'injected');
 
+  const next = (chainId: number | undefined) => openModal(chainId === CHAIN.id ? { kind: 'sign' } : { kind: 'network' });
+  /**
+   * The wallet is already connected through this connector (the sign dialog was closed after
+   * connecting, or wagmi reconnected it on reload): connecting again would fail with "Connector
+   * already connected" (final audit W-04), so go straight to the sign or network step.
+   */
+  const connectedThrough = (c: Connector | CreateConnectorFn): boolean => {
+    const a = getAccount(config);
+    return a.status === 'connected' && typeof c !== 'function' && a.connector?.uid === c.uid;
+  };
+
   const connect = async (c: Connector | CreateConnectorFn, key: string) => {
     setErr('');
+    if (connectedThrough(c)) return next(getAccount(config).chainId);
     setBusy(key);
     try {
       const res = await connectAsync({ connector: c, chainId: CHAIN.id });
-      openModal(res.chainId === CHAIN.id ? { kind: 'sign' } : { kind: 'network' });
+      next(res.chainId);
     } catch (e) {
+      if (alreadyConnected(e) && getAccount(config).status === 'connected') return next(getAccount(config).chainId);
       const rejected = e instanceof UserRejectedRequestError || (e as { code?: number })?.code === 4001;
       if (rejected) {
         setErr(errText(e));
@@ -82,8 +99,9 @@ function ConnectModal({ error }: { error?: string }) {
       // Some wallets reject the chainId hint: connect first, then ask to switch.
       try {
         const res = await connectAsync({ connector: c });
-        openModal(res.chainId === CHAIN.id ? { kind: 'sign' } : { kind: 'network' });
-      } catch {
+        next(res.chainId);
+      } catch (e2) {
+        if (alreadyConnected(e2) && getAccount(config).status === 'connected') return next(getAccount(config).chainId);
         setErr(errText(e));
       }
     } finally {

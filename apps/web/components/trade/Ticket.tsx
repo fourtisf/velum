@@ -10,6 +10,7 @@ import { bal, useApp } from '@/lib/store';
 import { CLOSED, COPY, METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { DemoTag } from '../ui';
+import { useTradeMode } from './mode';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
 
@@ -55,7 +56,9 @@ function PerpsTicket({ sym }: { sym: string }) {
     hint = `One position can hold up to ${PROTOCOL.maxTokensPerPosition} tokens.`;
   } else b = { label: `Open ${s.side} privately`, cls: s.side === 'long' ? 'btn-up' : 'btn-down', disabled: false, onClick: openPerps };
 
+  // m.maxLev is validated to 1..PROTOCOL max (lib/markets apiMaxLeverage, final audit W-15); at 1× the slider has no range.
   const maxLev = Math.min(m.maxLev || PROTOCOL.maxLeverage, PROTOCOL.maxLeverage);
+  const levRange = maxLev - MIN_LEVERAGE;
   const preset = (p: number) => s.set({ size: floorTo(presetSize(have, s.lev, c.entry, p), 2) });
   return (
     <>
@@ -96,10 +99,10 @@ function PerpsTicket({ sym }: { sym: string }) {
         step={PROTOCOL.leverageStep}
         value={s.lev}
         onChange={(e) => s.set({ lev: Number(e.target.value) })}
-        style={{ ['--p' as string]: ((s.lev - MIN_LEVERAGE) / (maxLev - MIN_LEVERAGE)) * 100 + '%' }}
+        style={{ ['--p' as string]: (levRange > 0 ? Math.min(1, (s.lev - MIN_LEVERAGE) / levRange) : 1) * 100 + '%' }}
       />
       <div className="ticks num">
-        {Array.from({ length: maxLev - MIN_LEVERAGE + 1 }, (_, i) => (
+        {Array.from({ length: Math.floor(levRange) + 1 }, (_, i) => (
           <span key={i}>{i + MIN_LEVERAGE}×</span>
         ))}
       </div>
@@ -249,7 +252,7 @@ function SpotTicket({ sym }: { sym: string }) {
 }
 
 export function Ticket({ sym }: { sym: string }) {
-  const mode = useApp((s) => s.mode);
+  const mode = useTradeMode();
   return (
     <aside className="card ticket" aria-label="Order ticket">
       {mode === 'perps' ? <PerpsTicket sym={sym} /> : <SpotTicket sym={sym} />}

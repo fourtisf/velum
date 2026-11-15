@@ -27,6 +27,12 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 
 ## Phase 1: the prototype live (static)
 
+**Superseded by the Phase 2 app.** The Next.js app (below) is what goes live; the static prototype is
+kept as the visual and behavioural design reference (CLAUDE.md). It runs offline on demo data and
+simulates every trade; its copy says so ("Stock Tokens", "Testnet. Test tokens have no value.", privacy
+features described as designed, not live), matching the web. The script below still works for a quick
+static preview:
+
 On a fresh Hostinger VPS (Ubuntu 22.04+) with your domain's A record pointing at it:
 
 ```bash

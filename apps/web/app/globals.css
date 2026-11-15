@@ -463,3 +463,26 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 /* Landing nav while connected at phone width (audit round 2, N6): the wallet button keeps only its
    avatar so "Launch app" fits at 360 px. Desktop and the app nav are unchanged. */
 @media (max-width:480px){.nav-land .walletbtn{padding:0 5px}.nav-land .walletbtn .b{display:none}}
+/* Trade page in its one-column layout (final audit W-05): the desktop grid's align-items:start made each
+   card as wide as its content in the flex column, so an open position's table pushed the positions card
+   to ~500 px and the page scrolled sideways below that. Cards now take the column's width; the table
+   scrolls inside its own .tbl-wrap, as on desktop. Same as the prototype at every width it renders cleanly. */
+@media (max-width:960px){.tr-grid{align-items:stretch}}
+/* Velum on X: a row in the landing footer's Developers column (the existing link style) and a small
+   glyph after the /app brand line. Not in the prototype; the X logo is monochrome in currentColor. */
+.foot a.foot-x svg{display:inline-block;width:12px;height:12px;margin-right:7px;vertical-align:-1px}
+.app-brand .brand-x{display:inline-block;margin-left:7px;padding:2px;color:var(--faint);vertical-align:-2px;border-radius:4px}
+.app-brand .brand-x:hover{color:var(--text)}
+.app-brand .brand-x svg{display:block;width:11px;height:11px}
+/* Token contract address (landing hero and footer, owner request): the hero pill's shape and colours,
+   the address in the monospace face the private address uses (.paddr), .icb icon buttons. */
+.ca-pill{padding:0 4px;gap:8px}
+.ca-pill:hover{border-color:var(--line2);color:var(--muted)}
+.ca-pill .ca-addr{position:relative;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--text);white-space:nowrap}
+.ca-pill .ca-soon{white-space:nowrap;padding-right:2px}
+.ca-pill .icb svg{width:12px;height:12px}
+.ca-pill .icb[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+.ca-pill .icb[aria-disabled="true"]:hover{background:none;color:var(--muted)}
+.hero .ca-row{display:flex;justify-content:center;margin-top:18px}
+.foot .ca-pill{margin-top:14px}
+.foot .ca-pill a.icb{display:grid;padding:0;font-size:inherit}

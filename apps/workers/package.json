@@ -2,6 +2,7 @@
   "name": "@velum/workers",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "BullMQ workers: price-relay and candles (Phase 2). Indexer, funding, risk come later.",
   "main": "dist/index.js",
   "scripts": {

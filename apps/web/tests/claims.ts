@@ -31,6 +31,13 @@ export const PRIVACY_CLAIMS: RegExp[] = [
   /Last thing the public chain saw/i,
   /What the public chain sees/i,
   /Everything below is decrypted/i,
+  // DV-F3: token issuers can freeze their tokens, and the contracts have a price-relay key and an
+  // optional guardian, so neither "nobody can freeze" nor "no admin keys" is true.
+  /nobody can freeze/i,
+  /\bno admin keys?\b/i,
+  />\s*admin keys\s*</,
+  // Final audit W-07: a static line cannot know whether prices are live (closed, stale, API down).
+  /Prices are live/i,
 ];
 
 export const claimsIn = (s: string): string[] => PRIVACY_CLAIMS.filter((re) => re.test(s)).map(String);

@@ -23,6 +23,14 @@ export const METRICS = { real: !IS_MAINNET, dash: '—' } as const;
  */
 export const isDemoMetric = (flag?: boolean, mainnet = IS_MAINNET): boolean => !mainnet || flag === true;
 
+/** Velum's social profiles: the one place their URLs and handles live (footer, /app brand line, link metadata). */
+export const SOCIAL = {
+  /** Velum on X (owner-provided, spelled "velium"). */
+  x: 'https://x.com/veliumtrade',
+  xHandle: '@veliumtrade',
+  xLabel: 'Velum on X',
+} as const;
+
 /** §5 numbers as copy (CLAUDE.md section 5; values in @velum/config PROTOCOL). */
 export const P = {
   poolFee: bpsPct(PROTOCOL.spotPoolFeeBps),
@@ -32,16 +40,25 @@ export const P = {
   fillMinutes: PROTOCOL.makerFillWindowMinutes,
 } as const;
 
-/** Where the prices on screen come from right now (lib/markets.ts priceOrigin). */
-export type PriceOrigin = 'robinhood' | 'chainlink' | 'demo' | 'loading' | 'none';
+/**
+ * Where the prices on screen come from right now (lib/markets.ts priceOrigin). 'closed': a real source,
+ * but every market is closed, so the prices are the last quotes (mainnet).
+ */
+export type PriceOrigin = 'robinhood' | 'chainlink' | 'closed' | 'demo' | 'loading' | 'none';
 
-/** One sentence naming the price source, only when it is the real one (audit web F2). */
+/**
+ * One sentence naming the price source, only when it is the real one (audit web F2), and saying when
+ * prices are not live (final audit W-07): markets closed, or the feed down ('none' replaces 'loading'
+ * after repeated failures).
+ */
 export function priceSourceText(origin: PriceOrigin, mainnet = IS_MAINNET): string {
   switch (origin) {
     case 'robinhood':
       return "Prices from Robinhood's public Stock Token API.";
     case 'chainlink':
       return 'Prices from Chainlink price feeds.';
+    case 'closed':
+      return 'The stock market is closed: prices shown are the last quotes.';
     case 'loading':
       return 'Loading prices…';
     case 'demo':
@@ -74,8 +91,10 @@ export const COPY = {
   ctaSub: IS_MAINNET
     ? 'Connect your wallet and try a simulated private trade in under a minute.'
     : 'Get free test USDG from the faucet and make your first simulated private trade in under a minute.',
+  // No claim about prices here (final audit W-07): this line is static, while prices can be closed,
+  // stale or unavailable. The live state is said where prices are shown (frame caption, markets, banner).
   footer: IS_MAINNET
-    ? 'An independent project on Robinhood Chain, not affiliated with Robinhood. Prices are live; trades are simulated and your tokens never leave your wallet. No contracts are deployed or audited yet.'
+    ? 'An independent project on Robinhood Chain, not affiliated with Robinhood. Trades are simulated and your tokens never leave your wallet. No contracts are deployed or audited yet.'
     : 'An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet with simulated trading. Test tokens have no value.',
   /** Required on every page (CLAUDE.md §1.7); the /app layout shows it as a small line (F11). */
   brand: 'An independent project on Robinhood Chain, not affiliated with Robinhood.',
@@ -122,6 +141,14 @@ export function simCopy(mainnet: boolean) {
     /** Account card badge. */
     accountBadge: 'Simulated',
     portfolioSub: 'Your private balance here is a simulated practice account, kept in this browser only. Your public wallet is real.',
+    /**
+     * The portfolio headline (final audit W-06). On mainnet it sits next to the real wallet, so it says it
+     * is the simulated practice total (with the Simulated badge); testnet keeps the prototype's label.
+     */
+    balanceLabel: mainnet ? 'Practice balance' : 'Private balance',
+    balanceBadge: mainnet,
+    /** Under the private address: nothing can be received on mainnet, where transfers are simulated. */
+    paddrNote: mainnet ? 'A demo address: nothing can be sent to it yet.' : 'Share this address to receive private transfers.',
     /** Mainnet: what the account card says instead of a commitment and block. */
     nothingOnchain: 'Nothing is on-chain: demo trades are simulated',
     /** The positions table's "Chain view" (simulated commitment and block) exists on testnet only. */
@@ -169,12 +196,15 @@ export const SIM = simCopy(IS_MAINNET);
 /** Landing page copy: the prototype's layout and words, with privacy and contract claims as design. */
 export const LANDING = {
   metaDescription: IS_MAINNET
-    ? 'Velum is a private exchange for Stock Tokens, in development. Try private spot and perps trading on live prices in a simulated demo.'
+    ? 'Velum is a private exchange for Stock Tokens, in development. Try private spot and perps trading on real Stock Token prices in a simulated demo.'
     : 'Velum is a private exchange for Stock Tokens, in development. Try private spot and perps trading in a simulated demo on Robinhood Chain testnet.',
   lead: 'Velum is a private exchange for Stock Tokens, in development. Spot and perps, designed to keep your balance, positions and P&L encrypted end to end.',
   statMarkets: IS_MAINNET ? 'Stock markets to try, spot and perps' : 'Stock markets, spot and perps',
   statLev: 'Max leverage, long or short',
-  statAdmin: 'Admin keys that can touch funds, by design',
+  // DV-F3: "0" counts what Velum controls. Velum's contracts are designed with no key that can freeze or
+  // withdraw funds; they do have a price-relay key (testnet) and an optional guardian (close-only switch),
+  // and token issuers (Paxos for USDG, the Stock Token issuer) can freeze their own tokens.
+  statAdmin: 'Velum keys that can freeze or withdraw funds, by design',
   statProof: 'Target time to prove a trade in your browser',
   privateText: 'Your balance, positions and profit will live in encrypted notes that only your device can read. Everyone else will see a commitment.',
   longShortTitle: `Long or short, up to ${P.maxLev}`,
@@ -186,8 +216,11 @@ export const LANDING = {
     ['Generate proof in your browser', 'target ~2s'],
     ['Relayer submits and pays gas', ''],
   ] as Array<[string, string]>,
-  freezeTitle: 'Designed so nobody can freeze your funds',
-  freezeText: 'The contracts are designed with no admin key and no pause on balances. If services go quiet, a forced exit will settle your position.',
+  freezeTitle: "Designed so Velum can't freeze your funds",
+  // Sized to keep the card's line count at every width (the layout is the prototype's).
+  freezeText: 'No Velum key can freeze or withdraw funds, by design. Token issuers can still freeze their tokens. If services go quiet, a forced exit settles.',
+  /** The note under the bento card's "0" (DV-F3: there are other keys, none that can freeze or withdraw). */
+  freezeBigNote: 'freeze keys',
   exitBig: `${P.exitDays}d`,
   earnText: `Once pools launch, add to one and keep ${P.poolFee} of each trade through it. Your share will stay private.`,
   poolBadge: (apr: string | null) => (apr === null ? `${P.poolFee} fee` : `${apr}% est. APR (demo)`),

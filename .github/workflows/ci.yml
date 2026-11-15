@@ -78,9 +78,59 @@ jobs:
           NEXT_PUBLIC_API_URL: /api
           NEXT_PUBLIC_SITE_URL: https://velum.example
         run: pnpm --filter @velum/web build
-      - name: Audit production dependencies (advisory, does not fail the build)
-        continue-on-error: true
-        run: pnpm audit --prod --audit-level high
+      - name: Third-party notices are up to date (apps/web/public/third-party-notices.txt)
+        run: pnpm --filter @velum/web notices:check
+      # Blocking (CI-F2): any advisory in the production tree fails the build unless it is triaged below.
+      # Mitigate with an exact override in package.json "pnpm.overrides" where a compatible fix exists;
+      # list an advisory here only when none does, with why Velum cannot reach it. Remove an entry as soon
+      # as a fixed version can be used. A failed or unreadable audit also fails the build.
+      - name: Audit production dependencies (blocking, triaged exceptions listed)
+        run: |
+          ignore=(
+            # deepmerge-ts 7.1.5 (high, stack exhaustion on recursive object graphs), via
+            # @prisma/client > prisma > @prisma/config. Only the Prisma CLI loads it, to merge the
+            # repository's own Prisma config during generate/migrate on CI and the server; it never sees
+            # user input and is not part of the web bundle or the API's request path. The fix is
+            # deepmerge-ts 8 (a major version Prisma 6 does not support).
+            GHSA-ggr8-5vv4-36mx
+            # zod 3.22.4 / 3.25.76 (high, memory exhaustion validating oversized constrained collections),
+            # via wagmi's connectors: @reown/appkit-wallet 1.7.8 (WalletConnect's embedded-wallet frame)
+            # and @coinbase/cdp-sdk (Base Account). Neither code path is used: the web builds contain no
+            # zod code at all (tree-shaken; checked in .next/static on both networks), the API and workers
+            # do not depend on zod 3, and no user input could reach it anyway. The fix is zod 4, a major
+            # version these packages do not support; revisit with the wagmi 3 upgrade before Phase 3.
+            GHSA-mrhx-c7xc-m3w5
+          )
+          out="$RUNNER_TEMP/audit.json"
+          pnpm audit --prod --json > "$out" || true
+          IGNORE="${ignore[*]}" node -e '
+            const fs = require("node:fs");
+            const ignore = new Set(process.env.IGNORE.split(" ").filter(Boolean));
+            let a;
+            try { a = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { console.error("pnpm audit gave no readable report:", e.message); process.exit(1); }
+            if (!a || typeof a.advisories !== "object" || a.error) { console.error("pnpm audit failed:", JSON.stringify(a && a.error)); process.exit(1); }
+            const found = Object.values(a.advisories);
+            const open = found.filter((v) => !ignore.has(v.github_advisory_id));
+            for (const v of found) console.log(`${ignore.has(v.github_advisory_id) ? "triaged" : "OPEN   "} ${v.github_advisory_id} ${v.severity} ${v.module_name} ${v.vulnerable_versions}: ${v.title}`);
+            const stale = [...ignore].filter((id) => !found.some((v) => v.github_advisory_id === id));
+            if (stale.length) console.log(`Triaged but no longer reported (remove from the list): ${stale.join(", ")}`);
+            if (open.length) { console.error(`${open.length} untriaged advisory(ies): fix or triage them.`); process.exit(1); }
+            console.log(`No untriaged advisories (${found.length} triaged).`);
+          ' "$out"
+
+  shell:
+    name: Shell scripts (ShellCheck)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      # Ubuntu's ShellCheck package (0.9.x on 24.04), the same version the deploy scripts were checked with.
+      - name: Install ShellCheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: ShellCheck the deploy scripts (CI-F3)
+        run: shellcheck -x deploy/*.sh deploy/lib/*.sh
 
   contracts:
     name: Contracts (Foundry)
@@ -96,8 +146,12 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with:
           version: v1.5.1
+      - name: Format check (CI-F3)
+        run: forge fmt --check
       - name: Build
         run: forge build
+      - name: Lint production contracts and scripts (CI-F3; tests are excluded on purpose, see foundry.toml)
+        run: forge lint src script
       - name: Test (CI profile, more fuzz and invariant runs)
         env:
           FOUNDRY_PROFILE: ci

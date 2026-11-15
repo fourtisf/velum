@@ -30,6 +30,9 @@ const base: MarketDTO = {
   maintenanceMargin: '0.10',
   spark: ['449', '450'],
   stale: false,
+  staleReason: null,
+  marketOpen: true,
+  quoteAge: 1,
   source: 'robinhood',
   updatedAt: NOW - 1_000,
 };
@@ -57,16 +60,17 @@ describe('readApiMarket on mainnet (F2)', () => {
     expect(read({ stale: true }).stale).toBe(true);
   });
 
-  it('updatedAt older than the max age, missing or unreadable means stale', () => {
-    expect(read({ updatedAt: NOW - PRICE_MAX_AGE_MS - 1 }).stale).toBe(true);
-    expect(read({ updatedAt: NOW - PRICE_MAX_AGE_MS + 1_000 }).stale).toBe(false);
+  it('updatedAt missing or unreadable means stale; its age alone does not (final audit W-03)', () => {
+    // updatedAt is when the quote last changed: a quiet quote the API still reports fresh stays live.
+    expect(read({ updatedAt: NOW - PRICE_MAX_AGE_MS - 1, quoteAge: 61 }).stale).toBe(false);
+    expect(read({ updatedAt: NOW - 14 * 60_000, quoteAge: 14 * 60 }).stale).toBe(false);
     expect(read({ updatedAt: undefined }).stale).toBe(true);
     expect(read({ updatedAt: 'yesterday' }).stale).toBe(true);
     expect(read({ updatedAt: new Date(NOW - 2_000).toISOString() }).stale).toBe(false);
   });
 
   it('a closed market (staleReason marketClosed, quote hours old) keeps its last price, stale and marked closed', () => {
-    const r = read({ stale: true, staleReason: 'marketClosed', marketOpen: false, updatedAt: NOW - 40 * 3600e3, quoteAge: 40 * 3600e3 });
+    const r = read({ stale: true, staleReason: 'marketClosed', marketOpen: false, updatedAt: NOW - 40 * 3600e3, quoteAge: 40 * 3600 });
     expect(r).toEqual({ price: W('450'), noData: false, stale: true, closed: true });
     // Never live, even if a flag were missing: closed alone means stale.
     expect(read({ stale: false, staleReason: 'marketClosed', updatedAt: NOW - 1_000 })).toMatchObject({ stale: true, closed: true });
@@ -108,7 +112,7 @@ describe('the live feed (F2, F6)', () => {
         calls++;
         const payload = JSON.stringify(body());
         if (delayMs) await new Promise((r) => setTimeout(r, delayMs));
-        return new Response(payload, { status: 200, headers: { 'content-type': 'application/json' } });
+        return new Response(payload, { status: 200, headers: { 'content-type': 'application/json', date: new Date().toUTCString() } });
       }),
     );
   });
@@ -152,7 +156,7 @@ describe('the live feed (F2, F6)', () => {
         price: m.symbol === 'TSLA' ? '447.10' : m.seedPrice,
         fundingPerHour: null,
         openInterest: null,
-        ...(m.symbol === 'TSLA' ? { stale: true, staleReason: 'marketClosed', marketOpen: false, updatedAt: Date.now() - 50 * 3600e3, quoteAge: 50 * 3600e3 } : { updatedAt: Date.now() }),
+        ...(m.symbol === 'TSLA' ? { stale: true, staleReason: 'marketClosed', marketOpen: false, updatedAt: Date.now() - 50 * 3600e3, quoteAge: 50 * 3600 } : { updatedAt: Date.now() }),
       }));
     stop = startMarketFeed();
     await vi.advanceTimersByTimeAsync(0);
@@ -168,10 +172,25 @@ describe('the live feed (F2, F6)', () => {
     expect([tsla.funding, tsla.oi]).toEqual([null, null]);
   });
 
-  it('a price older than a minute at the server is stale, not tradable', async () => {
-    body = () => MARKETS.map((m) => ({ ...base, symbol: m.symbol, name: m.name, price: m.seedPrice, updatedAt: Date.now() - PRICE_MAX_AGE_MS - 5_000 }));
+  it('a quiet quote (unchanged for 2 minutes) stays live while the API reports it fresh, and goes stale when the API says frozen (W-03)', async () => {
+    let frozen = false;
+    body = () =>
+      MARKETS.map((m) => ({
+        ...base,
+        symbol: m.symbol,
+        name: m.name,
+        price: m.seedPrice,
+        updatedAt: Date.now() - 120_000,
+        quoteAge: 120,
+        ...(frozen ? { stale: true, staleReason: 'quoteFrozen' } : {}),
+      }));
     stop = startMarketFeed();
-    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 40; i++) {
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(livePrice('TSLA')).toBe(W('391.65')); // no flapping to stale over 80 s of polls
+    }
+    frozen = true;
+    await vi.advanceTimersByTimeAsync(2_000);
     expect(mk('TSLA').noData).toBe(false);
     expect(livePrice('TSLA')).toBeNull();
     expect(priceState(mk('TSLA'), useMarkets.getState(), Date.now(), true)).toBe('stale');

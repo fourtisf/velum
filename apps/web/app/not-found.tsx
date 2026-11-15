@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Nav } from '@/components/Nav';
+import { COPY } from '@/lib/copy';
 
 export default function NotFound() {
   return (
@@ -13,6 +14,8 @@ export default function NotFound() {
             Start trading
           </Link>
         </div>
+        {/* CLAUDE.md §1.7: the brand line on every page (final audit W-10). */}
+        <p className="app-brand">{COPY.brand}</p>
       </main>
     </>
   );

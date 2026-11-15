@@ -3,8 +3,9 @@
 import { IS_MAINNET, MARKETS, TIMEFRAME_MS, type Timeframe } from '@velum/config';
 import { toNumber } from '@velum/math';
 import { useQuery } from '@tanstack/react-query';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
+import { chartCandles } from '@/lib/candles';
 import { ENV } from '@/lib/env';
 import { CLOSED } from '@/lib/copy';
 import { fmt } from '@/lib/format';
@@ -85,19 +86,21 @@ export function Chart({ sym }: { sym: string }) {
     retry: 1,
     enabled: source !== 'local',
   });
+  // Only valid candles are drawn (final audit W-11): malformed ones are dropped.
+  const valid = useMemo(() => chartCandles(q.data), [q.data]);
+  // The API answered with no candles yet (a new market): not an error.
+  const apiEmpty = q.isSuccess && Array.isArray(q.data) && q.data.length === 0;
   // Simulated candles are a testnet demo fallback only. Mainnet never draws made-up history: without
-  // candles from the API it says the chart is unavailable (audit web F1).
-  const useLocal = ENV.demoMode && !IS_MAINNET && (source === 'local' || (q.isError && !q.data));
-  const unavailable = !useLocal && q.isError && !q.data?.length;
+  // valid candles from the API it says the chart is unavailable (audit web F1, W-11).
+  const useLocal = ENV.demoMode && !IS_MAINNET && (source === 'local' || (q.isError && !valid.length));
+  const unavailable = !useLocal && !valid.length && (q.isError || (q.isSuccess && !apiEmpty));
 
   useEffect(() => {
     if (useLocal) {
       candles.current = genCandles(sym, tf);
       localTicks.current = 0;
-    } else if (q.data?.length) {
-      candles.current = q.data.map((k) => ({ t: k.t, o: Number(k.o), h: Number(k.h), l: Number(k.l), c: Number(k.c) }));
-    } else candles.current = [];
-  }, [q.data, useLocal, sym, tf]);
+    } else candles.current = valid.map((k) => ({ ...k }));
+  }, [valid, useLocal, sym, tf]);
 
   const draw = useCallback(() => {
     const cv = cvRef.current;
@@ -340,7 +343,7 @@ export function Chart({ sym }: { sym: string }) {
       <div className="chart">
         <canvas ref={cvRef} aria-label={`${sym} price chart`} role="img" />
         {unavailable ? <p className="chart-empty">Chart unavailable: price history could not be loaded.</p> : null}
-        {!useLocal && !unavailable && q.isSuccess && q.data.length === 0 ? <p className="chart-empty">Collecting live prices for this chart…</p> : null}
+        {!useLocal && !unavailable && apiEmpty ? <p className="chart-empty">Collecting live prices for this chart…</p> : null}
       </div>
     </>
   );

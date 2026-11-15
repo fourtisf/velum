@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { Inter, Inter_Tight } from 'next/font/google';
 import type { ReactNode } from 'react';
 import { Providers } from '@/components/Providers';
-import { LANDING } from '@/lib/copy';
+import { LANDING, SOCIAL } from '@/lib/copy';
 import './globals.css';
 
 const inter = Inter({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-inter', display: 'swap' });
@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   metadataBase: process.env.PUBLIC_SITE_URL ? new URL(process.env.PUBLIC_SITE_URL) : undefined,
   // Robinhood Chain brand rules: "Stock Tokens" in full, in shared link previews too.
   openGraph: { title: TITLE, description: LANDING.metaDescription, siteName: 'Velum', type: 'website' },
-  twitter: { card: 'summary', title: TITLE, description: LANDING.metaDescription },
+  twitter: { card: 'summary', title: TITLE, description: LANDING.metaDescription, site: SOCIAL.xHandle, creator: SOCIAL.xHandle },
 };
 
 export const viewport: Viewport = {

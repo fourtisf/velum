@@ -2,6 +2,7 @@
   "name": "@velum/api",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Fastify read API: health, markets, candles, pools, stats, quote.",
   "main": "dist/server.js",
   "scripts": {

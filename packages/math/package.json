@@ -2,6 +2,7 @@
   "name": "@velum/math",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Fixed-point (1e18) money math and the protocol formulas from docs/01-product-spec.md section 6.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

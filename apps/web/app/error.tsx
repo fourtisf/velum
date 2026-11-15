@@ -1,4 +1,6 @@
 'use client';
+import { COPY } from '@/lib/copy';
+
 /** Shown instead of a blank "Application error" when a page throws (audit web L3). */
 export default function Error({ reset }: { error: Error; reset: () => void }) {
   return (
@@ -10,6 +12,8 @@ export default function Error({ reset }: { error: Error; reset: () => void }) {
           Try again
         </button>
       </div>
+      {/* CLAUDE.md §1.7: the brand line on every page (final audit W-10). */}
+      <p className="app-brand">{COPY.brand}</p>
     </main>
   );
 }

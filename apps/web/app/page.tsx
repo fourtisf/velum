@@ -1,10 +1,11 @@
 import { POOLS } from '@velum/config';
 import Link from 'next/link';
+import { ContractPill } from '@/components/landing/ContractPill';
 import { FrameCap, HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
 import { Av, DemoTag } from '@/components/ui';
-import { I, Mark } from '@/components/icons';
+import { I, Mark, XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
-import { COPY, LANDING, METRICS, P } from '@/lib/copy';
+import { COPY, LANDING, METRICS, P, SOCIAL } from '@/lib/copy';
 
 /** The TSLA pool's demo APR (config seed), shown only where protocol metrics are shown at all. */
 const TSLA_APR = POOLS.find((p) => p.symbol === 'TSLA')?.aprEst ?? null;
@@ -32,6 +33,9 @@ export default function Landing() {
               <a className="btn btn-dark btn-lg" href="#how">
                 How it works
               </a>
+            </div>
+            <div className="ca-row">
+              <ContractPill />
             </div>
           </div>
           <HeroFrame />
@@ -153,7 +157,7 @@ export default function Landing() {
                   <div style={{ display: 'flex', gap: 28 }}>
                     <div>
                       <div className="bignum">0</div>
-                      <div className="bignote">admin keys</div>
+                      <div className="bignote">{LANDING.freezeBigNote}</div>
                     </div>
                     <div>
                       <div className="bignum">{LANDING.exitBig}</div>
@@ -359,6 +363,7 @@ export default function Landing() {
               <span>Velum</span>
             </Link>
             <p>{COPY.footer}</p>
+            <ContractPill />
           </div>
           <div>
             <h3>Product</h3>
@@ -378,6 +383,9 @@ export default function Landing() {
             <a href="#developers">API</a>
             <a href="#developers">SDK</a>
             <Link href="/">Contact</Link>
+            <a className="foot-x" href={SOCIAL.x} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.xLabel}>
+              <XLogo />X
+            </a>
           </div>
         </div>
       </footer>

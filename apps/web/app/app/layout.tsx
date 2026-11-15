@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { DemoBanner } from '@/components/DemoBanner';
+import { XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
-import { COPY } from '@/lib/copy';
+import { COPY, SOCIAL } from '@/lib/copy';
 
 export default function AppLayout({ children }: { children: ReactNode }) {
   return (
@@ -11,7 +12,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <main className="app-main">
         <div className="appw">{children}</div>
         {/* CLAUDE.md §1.7: the brand line on every page, small (audit web F11). */}
-        <p className="app-brand">{COPY.brand}</p>
+        <p className="app-brand">
+          {COPY.brand}
+          <a className="brand-x" href={SOCIAL.x} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.xLabel}>
+            <XLogo />
+          </a>
+        </p>
       </main>
     </div>
   );

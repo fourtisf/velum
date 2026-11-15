@@ -248,6 +248,9 @@ describe('the live feed (startMarketFeed) on mainnet', () => {
       maintenanceMargin: '0.10',
       spark: [price],
       stale: nd || mode === 'stale',
+      staleReason: nd ? 'noPrice' : mode === 'stale' ? 'outdated' : null,
+      marketOpen: true,
+      quoteAge: nd ? null : 0,
       source: nd ? null : 'robinhood',
       updatedAt: nd ? null : Date.now(),
     };
@@ -261,7 +264,8 @@ describe('the live feed (startMarketFeed) on mainnet', () => {
       'fetch',
       vi.fn(async () => {
         if (mode === 'down') throw new TypeError('Failed to fetch');
-        return new Response(JSON.stringify(MARKETS.map((m) => dto(m.symbol, m.seedPrice))), { status: 200, headers: { 'content-type': 'application/json' } });
+        // The server's Date header (like Nginx / Fastify): mainnet needs it to check quote times.
+        return new Response(JSON.stringify(MARKETS.map((m) => dto(m.symbol, m.seedPrice))), { status: 200, headers: { 'content-type': 'application/json', date: new Date().toUTCString() } });
       }),
     );
   });

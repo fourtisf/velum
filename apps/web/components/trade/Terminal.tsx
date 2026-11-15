@@ -9,6 +9,7 @@ import { useApp } from '@/lib/store';
 import { Av, Chg, DemoTag, Px } from '../ui';
 import { AccountCard } from './AccountCard';
 import { Chart } from './Chart';
+import { useTradeMode } from './mode';
 import { PositionsCard } from './Positions';
 import { Ticket } from './Ticket';
 
@@ -44,7 +45,7 @@ function Strip({ sym, embedded }: { sym: string; embedded?: boolean }) {
 
 function ChartCard({ sym }: { sym: string }) {
   const m = useMarket(sym);
-  const mode = useApp((s) => s.mode);
+  const mode = useTradeMode();
   const tf = useApp((s) => s.tf);
   const set = useApp((s) => s.set);
   return (

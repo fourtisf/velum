@@ -13,6 +13,7 @@ import { ModalHost } from './modals/ModalHost';
 /** Keeps the private-account session in step with the connected wallet. */
 function AccountSync() {
   const { address, status, chainId } = useAccount();
+  const modal = useApp((s) => s.modal);
   const prompted = useRef<string | null>(null);
 
   useEffect(() => {
@@ -29,17 +30,24 @@ function AccountSync() {
     else if (s.account) s.set({ account: null, ledger: emptyLedger(), openChain: {} });
   }, [address, status]);
 
+  // Wrong network: ask once per wallet and chain. While another dialog is open the prompt waits and
+  // shows when it closes (`modal` is a dependency, final audit W-13); a network dialog that is already
+  // open counts as the prompt, so closing it does not bring it back.
   useEffect(() => {
-    const s = useApp.getState();
     if (status !== 'connected' || !chainId || chainId === CHAIN.id) {
       prompted.current = null;
       return;
     }
     const k = `${address}:${chainId}`;
-    if (prompted.current === k || s.modal) return;
+    if (prompted.current === k) return;
+    if (modal?.kind === 'network') {
+      prompted.current = k;
+      return;
+    }
+    if (modal) return;
     prompted.current = k;
-    s.openModal({ kind: 'network' });
-  }, [status, chainId, address]);
+    useApp.getState().openModal({ kind: 'network' });
+  }, [status, chainId, address, modal]);
 
   useEffect(dropLegacyStorage, []);
 

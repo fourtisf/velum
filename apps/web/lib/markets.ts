@@ -8,8 +8,10 @@
  * Money logic never reads `price` directly: it asks livePrice(), which returns null when a market
  * has no live price (API source null) or, on mainnet, when the price or the feed is stale
  * (audit round 2, M4). The config seed is never a tradable price where the API has none.
- * What counts as a live price from the API is readApiMarket (audit web F2); one poll runs at a time
- * and only the newest answer is applied (F6).
+ * What counts as a live price from the API is readApiMarket (audit web F2; final audit W-01, W-03):
+ * the API's own stale/staleReason/marketOpen flags, read fail-safe, plus this client's response
+ * freshness (time since the last successful poll), never the age of `updatedAt`. One poll runs at a
+ * time and only the newest answer is applied (F6); a market missing from an answer has no data (W-02).
  */
 import { IS_MAINNET, MARKETS, PROTOCOL, type MarketStatus } from '@velum/config';
 import { fromNumber, parseWad, toNumber, type Wad } from '@velum/math';
@@ -64,8 +66,14 @@ interface MarketsState {
   feedStale: boolean;
 }
 
-/** Mainnet: a price is stale when no poll has succeeded for this long (the API's own freshness window). */
+/**
+ * Mainnet: every price is stale when no poll has succeeded for this long (this client's response
+ * freshness, final audit W-03). Polls run every 2 s and STALE_AFTER_FAILURES catches a failing API
+ * within seconds; this catches a stalled poll loop (a throttled background tab, a hung request).
+ */
 export const PRICE_MAX_AGE_MS = 60_000;
+/** A quote time more than this far ahead of the server's clock is invalid (the API's own rule, docs/03-api.md). */
+export const MAX_FUTURE_MS = 30_000;
 /** Mainnet: this many failed polls in a row mark the whole feed stale. */
 export const STALE_AFTER_FAILURES = 2;
 
@@ -97,11 +105,20 @@ export function priceState(m: LiveMarket | undefined, feed: FeedHealth & { feedS
   return tradablePrice(m, feed, now, mainnet) === null ? 'stale' : 'live';
 }
 
-/** A positive decimal price from the API, or null for anything else (empty, malformed, zero, negative). */
+/**
+ * A price as the API validates it (docs/03-api.md: decimal strings, prices in (0, 1e9)): a plain
+ * decimal string with at most 9 integer and 18 fraction places, no sign, exponent, spaces, separators
+ * or trailing text (final audit W-01: "391.65abc", "1e30", "250,50" and "12.5.7" were read as prices).
+ */
+const PRICE_RE = /^\d{1,9}(\.\d{1,18})?$/;
+/** Exclusive upper bound of an API price: 1e9 USDG, as a wad. */
+export const PRICE_MAX: Wad = 10n ** 27n;
+
+/** A price from the API, or null for anything else (not a string, malformed, zero, out of bounds). */
 export const apiPrice = (s: unknown): Wad | null => {
-  if (typeof s !== 'string' || !s.trim()) return null;
-  const v = parseWad(s.trim());
-  return v !== null && v > 0n ? v : null;
+  if (typeof s !== 'string' || !PRICE_RE.test(s)) return null;
+  const v = parseWad(s);
+  return v !== null && v > 0n && v < PRICE_MAX ? v : null;
 };
 const pctChange = (price: Wad, open: Wad) => (open > 0n ? (toNumber(price - open) / toNumber(open)) * 100 : 0);
 
@@ -127,14 +144,20 @@ export const apiMetric = (v: unknown): number | null => {
 
 /**
  * How one API market reads (pure, so tests can check both networks): `noData` when there is no
- * usable price (source null, an unparsable price, or on mainnet any source but robinhood/chainlink),
- * `stale` when the API says so or leaves it out, or, on mainnet, when `updatedAt` is missing or older
- * than PRICE_MAX_AGE_MS at the server's time (`serverNow`, from the response's Date header).
+ * usable price (source null, a malformed price, or on mainnet any source but robinhood/chainlink),
+ * `stale` when the API says so or leaves it out.
+ *
+ * On mainnet a price is live only when the API says so in full, read fail-safe (final audit W-03):
+ * `stale` exactly false, `staleReason` exactly null, `marketOpen` exactly true, and a readable
+ * `updatedAt` no more than MAX_FUTURE_MS ahead of the server's clock (`serverNow`, the response's
+ * Date header; without it the check cannot be made, so nothing is live). `updatedAt` is when the
+ * quote last changed, so its age is not a staleness signal here: a quiet quote stays fresh until the
+ * API marks it `quoteFrozen` (15 minutes), and `outdated` covers workers that stopped confirming it.
  * `closed` when the API reports the stock market closed (staleReason marketClosed, or marketOpen
  * false): the price is the last quote, hours old on weekends, so it is always stale (never live or
  * tradable) but shown with a closed note, not as an error.
  */
-export function readApiMarket(d: MarketDTO, serverNow: number, mainnet: boolean): { price: Wad | null; noData: boolean; stale: boolean; closed: boolean } {
+export function readApiMarket(d: MarketDTO, serverNow: number | null, mainnet: boolean): { price: Wad | null; noData: boolean; stale: boolean; closed: boolean } {
   const price = apiPrice(d.price);
   const sourceOk = mainnet ? typeof d.source === 'string' && REAL_SOURCES.includes(d.source) : d.source !== null;
   const noData = !sourceOk || price === null;
@@ -142,10 +165,52 @@ export function readApiMarket(d: MarketDTO, serverNow: number, mainnet: boolean)
   let stale = d.stale !== false || closed;
   if (mainnet && !stale) {
     const t = apiTime(d.updatedAt);
-    stale = t === null || serverNow - t > PRICE_MAX_AGE_MS;
+    stale = d.staleReason !== null || d.marketOpen !== true || t === null || serverNow === null || t > serverNow + MAX_FUTURE_MS;
   }
   return { price, noData, stale, closed };
 }
+
+const STATUSES: readonly string[] = ['live', 'coming_soon', 'close_only'] satisfies MarketStatus[];
+/** A company name as the API should send it: letters, numbers and plain punctuation, at most 40 characters. */
+const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} .,&'()-]{0,39}$/u;
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+/** 1×, a position without leverage: the slider's low end (MIN_LEVERAGE in lib/calc, which imports this module). */
+const LEV_FLOOR = 1;
+
+/** A market's max leverage from the API: a number, floored to the slider step, within 1..PROTOCOL max; otherwise `fallback`. */
+export function apiMaxLeverage(v: unknown, fallback: number): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+  const stepped = Math.floor(v / PROTOCOL.leverageStep) * PROTOCOL.leverageStep;
+  return Math.min(PROTOCOL.maxLeverage, Math.max(LEV_FLOOR, stepped));
+}
+
+type Meta = Pick<LiveMarket, 'name' | 'status' | 'token' | 'maxLev'>;
+
+/**
+ * The API's descriptive fields for one market, validated (final audit W-15): anything malformed keeps
+ * the previous value (the config's, or the last valid one), never what the API sent.
+ */
+export function apiMeta(d: MarketDTO, prev: Meta): Meta {
+  return {
+    name: typeof d.name === 'string' && NAME_RE.test(d.name) ? d.name : prev.name,
+    status: STATUSES.includes(d.status) ? d.status : prev.status,
+    token: d.token === null ? null : typeof d.token === 'string' && ADDRESS_RE.test(d.token) ? d.token : prev.token,
+    maxLev: apiMaxLeverage(d.maxLeverage, prev.maxLev),
+  };
+}
+
+/** Last-hour sparkline from the API (display only): at most 60 valid prices, oldest first; malformed points are dropped. */
+export const apiSpark = (v: unknown): number[] =>
+  Array.isArray(v)
+    ? v
+        .slice(-60)
+        .map(apiPrice)
+        .filter((p): p is Wad => p !== null)
+        .map(toNumber)
+    : [];
+
+/** 24h change in percent from the API (display only), or NaN when malformed. */
+const apiChange = (v: unknown): number => (typeof v === 'string' && /^-?\d{1,6}(\.\d{1,18})?$/.test(v) ? Number(v) : Number.NaN);
 
 function seedMarkets(): Record<string, LiveMarket> {
   const out: Record<string, LiveMarket> = {};
@@ -237,20 +302,23 @@ export function tokPx(t: string, now = Date.now()): Wad | null {
   return livePrice(t, now);
 }
 
-function applyApi(list: MarketDTO[], now: number, serverNow: number) {
+function applyApi(list: unknown[], now: number, serverNow: number | null) {
   useMarkets.setState((s) => {
     const bySym = { ...s.bySym };
-    for (const d of list) {
-      const prev = bySym[d.symbol];
-      if (!prev) continue;
+    const seen = new Set<string>();
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+      const d = item as MarketDTO;
+      // Own keys only: a symbol such as "__proto__" must not reach the prototype.
+      const prev = typeof d.symbol === 'string' && Object.prototype.hasOwnProperty.call(bySym, d.symbol) ? bySym[d.symbol] : undefined;
+      // Unknown markets and repeats of one already read in this answer are ignored.
+      if (!prev || seen.has(d.symbol)) continue;
+      seen.add(d.symbol);
       const r = readApiMarket(d, serverNow, IS_MAINNET);
       const meta = {
-        name: d.name,
-        status: d.status,
-        token: d.token,
+        ...apiMeta(d, prev),
         funding: apiMetric(d.fundingPerHour),
         oi: apiMetric(d.openInterest),
-        maxLev: Math.min(Number(d.maxLeverage) || PROTOCOL.maxLeverage, PROTOCOL.maxLeverage),
         stale: r.stale,
         demo: d.demo === true,
         closed: r.closed,
@@ -263,8 +331,8 @@ function applyApi(list: MarketDTO[], now: number, serverNow: number) {
       }
       const price = r.price;
       const open = apiPrice(d.open24h) ?? price;
-      const chg = Number(d.change24h);
-      const spark = Array.isArray(d.spark) && d.spark.length ? d.spark.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
+      const chg = apiChange(d.change24h);
+      const spark = apiSpark(d.spark);
       bySym[d.symbol] = {
         ...prev,
         ...meta,
@@ -279,18 +347,28 @@ function applyApi(list: MarketDTO[], now: number, serverNow: number) {
         noData: false,
       };
     }
+    // A market this answer leaves out has no data now (final audit W-02): its last price must not stay
+    // live because later answers stopped mentioning it (version skew, an API bug).
+    for (const sym of s.order) if (!seen.has(sym)) bySym[sym] = { ...bySym[sym]!, noData: true, stale: true };
     return { bySym, source: 'api', tick: s.tick + 1, lastOkAt: now, failures: 0, feedStale: false };
   });
 }
 
 /**
  * Where the prices on screen come from (for copy that names the source, audit web F2): a real
- * source only when some market has a usable price from it.
+ * source only when some market has a usable price from it. On mainnet the words follow the feed
+ * (final audit W-07): 'none' once the API failed repeatedly or the feed went stale (so "Loading" does
+ * not stay forever while the API is down), and 'closed' when every market priced from a real source
+ * is closed (the prices shown are the last quotes).
  */
-export function priceOrigin(s: Pick<MarketsState, 'bySym' | 'source'>, mainnet = IS_MAINNET): PriceOrigin {
-  if (s.source === 'seed') return mainnet ? 'loading' : 'demo';
+export function priceOrigin(s: Pick<MarketsState, 'bySym' | 'source'> & Partial<Pick<MarketsState, 'failures' | 'feedStale'>>, mainnet = IS_MAINNET): PriceOrigin {
+  const down = mainnet && ((s.failures ?? 0) >= STALE_AFTER_FAILURES || s.feedStale === true);
+  if (s.source === 'seed') return mainnet ? (down ? 'none' : 'loading') : 'demo';
   if (s.source === 'local') return 'demo';
+  if (down) return 'none';
   const live = Object.values(s.bySym).filter((m) => !m.noData);
+  const real = live.filter((m) => REAL_SOURCES.includes(m.priceSource));
+  if (mainnet && real.length > 0 && real.every((m) => m.closed)) return 'closed';
   if (live.some((m) => m.priceSource === 'robinhood')) return 'robinhood';
   if (live.some((m) => m.priceSource === 'chainlink')) return 'chainlink';
   return live.length ? 'demo' : 'none';
@@ -299,7 +377,9 @@ export function priceOrigin(s: Pick<MarketsState, 'bySym' | 'source'>, mainnet =
 export function usePriceOrigin(): PriceOrigin {
   const bySym = useMarkets((s) => s.bySym);
   const source = useMarkets((s) => s.source);
-  return priceOrigin({ bySym, source });
+  const failures = useMarkets((s) => s.failures);
+  const feedStale = useMarkets((s) => s.feedStale);
+  return priceOrigin({ bySym, source, failures, feedStale });
 }
 
 /* ---------- local demo simulator (prototype tick) ---------- */
@@ -405,8 +485,8 @@ export function startMarketFeed(): () => void {
       if (my === seq && !stopped) {
         failures = 0;
         stopLocal();
-        const now = Date.now();
-        applyApi(list, now, serverNow ?? now);
+        // serverNow is the response's Date header; without it no mainnet price is live (readApiMarket).
+        applyApi(list, Date.now(), serverNow);
       }
     } catch {
       if (my === seq && !stopped) {

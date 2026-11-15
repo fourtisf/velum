@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Velum | Private stock trading on Robinhood Chain</title>
-<meta name="description" content="Velum is a private exchange for tokenized stocks. Spot and perps with balances, positions and P&L encrypted end to end.">
+<meta name="description" content="Velum is a private exchange for Stock Tokens, in development. Try private spot and perps trading in a simulated demo on Robinhood Chain testnet.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inter+Tight:wght@500;600&display=swap" rel="stylesheet">
@@ -453,21 +453,21 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 <div id="landing">
   <section class="hero">
     <div class="wrap">
-      <a class="pill" href="#/app/trade"><span class="badge acc">Testnet</span><span class="pt">Private perps are live on Robinhood Chain</span><span id="pill-chev"></span></a>
+      <a class="pill" href="#/app/trade"><span class="badge acc">Testnet</span><span class="pt">Simulated private perps on Robinhood Chain</span><span id="pill-chev"></span></a>
       <h1>Trade stocks onchain, privately.</h1>
-      <p class="lead">Velum is a private exchange for tokenized stocks. Spot and perps, with your balance, positions and P&amp;L encrypted end to end.</p>
+      <p class="lead">Velum is a private exchange for Stock Tokens, in development. Spot and perps, designed to keep your balance, positions and P&amp;L encrypted end to end.</p>
       <div class="ctas"><a class="btn btn-white btn-lg" href="#/app/trade">Start trading</a><a class="btn btn-dark btn-lg" href="#how">How it works</a></div>
     </div>
     <div class="frame-wrap"><div class="frame" id="frame"><div class="frame-in" id="hero-term"></div></div></div>
-    <p class="frame-cap">Live demo with test prices. Connect a test wallet to place a private trade.</p>
+    <p class="frame-cap">Live demo with test prices. Connect a test wallet to try a simulated private trade. Testnet. Test tokens have no value.</p>
   </section>
 
   <div class="wrap">
     <div class="stats4">
       <div><b class="num">10</b><small>Stock markets, spot and perps</small></div>
       <div><b class="num">5×</b><small>Max leverage, long or short</small></div>
-      <div><b class="num">0</b><small>Admin keys that can touch funds</small></div>
-      <div><b class="num">~2s</b><small>To prove a trade in your browser</small></div>
+      <div><b class="num">0</b><small>Velum keys that can freeze or withdraw funds, by design</small></div>
+      <div><b class="num">~2s</b><small>Target time to prove a trade in your browser</small></div>
     </div>
 
     <section class="sec" id="features">
@@ -477,7 +477,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
         <div class="bc span2 reveal" id="bc-reveal">
           <span class="badge hinttag">Hover to reveal</span>
           <h3>Private by default</h3>
-          <p>Your balance, positions and profit live in encrypted notes that only your device can read. Everyone else sees a commitment.</p>
+          <p>Your balance, positions and profit will live in encrypted notes that only your device can read. Everyone else will see a commitment.</p>
           <div class="vis"><div class="mini">
             <div class="mini-h"><span>Private balance</span><span class="badge acc"><span class="d"></span>Encrypted</span></div>
             <div class="mini-big num pvd" id="bc-bal">$24,180.52</div>
@@ -488,7 +488,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
         </div>
         <div class="bc">
           <h3>Long or short, up to 5×</h3>
-          <p>Post margin, pick a side, and a maker's standing offer fills you. Close on your own at any time.</p>
+          <p>Post margin, pick a side, and a maker's standing offer will fill you. You will be able to close on your own at any time.</p>
           <div class="vis"><div class="mini">
             <div class="sides" style="pointer-events:none"><button class="on long" tabindex="-1">Long</button><button tabindex="-1">Short</button></div>
             <div class="kv2" style="margin-top:12px"><span>Leverage</span><b class="num">3.0×</b></div>
@@ -499,29 +499,29 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
         </div>
         <div class="bc">
           <h3>Proofs made on your device</h3>
-          <p>Your browser proves each trade follows the rules. The chain checks the math, never the trade.</p>
+          <p>Your browser will prove each trade follows the rules. The chain will check the math, never the trade.</p>
           <div class="vis"><div class="steps-mini" id="steps-mini"></div></div>
         </div>
         <div class="bc">
-          <h3>Nobody can freeze your funds</h3>
-          <p>No admin key, no pause on balances. If services go quiet, a forced exit settles your position.</p>
-          <div class="vis"><div style="display:flex;gap:28px"><div><div class="bignum">0</div><div class="bignote">admin keys</div></div><div><div class="bignum">7d</div><div class="bignote">to exit on your own</div></div></div></div>
+          <h3>Designed so Velum can't freeze your funds</h3>
+          <p>No Velum key can freeze or withdraw funds, by design. Token issuers can still freeze their tokens. If services go quiet, a forced exit settles.</p>
+          <div class="vis"><div style="display:flex;gap:28px"><div><div class="bignum">0</div><div class="bignote">freeze keys</div></div><div><div class="bignum">7d</div><div class="bignote">to exit on your own</div></div></div></div>
         </div>
         <div class="bc">
           <h3>Earn from every swap</h3>
-          <p>Add to a pool and keep 0.30% of each trade through it. Your share stays private.</p>
-          <div class="vis"><div class="mini"><div class="mini-h"><span>TSLA / USDG pool</span><span class="badge up">14.2% est. APR</span></div><svg class="spark" data-spark="TSLA" viewBox="0 0 300 60" preserveAspectRatio="none" style="width:100%;height:60px;margin-top:12px" aria-hidden="true"><path/></svg></div></div>
+          <p>Once pools launch, add to one and keep 0.30% of each trade through it. Your share will stay private.</p>
+          <div class="vis"><div class="mini"><div class="mini-h"><span>TSLA / USDG pool</span><span class="badge up">14.2% est. APR (demo)</span></div><svg class="spark" data-spark="TSLA" viewBox="0 0 300 60" preserveAspectRatio="none" style="width:100%;height:60px;margin-top:12px" aria-hidden="true"><path/></svg></div></div>
         </div>
         <div class="bc span3" id="developers">
           <div class="devgrid">
             <div>
               <h3>Built for builders</h3>
-              <p>Read markets with a plain HTTP API. Make proofs on the client with the SDK. The relayer submits them and never holds a key.</p>
+              <p>Read markets with a plain HTTP API today. Next, the SDK will make proofs on the client, and a relayer will submit them without ever holding a key.</p>
               <div style="margin-top:22px">
                 <div class="ep"><code>GET /v1/markets</code><span>Prices, funding and open interest</span></div>
                 <div class="ep"><code>GET /v1/pools</code><span>Pool list with rounded sizes</span></div>
                 <div class="ep"><code>POST /v1/quote</code><span>Swap estimate</span></div>
-                <div class="ep"><code>POST /v1/relay</code><span>Submit a proof you already made</span></div>
+                <div class="ep"><code>POST /v1/relay</code><span>Submit a proof you already made (planned)</span></div>
               </div>
             </div>
 <pre class="code" aria-label="Code example"><span class="k">import</span> { openAccount, proveTrade } <span class="k">from</span> <span class="s">"@velum/sdk"</span>;
@@ -544,17 +544,17 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
       <span class="eyebrow">How it works</span>
       <h2>From wallet to private position in four steps.</h2>
       <div class="steps">
-        <div class="step"><small>Step 1</small><h3>Shield</h3><p>Move USDG or stock tokens from your wallet into your private balance. This deposit is public.</p></div>
-        <div class="step"><small>Step 2</small><h3>Prove</h3><p>Pick a trade. Your browser builds a zero-knowledge proof that it follows the rules.</p></div>
-        <div class="step"><small>Step 3</small><h3>Relay</h3><p>A relayer submits the proof and pays gas, so your wallet never shows up on the trade.</p></div>
-        <div class="step"><small>Step 4</small><h3>Settle</h3><p>The contract checks the proof and updates your encrypted notes. Only you can read the result.</p></div>
+        <div class="step"><small>Step 1</small><h3>Shield</h3><p>Move USDG or Stock Tokens from your wallet into your private balance. This deposit will be public.</p></div>
+        <div class="step"><small>Step 2</small><h3>Prove</h3><p>Pick a trade. Your browser will build a zero-knowledge proof that it follows the rules.</p></div>
+        <div class="step"><small>Step 3</small><h3>Relay</h3><p>A relayer will submit the proof and pay gas, so your wallet never shows up on the trade.</p></div>
+        <div class="step"><small>Step 4</small><h3>Settle</h3><p>The contract will check the proof and update your encrypted notes. Only you will be able to read the result.</p></div>
       </div>
     </section>
 
     <section class="sec" id="privacy">
       <span class="eyebrow">Privacy</span>
       <h2>Same trade. Two very different views.</h2>
-      <p class="lead">On a public chain anyone can copy your trades or hunt your liquidation price. Here they can't.</p>
+      <p class="lead">On a public chain anyone can copy your trades or hunt your liquidation price. Velum is designed so they can't.</p>
       <div class="duo">
         <div class="card pcard"><div class="hd"><b>What everyone sees</b><span class="badge">Public chain</span></div><div id="pub-rows"></div></div>
         <div class="card pcard"><div class="hd"><b>What you see</b><span class="badge up"><span class="d"></span>Only you</span></div><div id="priv-rows"></div></div>
@@ -571,11 +571,11 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
         <div><span class="eyebrow">FAQ</span><h2>Questions, answered.</h2></div>
         <div class="faq">
           <details open><summary>Is this real money?</summary><p>No. Velum runs on Robinhood Chain testnet. Test tokens have no value, so you can learn how private trading works without risk.</p></details>
-          <details><summary>Can I go long and short?</summary><p>Yes. Perps let you go long or short on each stock with up to 5× leverage. A maker takes the other side, and you can close on your own at any time.</p></details>
-          <details><summary>Who can see my trades?</summary><p>You can. The maker on the other side sees that one position, against a one-time address. Two risk services can read what they need to liquidate. The public only sees that a position changed.</p></details>
-          <details><summary>Is it anonymous?</summary><p>No. Moving tokens in and out is public. If you want deposits harder to link, vary amounts and timing and withdraw to a fresh wallet.</p></details>
-          <details><summary>Can I lose more than my margin?</summary><p>No. Each position has its own margin and losses stop there. You can lose all of it, so start small.</p></details>
-          <details><summary>What if Velum goes offline?</summary><p>Your free balance is yours. You can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after 7 days.</p></details>
+          <details><summary>Can I go long and short?</summary><p>In the demo, yes. Perps will let you go long or short on each stock with up to 5× leverage. A maker will take the other side, and you will be able to close on your own at any time.</p></details>
+          <details><summary>Who can see my trades?</summary><p>Today, nobody: demo trades are simulated and stay in this browser. Once Velum launches, the maker on the other side will see that one position, against a one-time address. Two risk services will read what they need to liquidate. The public will only see that a position changed.</p></details>
+          <details><summary>Is it anonymous?</summary><p>No. Moving tokens in and out will be public. If you want deposits harder to link, vary amounts and timing and withdraw to a fresh wallet.</p></details>
+          <details><summary>Can I lose more than my margin?</summary><p>No. Each position is designed to have its own margin, and losses stop there. You could lose all of it, so start small once real trading opens.</p></details>
+          <details><summary>What if Velum goes offline?</summary><p>Nothing is at risk today: trades are simulated and your tokens never leave your wallet. Once Velum holds funds, it is designed so you can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after 7 days.</p></details>
         </div>
       </div>
     </section>
@@ -583,12 +583,12 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 
   <section class="cta">
     <h2>Your trades are nobody's business.</h2>
-    <p>Get free test USDG from the faucet and make your first private trade in under a minute.</p>
+    <p>Get free test USDG from the faucet and make your first simulated private trade in under a minute.</p>
     <div class="ctas"><a class="btn btn-white btn-lg" href="#/app/trade">Start trading</a><a class="btn btn-dark btn-lg" href="#/app/portfolio">Open portfolio</a></div>
   </section>
 
   <footer class="foot"><div class="wrap foot-in">
-    <div><a href="#/" class="brand" id="foot-brand"></a><p>An independent project on Robinhood Chain, not affiliated with Robinhood. Prototype with demo data. Contracts are not audited.</p></div>
+    <div><a href="#/" class="brand" id="foot-brand"></a><p>An independent project on Robinhood Chain, not affiliated with Robinhood. Prototype with demo data and simulated trading. Testnet. Test tokens have no value. Contracts are not audited.</p></div>
     <div><h4>Product</h4><a href="#/app/trade">Trade</a><a href="#/app/markets">Markets</a><a href="#/app/swap">Swap</a><a href="#/app/liquidity">Earn</a></div>
     <div><h4>Learn</h4><a href="#how">How it works</a><a href="#privacy">Privacy</a><a href="#faq">FAQ</a></div>
     <div><h4>Developers</h4><a href="#developers">API</a><a href="#developers">SDK</a><a href="#/">Contact</a></div>
@@ -758,7 +758,7 @@ function duoRows(priv) {
 function initLanding() {
   $('#pill-chev').innerHTML = I.chev;
   $('#foot-brand').innerHTML = MARK() + '<span>Velum</span>';
-  $('#steps-mini').innerHTML = [['Lock margin in a private note', ''], ['Generate proof in your browser', '1.8s'], ['Relayer submits and pays gas', '']].map(([t, s]) => `<div><span class="ck">${I.check}</span>${t}${s ? `<small>${s}</small>` : ''}</div>`).join('');
+  $('#steps-mini').innerHTML = [['Lock margin in a private note', ''], ['Generate proof in your browser', 'target ~2s'], ['Relayer submits and pays gas', '']].map(([t, s]) => `<div><span class="ck">${I.check}</span>${t}${s ? `<small>${s}</small>` : ''}</div>`).join('');
   $('#pub-rows').innerHTML = duoRows(false);
   $('#priv-rows').innerHTML = duoRows(true);
   $('#land-mk').innerHTML = MARKETS.slice(0, 6).map(m => `<tr><td><div class="mcell">${logo(m.sym)}<div><b>${m.sym}</b><small>${m.name}</small></div></div></td><td class="r num" data-px="${m.sym}">${usd(m.price)}</td><td class="r num" data-chg="${m.sym}"></td><td class="hide-sm"><svg class="spark" data-spark="${m.sym}" viewBox="0 0 110 30" preserveAspectRatio="none" aria-hidden="true"><path/></svg></td><td class="r num hide-sm">${compact(m.oi)}</td><td class="r"><a class="btn btn-dark btn-sm" href="#/app/trade/${m.sym}?perps">Trade</a></td></tr>`).join('');
@@ -862,7 +862,7 @@ function toast(msg, warn) {
   setTimeout(() => { el.style.transition = 'opacity .3s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 320); }, 3000);
 }
 async function runFlow({ title, steps, done }) {
-  openModal(`<div class="m-head"><h3 id="m-title">${title}</h3></div><ol class="flow">${steps.map(s => `<li><span class="ic"></span><div><div class="t">${s.t}</div><div class="d">${s.d || ''}</div>${s.proof ? '<div class="bar"><i></i></div>' : ''}</div></li>`).join('')}</ol><div id="flow-end"></div>`, { locked: true });
+  openModal(`<div class="m-head"><h3 id="m-title">Simulated: ${title}</h3></div><ol class="flow">${steps.map(s => `<li><span class="ic"></span><div><div class="t">${s.t}</div><div class="d">${s.d || ''}</div>${s.proof ? '<div class="bar"><i></i></div>' : ''}</div></li>`).join('')}</ol><div id="flow-end"></div>`, { locked: true });
   const lis = $$('#modal-box .flow li');
   for (let i = 0; i < steps.length; i++) {
     const li = lis[i]; li.classList.add('active');
@@ -879,27 +879,27 @@ async function runFlow({ title, steps, done }) {
 /* ---------------- connect / account ---------------- */
 function connectModal() {
   openModal(`<div class="m-head"><h3 id="m-title">Connect wallet</h3>${closeBtn}</div>
-  <p class="m-text">Your wallet is your public address. Next, one signature opens your private account.</p>
+  <p class="m-text">Your wallet is your public address. Next, one signature opens your demo private account.</p>
   <button class="wopt" data-act="wallet"><span class="ic">${I.wallet}</span><div><b>Browser wallet</b><small>An extension wallet in this browser</small></div></button>
   <button class="wopt" data-act="wallet"><span class="ic">${I.qr}</span><div><b>WalletConnect</b><small>Scan with a wallet on your phone</small></div></button>
   <button class="wopt" data-act="wallet"><span class="ic">${I.key}</span><div><b>Passkey account</b><small>For smart-contract and multi-party wallets</small></div></button>`);
 }
 function signModal() {
   openModal(`<div class="m-head"><h3 id="m-title">Open your private account</h3>${closeBtn}</div>
-  <p class="m-text">Sign one message to create your private keys in this browser. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.</p>
+  <p class="m-text">Sign one message to open your demo private account: this browser turns the signature into a demo private address. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.</p>
   <div class="boxnote warn">${I.info}<span>Only sign this message on Velum. Anyone with this signature can open your private account.</span></div>
   <button class="btn btn-white btn-block" data-act="sign" id="sign-btn">Sign message</button>`);
 }
 async function doSign() {
   const b = $('#sign-btn'); b.disabled = true; modalLocked = true;
   b.textContent = 'Waiting for your signature…'; await sleep(900);
-  b.textContent = 'Creating your private keys…'; await sleep(700);
+  b.textContent = 'Opening your demo account…'; await sleep(700);
   seedAccount(); closeModal(true); toast('Wallet connected'); render();
 }
 function accountModal() {
   openModal(`<div class="m-head"><h3 id="m-title">Your account</h3>${closeBtn}</div>
   <div class="receipt"><div><span>Public wallet</span><b>${shortH(S.addr)}</b></div><div><span>Private address</span><b>${pv(S.paddr.slice(0, 12) + '…' + S.paddr.slice(-6))}</b></div><div><span>Network</span><b>Robinhood Chain testnet</b></div></div>
-  <p class="m-text" style="margin-top:12px">Nothing onchain links these two addresses. Disconnecting removes your keys from this browser; signing again restores them.</p>
+  <p class="m-text" style="margin-top:12px">Nothing onchain links these two addresses. The private one is a demo address made in this browser from your signature. Disconnecting forgets it here; signing again opens the same one.</p>
   <button class="btn btn-dark btn-block" data-act="disconnect">Disconnect</button>`);
 }
 function disconnect() {
@@ -993,7 +993,7 @@ function renderTicket() {
     <div class="ticks num">${Array.from({ length: m.maxLev }, (_, i) => `<span>${i + 1}×</span>`).join('')}</div>
     <div class="sumbox" id="t-sum"></div>
     <button class="btn btn-block" id="t-submit" data-act="submit"></button><p class="hint" id="t-hint"></p>
-    <p class="note">${I.lock}<span>Size, side and entry stay encrypted. If no maker fills you within 15 minutes, your margin comes back.</span></p>`;
+    <p class="note">${I.lock}<span>In the full version, size, side and entry stay encrypted, and if no maker fills you within 15 minutes your margin comes back.</span></p>`;
   } else {
     const c = spotCalc();
     el.innerHTML = `<div class="sides" role="group" aria-label="Buy or sell"><button class="long ${S.spotSide === 'buy' ? 'on' : ''}" data-act="spside" data-arg="buy" aria-pressed="${S.spotSide === 'buy'}">Buy</button><button class="short ${S.spotSide === 'sell' ? 'on' : ''}" data-act="spside" data-arg="sell" aria-pressed="${S.spotSide === 'sell'}">Sell</button></div>
@@ -1006,7 +1006,7 @@ function renderTicket() {
     <div class="seg full" role="group" aria-label="Slippage">${[0.1, 0.5, 1].map(s => `<button class="${S.slip === s ? 'on' : ''}" data-act="slip" data-arg="${s}">${s}%</button>`).join('')}</div>
     <div class="sumbox" id="t-sum"></div>
     <button class="btn btn-block" id="t-submit" data-act="submit"></button><p class="hint" id="t-hint"></p>
-    <p class="note">${I.lock}<span>Pool reserves and your trade stay private. You own the token, so nothing can be liquidated.</span></p>`;
+    <p class="note">${I.lock}<span>In the full version, pool reserves and your trade stay private. You own the token, so nothing can be liquidated.</span></p>`;
   }
   updateTicket();
 }
@@ -1039,18 +1039,18 @@ function updateTicket() {
 }
 function renderAcct() {
   const el = $('#acct'); if (!el) return;
-  if (!S.connected) { el.innerHTML = `<h3>Private account</h3><p class="muted" style="font-size:13.5px;margin-top:8px">Connect a wallet and sign once to open a private balance. It costs no gas.</p><button class="btn btn-dark btn-sm" style="margin-top:12px" data-act="connect">Connect wallet</button>`; return; }
+  if (!S.connected) { el.innerHTML = `<h3>Private account</h3><p class="muted" style="font-size:13.5px;margin-top:8px">Connect a wallet and sign once to open a simulated private balance. It costs no gas. Testnet. Test tokens have no value.</p><button class="btn btn-dark btn-sm" style="margin-top:12px" data-act="connect">Connect wallet</button>`; return; }
   const lc = S.lastChain;
-  el.innerHTML = `<h3>Private account <span class="badge acc"><span class="d"></span>Encrypted</span></h3>
+  el.innerHTML = `<h3>Private account <span class="badge acc"><span class="d"></span>Simulated</span></h3>
   <div class="bigv num pv" data-total>${usd(privTotal())}</div>
   <div class="r"><span>Free balance</span><b class="num pv" data-acct="0"></b></div><div class="r"><span>In positions</span><b class="num pv" data-acct="1"></b></div>
-  <div class="lastc">Last thing the public chain saw<b>${lc ? lc.what : 'Nothing yet'}</b>${lc ? `<code>${shortH(lc.commit)}, block ${fmt(lc.block, 0)}</code>` : ''}</div>`;
+  <div class="lastc">Last simulated chain event<b>${lc ? lc.what : 'Nothing yet'}</b>${lc ? `<code>${shortH(lc.commit)}, block ${fmt(lc.block, 0)}</code>` : ''}</div>`;
 }
 function posTable(list, wide) {
   const cols = wide ? 9 : 6;
   return `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Market</th>${wide ? '<th>Side</th>' : ''}<th class="r">Size</th><th class="r">Entry</th>${wide ? '<th class="r">Mark</th>' : ''}<th class="r hide-sm">Liq. price</th>${wide ? '<th class="r hide-sm">Margin</th>' : ''}<th class="r">P&amp;L</th><th class="r"><span class="sr">Actions</span></th></tr></thead><tbody>
   ${list.map(p => { const m = mk(p.sym), Side = p.side === 'long' ? 'Long' : 'Short', sc = p.side === 'long' ? 'up' : 'down'; return `<tr><td><div class="mcell">${logo(p.sym, 'sm')}<div><b>${p.sym}</b><small class="${wide ? '' : sc}">${wide ? fmtLev(p.lev) : Side + ' ' + fmtLev(p.lev)}</small></div></div></td>${wide ? `<td class="${sc}" style="font-weight:500">${Side}</td>` : ''}<td class="r num">${pv(fmt(p.qty, 4))}</td><td class="r num">${pv(fmt(p.entry))}</td>${wide ? `<td class="r num" data-px="${p.sym}" data-fmt="raw">${fmt(m.price)}</td>` : ''}<td class="r num hide-sm">${pv(p.liq ? fmt(p.liq) : 'None')}</td>${wide ? `<td class="r num hide-sm">${pv(fmt(p.margin))}</td>` : ''}<td class="r num" data-pnl="${p.id}"></td><td class="r"><div class="rowbtns"><button class="btn btn-ghost btn-sm hide-sm" data-act="chain" data-arg="${p.id}" aria-expanded="${!!S.openChain[p.id]}">Chain view</button><button class="btn btn-dark btn-sm" data-act="close" data-arg="${p.id}">Close</button></div></td></tr>
-  <tr class="chainrow" ${S.openChain[p.id] ? '' : 'hidden'} data-chainrow="${p.id}"><td colspan="${cols}"><div class="chainbox"><div>What the public chain sees<b>A position changed in ${p.sym}</b></div><div>Commitment<b>${shortH(p.commit)}</b></div><div>Block<b class="num">${fmt(p.block, 0)}</b></div><div>Size, side, price, owner<b>Hidden</b></div></div></td></tr>`; }).join('')}
+  <tr class="chainrow" ${S.openChain[p.id] ? '' : 'hidden'} data-chainrow="${p.id}"><td colspan="${cols}"><div class="chainbox"><div>Simulated chain view<b>A position changed in ${p.sym}</b></div><div>Commitment<b>${shortH(p.commit)}</b></div><div>Block<b class="num">${fmt(p.block, 0)}</b></div><div>Size, side, price, owner<b>Hidden</b></div></div></td></tr>`; }).join('')}
   </tbody></table></div>`;
 }
 const actList = (list, n) => list.length ? list.slice(0, n).map(h => `<div class="act"><span class="ic">${I[h.icon] || I.trade}</span><div><b class="pv">${h.title}</b><small>${h.sub}</small></div><small class="faint">${ago(h.t)}</small></div>`).join('') : `<div class="empty"><p>No activity yet.</p></div>`;
@@ -1067,9 +1067,9 @@ function openPerps() {
   const m = mk(S.sel), c = perpsCalc(), side = S.side, lev = S.lev, Side = side === 'long' ? 'Long' : 'Short';
   runFlow({
     title: `Open ${side} ${m.sym}`, steps: [
-      { t: 'Locking margin in a private note', d: `${fmt(c.margin)} USDG leaves your free balance`, ms: 700 },
-      { t: 'Generating proof in your browser', d: 'Proves the trade follows the rules without revealing it', ms: 1900, proof: true },
-      { t: 'Relayer submitting proof', d: 'The relayer pays gas, so your wallet stays off the trade', ms: 800 },
+      { t: 'Setting aside margin', d: `${fmt(c.margin)} USDG leaves your free balance (simulated private note)`, ms: 700 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that the trade follows the rules without revealing it', ms: 1900, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits the proof and pays gas, so your wallet stays off the trade', ms: 800 },
       { t: 'Matching with a maker', d: 'Waiting for a standing offer', ms: 1100 },
     ], done: () => {
       const entry = side === 'long' ? m.price * 1.0005 : m.price * .9995, qty = c.size / entry, mm = .5 / m.maxLev;
@@ -1078,7 +1078,7 @@ function openPerps() {
       const p = { id: uid(), sym: m.sym, side, lev, margin: c.margin, qty, entry, liq, cs: rnd(.0003, .0008), commit: hex(32), block: 153118480 + Math.floor(rnd(200, 9000)) };
       S.positions.unshift(p); S.lastChain = { what: `A ${m.sym} position changed`, commit: p.commit, block: p.block };
       log(`Opened ${side} ${m.sym} ${fmtLev(lev)}`, `${usd(c.size)} position, ${fmt(c.margin)} USDG margin`, 'trade');
-      return { rows: [['Market', `${m.sym} perp`], ['Side', `<span class="${side === 'long' ? 'up' : 'down'}">${Side} ${fmtLev(lev)}</span>`], ['Position', `${fmt(qty, 4)} ${m.sym}`], ['Entry', fmt(entry)], ['Liquidation', liq ? fmt(liq) : 'None'], ['Fee', `${fmt(fee)} USDG`], ['Visible onchain', 'A position changed'], ['Receipt', '#' + rid()]], toast: `${Side} opened on ${m.sym}` };
+      return { rows: [['Market', `${m.sym} perp`], ['Side', `<span class="${side === 'long' ? 'up' : 'down'}">${Side} ${fmtLev(lev)}</span>`], ['Position', `${fmt(qty, 4)} ${m.sym}`], ['Entry', fmt(entry)], ['Liquidation', liq ? fmt(liq) : 'None'], ['Fee', `${fmt(fee)} USDG`], ['Demo', 'Simulated, nothing was sent onchain'], ['Receipt', '#' + rid()]], toast: `${Side} opened on ${m.sym}` };
     }
   });
 }
@@ -1086,15 +1086,15 @@ function spotTrade() {
   const m = mk(S.sel), c = spotCalc(), buy = S.spotSide === 'buy';
   runFlow({
     title: `${buy ? 'Buy' : 'Sell'} ${m.sym}`, steps: [
-      { t: 'Locking your tokens in a private swap request', d: `${fmt(c.amt, dp(c.tin))} ${c.tin}`, ms: 650 },
-      { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
+      { t: 'Setting aside your tokens for a private swap', d: `${fmt(c.amt, dp(c.tin))} ${c.tin} (simulated private note)`, ms: 650 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that the swap is valid without revealing it', ms: 1700, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits it, so your wallet stays off the trade', ms: 700 },
       { t: 'Filling against the private pool', d: `Only at or above ${fmt(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
     ], done: () => {
       S.priv[c.tin] = bal(S.priv, c.tin) - c.amt; S.priv[c.tout] = bal(S.priv, c.tout) + c.out;
       chainSaw(`The ${m.sym} pool changed`);
       log(`${buy ? 'Bought' : 'Sold'} ${fmt(buy ? c.out : c.amt, 4)} ${m.sym}`, `Private swap through the ${m.sym} pool`, 'trade');
-      return { rows: [['You paid', `${fmt(c.amt, dp(c.tin))} ${c.tin}`], ['You got', `${fmt(c.out, dp(c.tout))} ${c.tout}`], ['Pool fee', `${fmt(c.feeAmt)} USDG`], ['Visible onchain', 'The pool changed'], ['Receipt', '#' + rid()]], toast: `${buy ? 'Bought' : 'Sold'} ${m.sym}` };
+      return { rows: [['You paid', `${fmt(c.amt, dp(c.tin))} ${c.tin}`], ['You got', `${fmt(c.out, dp(c.tout))} ${c.tout}`], ['Pool fee', `${fmt(c.feeAmt)} USDG`], ['Demo', 'Simulated, nothing was sent onchain'], ['Receipt', '#' + rid()]], toast: `${buy ? 'Bought' : 'Sold'} ${m.sym}` };
     }
   });
 }
@@ -1102,8 +1102,8 @@ function closePos(id) {
   const p = S.positions.find(x => x.id === id); if (!p) return; const m = mk(p.sym);
   runFlow({
     title: `Close ${p.side} ${p.sym}`, steps: [
-      { t: 'Generating proof in your browser', d: 'Proves you own this position', ms: 1500, proof: true },
-      { t: 'Relayer submitting proof', d: 'No maker signature needed', ms: 700 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that you own this position', ms: 1500, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits it, with no maker signature needed', ms: 700 },
       { t: 'Settling at the oracle price', d: 'Minus the close spread your maker committed to', ms: 700 },
     ], done: () => {
       const exit = p.side === 'long' ? m.price * (1 - p.cs) : m.price * (1 + p.cs);
@@ -1133,7 +1133,7 @@ function checkLiq() {
 /* ---------------- markets ---------------- */
 function vMarkets() {
   const oi = MARKETS.reduce((a, m) => a + m.oi, 0);
-  return `<div class="vhead"><div><h1 class="vtitle">Markets</h1><p class="vsub">Every market settles privately. Prices are demo data on testnet.</p></div>
+  return `<div class="vhead"><div><h1 class="vtitle">Markets</h1><p class="vsub">Prices are demo data on testnet. Trading here is simulated. Test tokens have no value.</p></div>
   <label class="search">${I.search}<span class="sr">Search markets</span><input id="mk-q" placeholder="Search stocks" autocomplete="off" value="${S.q}"></label></div>
   <div class="stats"><div class="card stat"><small>Markets</small><b class="num">${MARKETS.length}</b></div><div class="card stat"><small>Open interest</small><b class="num">${compact(oi)}</b></div><div class="card stat"><small>Shielded value</small><b class="num">$4.8M</b></div><div class="card stat"><small>Proofs verified today</small><b class="num">${fmt(18420 + Math.floor(Math.random() * 400), 0)}</b></div></div>
   <div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Market</th><th class="r">Price</th><th class="r">24h</th><th class="hide-md">Last hour</th><th class="r hide-md">Funding / h</th><th class="r hide-md">Open interest</th><th class="r hide-sm">Max leverage</th><th class="r"><span class="sr">Actions</span></th></tr></thead>
@@ -1143,7 +1143,7 @@ function vMarkets() {
 /* ---------------- swap ---------------- */
 function vSwap() {
   const opts = s => TOKS.map(t => `<option ${t === s ? 'selected' : ''}>${t}</option>`).join('');
-  return `<div class="swap-wrap"><div class="vhead"><div><h1 class="vtitle">Swap privately</h1><p class="vsub">Trade USDG and stock tokens through private pools. Stock to stock routes through USDG in one action.</p></div></div>
+  return `<div class="swap-wrap"><div class="vhead"><div><h1 class="vtitle">Swap privately</h1><p class="vsub">Trade USDG and Stock Tokens through private pools, simulated in this demo. Stock to stock routes through USDG in one action. Testnet. Test tokens have no value.</p></div></div>
   <div class="card swapcard">
     <div class="sbox"><div class="lb"><span>You pay</span><span>Available <b class="num pv" id="sw-bal"></b></span></div>
       <div class="srow"><input id="sw-in" inputmode="decimal" value="${S.swapAmt}" aria-label="Amount to pay" autocomplete="off"><select class="sel" id="sw-from" aria-label="Token to pay">${opts(S.swapFrom)}</select></div>
@@ -1153,7 +1153,7 @@ function vSwap() {
       <div class="srow"><output id="sw-out">0.00</output><select class="sel" id="sw-to" aria-label="Token to receive">${opts(S.swapTo)}</select></div></div>
     <div class="sumbox" id="sw-sum" style="border-top:0;padding:4px 4px 0"></div>
     <button class="btn btn-block" id="sw-go" data-act="swap"></button><p class="hint" id="sw-hint"></p>
-    <p class="note">${I.lock}<span>Pool reserves are private, so nobody can work out your trade from public data.</span></p>
+    <p class="note">${I.lock}<span>In the full version, pool reserves are private, so nobody can work out your trade from public data.</span></p>
   </div></div>`;
 }
 function swapCalc() {
@@ -1167,7 +1167,7 @@ function updateSwap() {
   $('#sw-bal').textContent = S.connected ? `${fmt(c.have, dp(S.swapFrom))} ${S.swapFrom}` : '—';
   $('#sw-rate').textContent = same ? '' : `1 ${S.swapFrom} = ${sig4(c.rate)} ${S.swapTo}`;
   const route = c.hops === 2 ? `<span class="route">${S.swapFrom}${I.chev}USDG${I.chev}${S.swapTo}</span>` : `<span class="route">${S.swapFrom}${I.chev}${S.swapTo}</span>`;
-  $('#sw-sum').innerHTML = rows([['Route', route], [`Pool fee${c.hops === 2 ? ' (2 pools)' : ''}`, `${fmt(c.fee)} USDG`], ['Minimum you get', same ? '—' : `${sig4(c.min)} ${S.swapTo}`], ['Visible onchain', 'The pool changed']]);
+  $('#sw-sum').innerHTML = rows([['Route', route], [`Pool fee${c.hops === 2 ? ' (2 pools)' : ''}`, `${fmt(c.fee)} USDG`], ['Minimum you get', same ? '—' : `${sig4(c.min)} ${S.swapTo}`], ['Demo', 'Simulated, nothing is sent onchain']]);
   let h = '';
   if (!S.connected) setBtn(btn, 'Connect wallet', 'btn-white', false, 'connect');
   else if (same) setBtn(btn, 'Choose two different tokens', 'btn-dark', true, 'swap');
@@ -1180,9 +1180,9 @@ function doSwap() {
   const c = swapCalc(), f = S.swapFrom, t = S.swapTo;
   runFlow({
     title: `Swap ${f} for ${t}`, steps: [
-      { t: 'Locking your tokens in a private swap request', d: `${fmt(c.a, dp(f))} ${f}`, ms: 650 },
-      { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
+      { t: 'Setting aside your tokens for a private swap', d: `${fmt(c.a, dp(f))} ${f} (simulated private note)`, ms: 650 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that the swap is valid without revealing it', ms: 1700, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits it, so your wallet stays off the trade', ms: 700 },
       { t: c.hops === 2 ? 'Filling both pools in one action' : 'Filling against the private pool', d: `Only at or above ${sig4(c.min)} ${t}`, ms: 800 },
     ], done: () => {
       S.priv[f] = bal(S.priv, f) - c.a; S.priv[t] = bal(S.priv, t) + c.out;
@@ -1201,9 +1201,9 @@ function poolCard(s, size, apr) {
   <div class="rowbtns">${mine ? `<button class="btn btn-dark btn-sm" data-act="lprm" data-arg="${s}">Remove</button>` : ''}<button class="btn btn-white btn-sm" data-act="lpadd" data-arg="${s}">Add liquidity</button></div></div>`;
 }
 function vLiquidity() {
-  return `<div class="vhead"><div><h1 class="vtitle">Earn</h1><p class="vsub">Add to a private pool and earn 0.30% of every swap through it. Public pool sizes are rounded and published hourly.</p></div></div>
+  return `<div class="vhead"><div><h1 class="vtitle">Earn</h1><p class="vsub">Add to a private pool (simulated in this demo) and earn 0.30% of every swap through it. Public pool sizes will be rounded and published hourly. Testnet. Test tokens have no value.</p></div></div>
   <div class="pools">${POOLS.map(([s, z, a]) => poolCard(s, z, a)).join('')}</div>
-  <div class="boxnote" style="max-width:760px">${I.info}<span>Hourly totals only appear when an hour has at least 10 fills from at least 2 makers, rounded to two significant figures, so no single trade stands out.</span></div>`;
+  <div class="boxnote" style="max-width:760px">${I.info}<span>In the full version, hourly totals only appear when an hour has at least 10 fills from at least 2 makers, rounded to two significant figures, so no single trade stands out.</span></div>`;
 }
 function lpAddModal(sym) {
   if (!S.connected) return connectModal();
@@ -1217,7 +1217,7 @@ function lpAddModal(sym) {
 }
 function updateLp() {
   const a = parseFloat($('#lp-amt')?.value) || 0, sym = S.lpSym, m = mk(sym), have = bal(S.priv, 'USDG');
-  $('#lp-sum').innerHTML = rows([['Added as USDG', `${fmt(a / 2)} USDG`], [`Added as ${sym}`, `${fmt(a / 2 / m.price, 4)} ${sym}`], ['You earn', '0.30% of swaps'], ['Visible onchain', 'The pool changed']]);
+  $('#lp-sum').innerHTML = rows([['Added as USDG', `${fmt(a / 2)} USDG`], [`Added as ${sym}`, `${fmt(a / 2 / m.price, 4)} ${sym}`], ['You earn', '0.30% of swaps'], ['Demo', 'Simulated, nothing is sent onchain']]);
   $('#lp-go').disabled = a <= 0 || a > have;
   $('#lp-hint').textContent = a > have ? `You have ${fmt(have)} USDG available.` : '';
 }
@@ -1225,8 +1225,8 @@ function lpGo(sym) {
   const a = parseFloat($('#lp-amt').value) || 0;
   runFlow({
     title: `Add liquidity to ${sym}`, steps: [
-      { t: 'Generating proof in your browser', d: 'Shows you own the USDG you are adding', ms: 1600, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the deposit', ms: 700 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that you own the USDG you are adding', ms: 1600, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits it, so your wallet stays off the deposit', ms: 700 },
       { t: `Swapping half into ${sym} and adding both`, d: 'One action, no in-between balance', ms: 800 },
     ], done: () => {
       S.priv.USDG = bal(S.priv, 'USDG') - a; S.lp[sym] = (S.lp[sym] || 0) + a;
@@ -1240,8 +1240,8 @@ function lpRemove(sym) {
   const v = S.lp[sym] || 0;
   runFlow({
     title: `Remove liquidity from ${sym}`, steps: [
-      { t: 'Generating proof in your browser', d: 'Proves you own this share', ms: 1400, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the withdrawal', ms: 700 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that you own this share', ms: 1400, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits it, so your wallet stays off the withdrawal', ms: 700 },
       { t: 'Returning your share as USDG', d: 'Into your private balance', ms: 700 },
     ], done: () => {
       S.priv.USDG = bal(S.priv, 'USDG') + v; delete S.lp[sym];
@@ -1258,10 +1258,10 @@ function assetRow(t, src, pub) {
   return `<tr><td><div class="mcell">${logo(t, 'sm')}<div><b>${t}</b><small>${tokName(t)}</small></div></div></td><td class="r num">${pub ? fmt(amt, dp(t)) : pv(fmt(amt, dp(t)))}</td><td class="r num hide-sm" ${isMkt(t) ? `data-px="${t}"` : ''}>${usd(tokPx(t))}</td><td class="r num" data-val="${t}|${pub ? 'pub' : 'priv'}"></td></tr>`;
 }
 function vPortfolio() {
-  if (!S.connected) return `<div class="vhead"><div><h1 class="vtitle">Portfolio</h1></div></div><div class="card empty" style="padding:72px 20px"><p style="font-size:17px;color:var(--text);font-weight:500">Connect your wallet to open your private account.</p><p>One signature creates your private keys in this browser. It costs no gas, and the same wallet opens the same account on any device.</p><button class="btn btn-white btn-lg" data-act="connect">Connect wallet</button></div>`;
+  if (!S.connected) return `<div class="vhead"><div><h1 class="vtitle">Portfolio</h1></div></div><div class="card empty" style="padding:72px 20px"><p style="font-size:17px;color:var(--text);font-weight:500">Connect your wallet to open your private account.</p><p>One signature opens your demo private account in this browser. It costs no gas, and the same wallet opens the same account on any device. Testnet. Test tokens have no value.</p><button class="btn btn-white btn-lg" data-act="connect">Connect wallet</button></div>`;
   const priv = TOKS.filter(t => bal(S.priv, t) > 1e-7), pub = Object.keys(S.wallet).filter(t => S.wallet[t] > 1e-7);
   const head = `<thead><tr><th>Asset</th><th class="r">Amount</th><th class="r hide-sm">Price</th><th class="r">Value</th></tr></thead>`;
-  return `<div class="vhead"><div><h1 class="vtitle">Portfolio</h1><p class="vsub">Everything below is decrypted on this device only.</p></div></div>
+  return `<div class="vhead"><div><h1 class="vtitle">Portfolio</h1><p class="vsub">Your private balance here is a simulated practice account, kept in this browser only. Testnet. Test tokens have no value.</p></div></div>
   <div class="pf">
   <section class="card pf-hero"><div><span class="muted" style="font-size:13.5px">Private balance</span><div class="pf-big num pv" data-total>${usd(privTotal())}</div>
     <div class="pf-sub"><span class="paddr">${pv(S.paddr.slice(0, 12) + '…' + S.paddr.slice(-6))}<button class="icb" data-act="copy" aria-label="Copy private address">${I.copy}</button></span><span>Share this address to receive private transfers.</span></div></div>
@@ -1303,16 +1303,16 @@ function moveGo(kind) {
   if (kind === 'send' && !/^velum1[0-9a-z]{10,}$/i.test(to)) { $('#mv-hint').textContent = 'Enter a private address that starts with velum1.'; return; }
   if (kind === 'unshield' && !/^0x[0-9a-f]{40}$/i.test(to)) { $('#mv-hint').textContent = 'Enter a public address: 0x followed by 40 characters.'; return; }
   const F = {
-    shield: { title: `Shield ${t}`, steps: [{ t: `Approving ${t}`, d: 'Lets the Velum contract receive this token', ms: 600 }, { t: 'Sending public deposit', d: 'Visible onchain: wallet, token, amount, time', ms: 800 }, { t: 'Adding a note to your private balance', d: 'Usually within a block or two', ms: 900 }], apply: () => { S.wallet[t] -= a; S.priv[t] = bal(S.priv, t) + a; chainSaw(`Public deposit of ${fmt(a, dp(t))} ${t}`); log(`Shielded ${fmt(a, dp(t))} ${t}`, 'Public deposit from your wallet', 'shieldIn'); }, toast: `Shielded ${t}` },
-    unshield: { title: `Unshield ${t}`, steps: [{ t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true }, { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 }, { t: 'Sending tokens to the public address', d: shortH(to || '0x0000000000'), ms: 700 }], apply: () => { S.priv[t] -= a; if (to.toLowerCase() === S.addr.toLowerCase()) S.wallet[t] = bal(S.wallet, t) + a; chainSaw(`Public withdrawal of ${fmt(a, dp(t))} ${t}`); log(`Unshielded ${fmt(a, dp(t))} ${t}`, `Public transfer to ${shortH(to)}`, 'shieldOut'); }, toast: `Unshielded ${t}` },
-    send: { title: `Send ${t} privately`, steps: [{ t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true }, { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 }, { t: 'Creating an encrypted note for the recipient', d: 'Only they can read it', ms: 600 }], apply: () => { S.priv[t] -= a; chainSaw('An encrypted note was created'); log(`Sent ${fmt(a, dp(t))} ${t} privately`, `To ${to.slice(0, 12)}…`, 'send'); }, toast: `Sent ${t} privately` },
+    shield: { title: `Shield ${t}`, steps: [{ t: `Checking your ${t} balance`, d: 'In the full version, you approve the Velum contract for this token', ms: 600 }, { t: 'Simulating the deposit', d: 'Nothing is sent onchain. Once Velum launches, deposits are public', ms: 800 }, { t: 'Adding to your practice balance', d: 'Kept in this browser only', ms: 900 }], apply: () => { S.wallet[t] -= a; S.priv[t] = bal(S.priv, t) + a; chainSaw(`Public deposit of ${fmt(a, dp(t))} ${t}`); log(`Shielded ${fmt(a, dp(t))} ${t}`, 'Public deposit from your wallet', 'shieldIn'); }, toast: `Shielded ${t}` },
+    unshield: { title: `Unshield ${t}`, steps: [{ t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that you own these tokens', ms: 1500, proof: true }, { t: 'Simulating the relayer', d: 'In the full version, a relayer submits the proof and pays gas', ms: 700 }, { t: 'Simulating the transfer', d: `To ${shortH(to || '0x0000000000')}. Nothing is sent onchain`, ms: 700 }], apply: () => { S.priv[t] -= a; if (to.toLowerCase() === S.addr.toLowerCase()) S.wallet[t] = bal(S.wallet, t) + a; chainSaw(`Public withdrawal of ${fmt(a, dp(t))} ${t}`); log(`Unshielded ${fmt(a, dp(t))} ${t}`, `Public transfer to ${shortH(to)}`, 'shieldOut'); }, toast: `Unshielded ${t}` },
+    send: { title: `Send ${t} privately`, steps: [{ t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that you own these tokens', ms: 1500, proof: true }, { t: 'Simulating the relayer', d: 'In the full version, a relayer submits the proof and pays gas', ms: 700 }, { t: 'Simulating the private transfer', d: 'Nothing is sent; the recipient gets nothing', ms: 600 }], apply: () => { S.priv[t] -= a; chainSaw('An encrypted note was created'); log(`Sent ${fmt(a, dp(t))} ${t} privately`, `To ${to.slice(0, 12)}…`, 'send'); }, toast: `Sent ${t} privately` },
   }[kind];
-  runFlow({ title: F.title, steps: F.steps, done: () => { F.apply(); return { rows: [['Token', t], ['Amount', fmt(a, dp(t))], ['Visible onchain', kind === 'send' ? 'Nothing readable' : 'Wallet, token, amount, time'], ['Receipt', '#' + rid()]], toast: F.toast }; } });
+  runFlow({ title: F.title, steps: F.steps, done: () => { F.apply(); return { rows: [['Token', t], ['Amount', fmt(a, dp(t))], ['Demo', 'Simulated, nothing was sent onchain'], ['Receipt', '#' + rid()]], toast: F.toast }; } });
 }
 
 /* ---------------- makers ---------------- */
 function vMakers() {
-  return `<div class="vhead"><div><h1 class="vtitle">Maker desk</h1><p class="vsub">Back traders' positions from your private balance and earn the spread. You take the other side of every fill.</p></div></div>
+  return `<div class="vhead"><div><h1 class="vtitle">Maker desk</h1><p class="vsub">Back traders' positions from your private balance and earn the spread, simulated in this demo. You take the other side of every fill. Testnet. Test tokens have no value.</p></div></div>
   <div class="mk-grid">
     <section class="card form">
       <h2>Post a standing offer</h2>
@@ -1360,9 +1360,9 @@ function postOffer() {
   const v = offerVals(), exp = S.ofExp;
   runFlow({
     title: `Post ${v.sym} offer`, steps: [
-      { t: 'Locking backing in a private note', d: `${fmt(v.back)} USDG`, ms: 650 },
-      { t: 'Generating proof in your browser', d: 'Proves you hold the backing', ms: 1500, proof: true },
-      { t: 'Sending your offer to the coordinator', d: 'Against a one-time address', ms: 700 },
+      { t: 'Setting aside backing', d: `${fmt(v.back)} USDG (simulated private note)`, ms: 650 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that you hold the backing', ms: 1500, proof: true },
+      { t: 'Simulating the coordinator', d: 'In the full version, your offer goes to the coordinator against a one-time address', ms: 700 },
     ], done: () => {
       S.priv.USDG = bal(S.priv, 'USDG') - v.back;
       S.offers.unshift({ id: uid(), ...v, exp, fills: 0, earned: 0 });
@@ -1376,8 +1376,8 @@ function withdrawOffer(id) {
   const o = S.offers.find(x => x.id === id); if (!o) return;
   runFlow({
     title: `Withdraw ${o.sym} offer`, steps: [
-      { t: 'Generating proof in your browser', d: 'Proves this offer is yours', ms: 1300, proof: true },
-      { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
+      { t: 'Simulating the proof', d: 'In the full version, your browser makes a proof that this offer is yours', ms: 1300, proof: true },
+      { t: 'Simulating the relayer', d: 'In the full version, a relayer submits the proof and pays gas', ms: 700 },
       { t: 'Releasing unused backing', d: 'Back to your private balance', ms: 600 },
     ], done: () => {
       const back = o.back + o.earned; S.priv.USDG = bal(S.priv, 'USDG') + back; S.offers = S.offers.filter(x => x !== o);

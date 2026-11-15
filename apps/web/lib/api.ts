@@ -19,14 +19,21 @@ export interface MarketDTO {
   spark: string[];
   /** A missing `stale` is read as stale (audit web F2). Also true for closed or frozen markets. */
   stale?: boolean;
-  /** Why the price is stale, when the API says (closed markets keep their last price, untradable). */
-  staleReason?: StaleReason | string;
-  /** Whether the stock market is open now. */
+  /** Why the price is stale, or null when it is fresh (closed markets keep their last price, untradable). On mainnet anything but null is not live. */
+  staleReason?: StaleReason | string | null;
+  /** Whether the stock market is open now. On mainnet anything but `true` is not live. */
   marketOpen?: boolean;
-  /** Age of the quote in ms. */
-  quoteAge?: number;
+  /**
+   * Seconds (not ms) since the quote last changed, i.e. since `updatedAt`; null without a price
+   * (docs/03-api.md). Informational: the web does not read it, staleness comes from `stale`/`staleReason`.
+   */
+  quoteAge?: number | null;
   source?: string | null;
-  /** When the quote was taken (not when it was polled): ms since epoch (or an ISO string). Hours old while a market is closed. */
+  /**
+   * The quote time, ms since epoch (or an ISO string): when the quote behind `price` last changed, not
+   * when it was polled, so it is hours old while a market is closed and its age is not a staleness
+   * signal. More than 30 s ahead of the server's clock it is invalid (lib/markets readApiMarket).
+   */
   updatedAt?: number | string;
   /** The API marks protocol metrics (OI, funding) that are demo data. */
   demo?: boolean;
@@ -71,7 +78,8 @@ async function getAt<T>(path: string, signal?: AbortSignal): Promise<{ body: T; 
     const err = (body as { error?: { code?: string; message?: string } } | null)?.error;
     throw new ApiError(err?.code ?? 'HTTP_' + res.status, err?.message ?? res.statusText, res.status);
   }
-  // The server's clock (Date header), so a price's age does not depend on this device's clock.
+  // The server's clock (Date header), so a quote time dated ahead of the server is caught whatever
+  // this device's clock says (lib/markets readApiMarket).
   const date = Date.parse(res.headers.get('date') ?? '');
   return { body: body as T, serverNow: Number.isFinite(date) ? date : null };
 }
@@ -82,7 +90,7 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 export const api = {
   markets: (signal?: AbortSignal) => get<MarketDTO[]>('/v1/markets', signal),
-  /** Markets plus the server's time when it answered (for the price age check, audit web F2). */
+  /** Markets plus the server's time when it answered (the quote time check, final audit W-01). */
   marketsAt: async (signal?: AbortSignal) => {
     const r = await getAt<MarketDTO[]>('/v1/markets', signal);
     return { list: r.body, serverNow: r.serverNow };

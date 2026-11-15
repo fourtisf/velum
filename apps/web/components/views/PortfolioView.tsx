@@ -133,7 +133,16 @@ export function PortfolioView() {
         <section className="card pf-hero">
           <div>
             <span className="muted" style={{ fontSize: 13.5 }}>
-              Private balance
+              {SIM.balanceLabel}
+              {SIM.balanceBadge ? (
+                <>
+                  {' '}
+                  <span className="badge acc">
+                    <span className="d" />
+                    {SIM.accountBadge}
+                  </span>
+                </>
+              ) : null}
             </span>
             <div className="pf-big num pv">{usdBal(privTotal(ledger))}</div>
             <div className="pf-sub">
@@ -143,7 +152,7 @@ export function PortfolioView() {
                   <I.copy />
                 </button>
               </span>
-              <span>Share this address to receive private transfers.</span>
+              <span>{SIM.paddrNote}</span>
             </div>
           </div>
           <div className="pf-actions">

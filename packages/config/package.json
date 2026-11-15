@@ -2,6 +2,7 @@
   "name": "@velum/config",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "Chain constants, token list, markets and protocol params shared by web, api and workers.",
   "main": "./src/index.ts",
   "types": "./src/index.ts",

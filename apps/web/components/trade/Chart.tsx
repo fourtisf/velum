@@ -1,13 +1,14 @@
 'use client';
 /** Canvas candlestick chart, ported from the prototype's drawChart. */
-import { MARKETS, TIMEFRAME_MS, type Timeframe } from '@velum/config';
+import { IS_MAINNET, MARKETS, TIMEFRAME_MS, type Timeframe } from '@velum/config';
 import { toNumber } from '@velum/math';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { ENV } from '@/lib/env';
+import { CLOSED } from '@/lib/copy';
 import { fmt } from '@/lib/format';
-import { mk, useMarkets } from '@/lib/markets';
+import { mk, priceState, useMarkets } from '@/lib/markets';
 import { useApp } from '@/lib/store';
 
 interface C {
@@ -69,6 +70,8 @@ export function Chart({ sym }: { sym: string }) {
   const positions = useApp((s) => s.ledger.positions);
   const source = useMarkets((s) => s.source);
   const tick = useMarkets((s) => s.tick);
+  // Redraw when the feed turns stale (no tick then), so the price tag shows it.
+  const feedStale = useMarkets((s) => s.feedStale);
   const cvRef = useRef<HTMLCanvasElement>(null);
   const candles = useRef<C[]>([]);
   const hover = useRef<{ x: number; y: number } | null>(null);
@@ -82,7 +85,10 @@ export function Chart({ sym }: { sym: string }) {
     retry: 1,
     enabled: source !== 'local',
   });
-  const useLocal = ENV.demoMode && (source === 'local' || (q.isError && !q.data));
+  // Simulated candles are a testnet demo fallback only. Mainnet never draws made-up history: without
+  // candles from the API it says the chart is unavailable (audit web F1).
+  const useLocal = ENV.demoMode && !IS_MAINNET && (source === 'local' || (q.isError && !q.data));
+  const unavailable = !useLocal && q.isError && !q.data?.length;
 
   useEffect(() => {
     if (useLocal) {
@@ -96,7 +102,13 @@ export function Chart({ sym }: { sym: string }) {
   const draw = useCallback(() => {
     const cv = cvRef.current;
     const list = candles.current;
-    if (!cv || !list.length) return;
+    if (!cv) return;
+    if (!list.length) {
+      // No candles (loading, or unavailable): never leave the previous market's chart on screen.
+      cv.getContext('2d')?.clearRect(0, 0, cv.width, cv.height);
+      setOhlc(null);
+      return;
+    }
     const W = cv.clientWidth;
     const H = cv.clientHeight;
     if (!W || !H) return;
@@ -197,7 +209,10 @@ export function Chart({ sym }: { sym: string }) {
     const L = list[n - 1]!;
     const ly = Math.round(Y(L.c)) + 0.5;
     const up = L.c >= L.o;
-    const col = up ? COL.up : COL.down;
+    // Not a live price (stale feed, or no price at all): the last value is drawn grey and marked
+    // "stale" under its tag, like the dimmed stale prices elsewhere (audit web F1).
+    const live = priceState(mk(sym), useMarkets.getState(), Date.now(), IS_MAINNET) === 'live';
+    const col = !live ? COL.faint : up ? COL.up : COL.down;
     x.setLineDash([2, 3]);
     x.strokeStyle = col;
     x.globalAlpha = 0.6;
@@ -207,12 +222,17 @@ export function Chart({ sym }: { sym: string }) {
     x.stroke();
     x.globalAlpha = 1;
     x.setLineDash([]);
-    x.fillStyle = col;
+    x.fillStyle = live ? col : '#2A2D34';
     rr(x, cw + 4, ly - 10, AX - 6, 20, 5);
     x.fill();
-    x.fillStyle = up ? '#03140B' : '#fff';
+    x.fillStyle = !live ? COL.faint : up ? '#03140B' : '#fff';
     x.font = F(600);
     x.fillText(fmt(L.c), cw + 12, ly + 0.5);
+    if (!live) {
+      x.fillStyle = COL.down;
+      x.font = `500 10.5px ${font}`;
+      x.fillText(mk(sym).closed ? CLOSED.tag : 'stale', cw + 12, ly + 19 > H - 6 ? ly - 19 : ly + 19);
+    }
     let idx = n - 1;
     const hv0 = hover.current;
     if (hv0 && hv0.x < cw && hv0.y > PT && hv0.y < H - PB) {
@@ -266,7 +286,7 @@ export function Chart({ sym }: { sym: string }) {
 
   useEffect(() => {
     draw();
-  }, [draw, veiled, positions, q.data, useLocal]);
+  }, [draw, veiled, positions, q.data, useLocal, feedStale]);
 
   useEffect(() => {
     const cv = cvRef.current;
@@ -312,11 +332,15 @@ export function Chart({ sym }: { sym: string }) {
               C <b className={`num ${c.c >= c.o ? 'up' : 'down'}`}>{fmt(c.c)}</b>
             </span>
           </>
-        ) : null}
+        ) : (
+          // Keeps the row's height while there are no candles, so the chart does not jump.
+          <span aria-hidden="true">&nbsp;</span>
+        )}
       </div>
       <div className="chart">
         <canvas ref={cvRef} aria-label={`${sym} price chart`} role="img" />
-        {!useLocal && q.isSuccess && q.data.length === 0 ? <p className="chart-empty">Collecting live prices for this chart…</p> : null}
+        {unavailable ? <p className="chart-empty">Chart unavailable: price history could not be loaded.</p> : null}
+        {!useLocal && !unavailable && q.isSuccess && q.data.length === 0 ? <p className="chart-empty">Collecting live prices for this chart…</p> : null}
       </div>
     </>
   );

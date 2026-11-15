@@ -1,7 +1,7 @@
 'use client';
 import { inPos, privTotal } from '@/lib/calc';
-import { SIM } from '@/lib/copy';
-import { fmt, shortH, usdOrDash } from '@/lib/format';
+import { SIM, UI } from '@/lib/copy';
+import { fmt, fmtBal, shortH, usdBal } from '@/lib/format';
 import { usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 
@@ -13,7 +13,7 @@ export function AccountCard() {
       <aside className="card acct">
         <h2>Private account</h2>
         <p className="muted" style={{ fontSize: 13.5, marginTop: 8 }}>
-          Connect a wallet and sign once to open a private balance. It costs no gas.
+          {UI.acctConnect}
         </p>
         <button className="btn btn-dark btn-sm" style={{ marginTop: 12 }} onClick={() => s.openModal({ kind: 'connect' })}>
           Connect wallet
@@ -30,18 +30,19 @@ export function AccountCard() {
           {SIM.accountBadge}
         </span>
       </h2>
-      <div className="bigv num pv">{usdOrDash(privTotal(s.ledger))}</div>
+      <div className="bigv num pv">{usdBal(privTotal(s.ledger))}</div>
       <div className="r">
         <span>Free balance</span>
-        <b className="num pv">{fmt(bal(s.ledger.priv, 'USDG'))} USDG</b>
+        <b className="num pv">{fmtBal(bal(s.ledger.priv, 'USDG'))} USDG</b>
       </div>
       <div className="r">
         <span>In positions</span>
-        <b className="num pv">{usdOrDash(inPos(s.ledger))}</b>
+        <b className="num pv">{usdBal(inPos(s.ledger))}</b>
       </div>
       {SIM.chainView ? (
         <div className="lastc">
-          Last thing the public chain saw<b>{lc ? lc.what : 'Nothing yet'}</b>
+          {SIM.chainLastLabel}
+          <b>{lc ? lc.what : 'Nothing yet'}</b>
           {lc ? (
             <code>
               {shortH(lc.commit)}, block {fmt(lc.block, 0)}

@@ -2,13 +2,14 @@
 import { PROTOCOL, isLive } from '@velum/config';
 import { parseWad } from '@velum/math';
 import { amountHint, amountInputProps } from '@/lib/amount';
-import { perpsCalc, presetSize, spotCalc } from '@/lib/calc';
+import { MIN_LEVERAGE, perpsCalc, presetSize, spotCalc } from '@/lib/calc';
 import { openPerps, spotTrade } from '@/lib/demo';
-import { dp, floorTo, fmt, fmtFloor } from '@/lib/format';
+import { dp, floorTo, fmt, fmtBal, fmtFloor } from '@/lib/format';
 import { useLivePrice, useMarket, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
-import { COPY, METRICS } from '@/lib/copy';
+import { CLOSED, COPY, METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
+import { DemoTag } from '../ui';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
 
@@ -41,8 +42,10 @@ function PerpsTicket({ sym }: { sym: string }) {
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
-  } else if (!c.priced) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
-  else if (bad) b = { label: 'Enter a valid size', cls: 'btn-dark', disabled: true };
+  } else if (!c.priced) {
+    b = { label: m.closed ? CLOSED.label : 'Price unavailable', cls: 'btn-dark', disabled: true };
+    if (m.closed) hint = CLOSED.hint;
+  } else if (bad) b = { label: 'Enter a valid size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'no_size') b = { label: 'Enter a size', cls: 'btn-dark', disabled: true };
   else if (c.check === 'insufficient') {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
@@ -67,7 +70,7 @@ function PerpsTicket({ sym }: { sym: string }) {
       <div className="fl">
         <label htmlFor="t-size">Size</label>
         <span>
-          Available <b className="num pv">{connected ? fmt(have) + ' USDG' : '—'}</b>
+          Available <b className="num pv">{connected ? fmtBal(have) + ' USDG' : '—'}</b>
         </span>
       </div>
       <div className="inp">
@@ -88,16 +91,16 @@ function PerpsTicket({ sym }: { sym: string }) {
       <input
         type="range"
         id="t-lev"
-        min={1}
+        min={MIN_LEVERAGE}
         max={maxLev}
         step={PROTOCOL.leverageStep}
         value={s.lev}
         onChange={(e) => s.set({ lev: Number(e.target.value) })}
-        style={{ ['--p' as string]: ((s.lev - 1) / (maxLev - 1)) * 100 + '%' }}
+        style={{ ['--p' as string]: ((s.lev - MIN_LEVERAGE) / (maxLev - MIN_LEVERAGE)) * 100 + '%' }}
       />
       <div className="ticks num">
-        {Array.from({ length: maxLev }, (_, i) => (
-          <span key={i}>{i + 1}×</span>
+        {Array.from({ length: maxLev - MIN_LEVERAGE + 1 }, (_, i) => (
+          <span key={i}>{i + MIN_LEVERAGE}×</span>
         ))}
       </div>
       <div className="sumbox">
@@ -122,8 +125,10 @@ function PerpsTicket({ sym }: { sym: string }) {
           <b>{fmt(c.fee)} USDG</b>
         </div>
         <div>
-          <span>Funding</span>
-          <b>{METRICS.real ? `${fmt(c.funding, 4)}% / h` : METRICS.dash}</b>
+          <span>
+            Funding{METRICS.real ? <DemoTag flag={m.demo} /> : null}
+          </span>
+          <b>{METRICS.real && c.funding !== null ? `${fmt(c.funding, 4)}% / h` : METRICS.dash}</b>
         </div>
       </div>
       <SubmitButton b={b} />
@@ -132,7 +137,7 @@ function PerpsTicket({ sym }: { sym: string }) {
       </p>
       <p className="note">
         <I.lock />
-        <span>Size, side and entry stay encrypted. If no maker fills you within {PROTOCOL.makerFillWindowMinutes} minutes, your margin comes back.</span>
+        <span>{UI.perpsNote}</span>
       </p>
     </>
   );
@@ -140,6 +145,7 @@ function PerpsTicket({ sym }: { sym: string }) {
 
 function SpotTicket({ sym }: { sym: string }) {
   usePriceTick();
+  const m = useMarket(sym);
   const price = useLivePrice(sym);
   const s = useApp();
   const connected = !!s.account;
@@ -153,12 +159,14 @@ function SpotTicket({ sym }: { sym: string }) {
   else if (!live) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = COPY.notOnNetwork(sym);
-  } else if (!c.priced) b = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
-  else if (bad) b = { label: 'Enter a valid amount', cls: 'btn-dark', disabled: true };
+  } else if (!c.priced) {
+    b = { label: m.closed ? CLOSED.label : 'Price unavailable', cls: 'btn-dark', disabled: true };
+    if (m.closed) hint = CLOSED.hint;
+  } else if (bad) b = { label: 'Enter a valid amount', cls: 'btn-dark', disabled: true };
   else if (c.amt <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.amt > c.have) {
     b = { label: `Not enough private ${c.tin}`, cls: 'btn-dark', disabled: true };
-    hint = `You have ${fmt(c.have, dp(c.tin))} ${c.tin} available.`;
+    hint = `You have ${fmtBal(c.have, dp(c.tin))} ${c.tin} available.`;
   } else b = { label: `${s.spotSide === 'buy' ? 'Buy' : 'Sell'} ${sym} privately`, cls: s.spotSide === 'buy' ? 'btn-up' : 'btn-down', disabled: false, onClick: spotTrade };
 
   const setSide = (g: 'buy' | 'sell') => {
@@ -179,7 +187,7 @@ function SpotTicket({ sym }: { sym: string }) {
       <div className="fl">
         <label htmlFor="t-spot">You pay</label>
         <span>
-          Available <b className="num pv">{connected ? `${fmt(c.have, dp(c.tin))} ${c.tin}` : '—'}</b>
+          Available <b className="num pv">{connected ? `${fmtBal(c.have, dp(c.tin))} ${c.tin}` : '—'}</b>
         </span>
       </div>
       <div className="inp">
@@ -216,7 +224,7 @@ function SpotTicket({ sym }: { sym: string }) {
           <b>{c.price === null ? '—' : fmt(c.price)}</b>
         </div>
         <div>
-          <span>Pool fee (0.30%)</span>
+          <span>Pool fee ({P.poolFee})</span>
           <b>{c.priced || s.spotSide === 'buy' ? `${fmt(c.feeAmt)} USDG` : '—'}</b>
         </div>
         <div>
@@ -234,7 +242,7 @@ function SpotTicket({ sym }: { sym: string }) {
       </p>
       <p className="note">
         <I.lock />
-        <span>Pool reserves and your trade stay private. You own the token, so nothing can be liquidated.</span>
+        <span>{UI.spotNote}</span>
       </p>
     </>
   );

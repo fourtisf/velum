@@ -3,13 +3,13 @@ import { POOLS, isLive } from '@velum/config';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { lpRemove } from '@/lib/demo';
-import { compact, fmt, usd } from '@/lib/format';
+import { compact, fmt, usdBal } from '@/lib/format';
 import { bal, useApp } from '@/lib/store';
-import { METRICS } from '@/lib/copy';
+import { METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
-import { Av, Px } from '../ui';
+import { Av, DemoTag, Px } from '../ui';
 
-function PoolCard({ s, size, apr }: { s: string; size: number; apr: number }) {
+function PoolCard({ s, size, apr, demo }: { s: string; size: number; apr: number; demo?: boolean }) {
   const app = useApp();
   const mine = bal(app.ledger.lp, s);
   const live = isLive(s);
@@ -22,20 +22,24 @@ function PoolCard({ s, size, apr }: { s: string; size: number; apr: number }) {
           <Av sym="USDG" size="sm" />
         </span>
         <b>{s} / USDG</b>
-        <span className="badge">0.30% fee</span>
+        <span className="badge">{P.poolFee} fee</span>
       </div>
       <div className="kv">
         <div>
-          <small>Pool size</small>
+          <small>
+            Pool size{METRICS.real ? <DemoTag flag={demo} /> : null}
+          </small>
           <b>{METRICS.real ? `~${compact(size)}` : METRICS.dash}</b>
         </div>
         <div>
-          <small>Est. APR</small>
+          <small>
+            Est. APR{METRICS.real ? <DemoTag flag={demo} /> : null}
+          </small>
           <b className={METRICS.real ? 'up' : ''}>{METRICS.real ? `${fmt(apr, 1)}%` : METRICS.dash}</b>
         </div>
         <div>
           <small>Your liquidity</small>
-          <b className={mine ? 'pv' : ''}>{mine ? usd(mine) : 'None'}</b>
+          <b className={mine ? 'pv' : ''}>{mine ? usdBal(mine) : 'None'}</b>
         </div>
         <div>
           <small>Price</small>
@@ -66,14 +70,14 @@ export function LiquidityView() {
   const pools = useQuery({ queryKey: ['pools'], queryFn: ({ signal }) => api.pools(signal), refetchInterval: 60_000, retry: 1 });
   const list = POOLS.map((p) => {
     const d = pools.data?.find((x) => x.symbol === p.symbol);
-    return { s: p.symbol, size: Number(d?.sizeRounded ?? p.size), apr: Number(d?.aprEst ?? p.aprEst) };
+    return { s: p.symbol, size: Number(d?.sizeRounded ?? p.size), apr: Number(d?.aprEst ?? p.aprEst), demo: d?.demo };
   });
   return (
     <>
       <div className="vhead">
         <div>
           <h1 className="vtitle">Earn</h1>
-          <p className="vsub">Add to a private pool and earn 0.30% of every swap through it. Public pool sizes are rounded and published hourly.</p>
+          <p className="vsub">{UI.earnSub}</p>
         </div>
       </div>
       <div className="pools">
@@ -83,7 +87,7 @@ export function LiquidityView() {
       </div>
       <div className="boxnote" style={{ maxWidth: 760 }}>
         <I.info />
-        <span>Hourly totals only appear when an hour has at least 10 fills from at least 2 makers, rounded to two significant figures, so no single trade stands out.</span>
+        <span>{UI.earnNote}</span>
       </div>
     </>
   );

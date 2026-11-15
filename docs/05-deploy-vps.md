@@ -526,6 +526,48 @@ find /srv/velum/releases -mindepth 1 -maxdepth 1 -user velum -exec rm -rf --one-
 If the database itself may have been changed (the old role owned it), restore a dump taken before the
 compromise with `backup-db.sh --restore` (it runs as the role, never as postgres).
 
+## Moving to Node 22 (shared server)
+
+Velum targets Node 22 LTS (`.nvmrc`) and still builds and runs on Node 20.11+ (`engines`). On a fresh
+server `server-setup.sh` installs Node 22 from the NodeSource apt repository; it never upgrades a
+Node that is already installed, because other sites on the server may run on it. Upgrade it yourself,
+as root, only once you know what else depends on it.
+
+1. Find everything else that runs on the system Node:
+   ```bash
+   command -v node; node -v; apt-cache policy nodejs       # which Node, and from which repository
+   ps -eo user,pid,comm,args | grep -w '[n]ode'            # every running Node process and its user
+   ps -eo user,pid,args | grep '[P]M2 v'                   # every PM2 daemon (one per user)
+   sudo -u <user> -H pm2 ls                                # the apps of each PM2 user found above
+   systemctl list-units --type=service --all | grep -iE 'node|pm2'
+   grep -rlE '(^|/)(node|npm|npx|pm2)( |$)' /etc/systemd/system /lib/systemd/system /etc/cron* 2>/dev/null
+   ```
+   Anything other than Velum's own processes (`velum-api` and `velum-workers` under `velum`,
+   `velum-web` under `velum-web`, their `pm2-velum*` units) belongs to someone else: agree the upgrade
+   with its owner first, or stay on Node 20, which Velum supports. If `apt-cache policy nodejs` shows
+   Ubuntu's own package or Node came from nvm or a tarball, upgrade it that way instead; do not mix
+   sources.
+2. Upgrade through the NodeSource apt repository (its key in `/etc/apt/keyrings`, no `curl | bash`):
+   ```bash
+   install -d -m 755 /etc/apt/keyrings
+   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /etc/apt/keyrings/nodesource.asc
+   echo 'deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_22.x nodistro main' > /etc/apt/sources.list.d/nodesource.list
+   apt-get update && apt-get install -y nodejs
+   node -v                                                  # v22.x
+   ```
+   Remove any older NodeSource entry that still points at `node_20.x` (for example one left by the old
+   `setup_20.x` script under another file name in `/etc/apt/sources.list.d/`), so apt sees one source.
+   The global `pm2` (pinned to 6.0.14 by `server-setup.sh`) stays installed; do not upgrade it here.
+3. Run a normal release, which installs and builds everything again on the new Node and reloads the
+   apps:
+   ```bash
+   sudo bash /srv/velum/deploy/deploy.sh
+   ```
+   The PM2 daemons themselves keep running on the old Node until their next restart. To move them now
+   (a few seconds of downtime): `systemctl restart pm2-velum pm2-velum-web`, then check
+   `bash /srv/velum/deploy/as-user.sh velum pm2 status` and the same for `velum-web`. Other users' PM2
+   daemons move only when their owners restart them.
+
 ## Manual setup (fresh, dedicated server)
 
 The script above does all of this; the steps are here for reference. Run them as root.

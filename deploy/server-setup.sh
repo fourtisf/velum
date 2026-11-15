@@ -94,13 +94,24 @@ if [ "${#missing[@]}" -gt 0 ]; then
 else
   echo "  all present"
 fi
+# Node: installed only when missing (a fresh server), as Node 22 LTS from the NodeSource apt repository
+# with its signing key in /etc/apt/keyrings (no `curl | bash`, SC-06). An installed Node is never
+# upgraded: other sites may use it (docs/05-deploy-vps.md, "Moving to Node 22 (shared server)").
+NODE_MAJOR=22
+PM2_VERSION=6.0.14
 if ! command -v node >/dev/null; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  install -d -m 755 /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key -o /etc/apt/keyrings/nodesource.asc.velum-new
+  grep -q -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' /etc/apt/keyrings/nodesource.asc.velum-new || { rm -f /etc/apt/keyrings/nodesource.asc.velum-new; die "The NodeSource signing key download is not a public key; nothing was installed."; }
+  chmod 644 /etc/apt/keyrings/nodesource.asc.velum-new
+  mv -f /etc/apt/keyrings/nodesource.asc.velum-new /etc/apt/keyrings/nodesource.asc
+  printf 'deb [signed-by=/etc/apt/keyrings/nodesource.asc] https://deb.nodesource.com/node_%s.x nodistro main\n' "${NODE_MAJOR}" >/etc/apt/sources.list.d/nodesource.list
+  apt-get update -y
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade nodejs
-elif [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
-  die "Node $(node -v) is installed; Velum needs 20+. Upgrading it could affect other apps here, so do that yourself first."
+elif ! node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 20 || (a === 20 && b >= 11) ? 0 : 1)'; then
+  die "Node $(node -v) is installed; Velum needs 20.11+ (22 recommended). Upgrading it could affect other apps here, so do that yourself first (docs/05-deploy-vps.md, \"Moving to Node 22 (shared server)\")."
 fi
-command -v pm2 >/dev/null || npm i -g pm2
+command -v pm2 >/dev/null || npm i -g "pm2@${PM2_VERSION}"
 
 echo "› Users (${APP_USER} builds and runs api + workers; ${WEB_USER} runs only the web)"
 # Moving to new users (audit R3-05): the old ones must be stopped first, or their apps would keep the
@@ -305,6 +316,9 @@ API_MODE=socket
 NGINX_BACKUPS="${BACKUPS}/nginx"
 STAMP="$(date -u +%Y%m%d%H%M%S)"
 install -d -m 755 "${NGINX_DIR}/snippets" "${NGINX_DIR}/sites-available" "${NGINX_DIR}/sites-enabled"
+# Parent of the /api/v1/markets micro-cache (velum.conf proxy_cache_path); Nginx creates velum/ in it
+# for its worker user, but not this directory (Ubuntu's package has none), and nginx -t fails without it.
+install -d -m 755 /var/cache/nginx
 install -d -o root -g root -m 700 "${NGINX_BACKUPS}"
 for f in "${SITE}" "${SITE_LINK}" "${HEADERS_SNIPPET}" "${PROXY_SNIPPET}" "${API_SNIPPET}"; do
   if [ -L "${f}" ] && [ "${f}" != "${SITE_LINK}" ]; then die "${f} is a symbolic link; Velum manages it as a regular file. Replace it by hand, then re-run."; fi

@@ -32,6 +32,12 @@ export const PARAMS: ProtocolParams = {
 };
 export const DEMO_PARAMS: DemoParams = { makerOpenSpreadBps: DEMO.makerOpenSpreadBps, priceImpactBps: DEMO.priceImpactBps };
 
+/**
+ * The leverage slider's low end: 1× is a position without leverage (CLAUDE.md §5, "slider 1–5"). PROTOCOL
+ * has no minimum (any lower value would be under-collateralised by definition), so it lives here, once.
+ */
+export const MIN_LEVERAGE = 1;
+
 export interface TicketInputs {
   sel: string;
   side: 'long' | 'short';

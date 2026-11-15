@@ -1,15 +1,13 @@
+import { POOLS } from '@velum/config';
 import Link from 'next/link';
-import { HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
-import { Av } from '@/components/ui';
+import { FrameCap, HeroFrame, LandingMarkets, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
+import { Av, DemoTag } from '@/components/ui';
 import { I, Mark } from '@/components/icons';
 import { Nav } from '@/components/Nav';
-import { COPY, LANDING, METRICS } from '@/lib/copy';
+import { COPY, LANDING, METRICS, P } from '@/lib/copy';
 
-const STEPS_MINI: Array<[string, string]> = [
-  ['Lock margin in a private note', ''],
-  ['Generate proof in your browser', '1.8s'],
-  ['Relayer submits and pays gas', ''],
-];
+/** The TSLA pool's demo APR (config seed), shown only where protocol metrics are shown at all. */
+const TSLA_APR = POOLS.find((p) => p.symbol === 'TSLA')?.aprEst ?? null;
 
 export default function Landing() {
   return (
@@ -37,7 +35,7 @@ export default function Landing() {
             </div>
           </div>
           <HeroFrame />
-          <p className="frame-cap">{COPY.frameCap}</p>
+          <FrameCap />
         </section>
 
         <div className="wrap">
@@ -47,8 +45,8 @@ export default function Landing() {
               <small>{LANDING.statMarkets}</small>
             </div>
             <div>
-              <b className="num">5×</b>
-              <small>Max leverage, long or short</small>
+              <b className="num">{P.maxLev}</b>
+              <small>{LANDING.statLev}</small>
             </div>
             <div>
               <b className="num">0</b>
@@ -103,7 +101,7 @@ export default function Landing() {
                 </div>
               </RevealCard>
               <div className="bc">
-                <h3>Long or short, up to 5×</h3>
+                <h3>{LANDING.longShortTitle}</h3>
                 <p>{LANDING.longShortText}</p>
                 <div className="vis">
                   <div className="mini">
@@ -136,7 +134,7 @@ export default function Landing() {
                 <p>{LANDING.proofsText}</p>
                 <div className="vis">
                   <div className="steps-mini">
-                    {STEPS_MINI.map(([t, s]) => (
+                    {LANDING.stepsMini.map(([t, s]) => (
                       <div key={t}>
                         <span className="ck">
                           <I.check />
@@ -158,7 +156,7 @@ export default function Landing() {
                       <div className="bignote">admin keys</div>
                     </div>
                     <div>
-                      <div className="bignum">7d</div>
+                      <div className="bignum">{LANDING.exitBig}</div>
                       <div className="bignote">to exit on your own</div>
                     </div>
                   </div>
@@ -171,7 +169,7 @@ export default function Landing() {
                   <div className="mini">
                     <div className="mini-h">
                       <span>TSLA / USDG pool</span>
-                      <span className="badge up">{METRICS.real ? '14.2% est. APR' : '0.30% fee'}</span>
+                      <span className="badge up">{LANDING.poolBadge(METRICS.real ? TSLA_APR : null)}</span>
                     </div>
                     <PoolSpark />
                   </div>
@@ -289,7 +287,10 @@ export default function Landing() {
                     <th className="r">Price</th>
                     <th className="r">24h</th>
                     <th className="hide-sm">Last hour</th>
-                    <th className="r hide-sm">Open interest</th>
+                    <th className="r hide-sm">
+                      Open interest
+                      {METRICS.real ? <DemoTag /> : null}
+                    </th>
                     <th className="r">
                       <span className="sr">Trade</span>
                     </th>

@@ -8,11 +8,14 @@
  * Money logic never reads `price` directly: it asks livePrice(), which returns null when a market
  * has no live price (API source null) or, on mainnet, when the price or the feed is stale
  * (audit round 2, M4). The config seed is never a tradable price where the API has none.
+ * What counts as a live price from the API is readApiMarket (audit web F2); one poll runs at a time
+ * and only the newest answer is applied (F6).
  */
-import { IS_MAINNET, MARKETS, type MarketStatus } from '@velum/config';
+import { IS_MAINNET, MARKETS, PROTOCOL, type MarketStatus } from '@velum/config';
 import { fromNumber, parseWad, toNumber, type Wad } from '@velum/math';
 import { create } from 'zustand';
 import { api, type MarketDTO } from './api';
+import type { PriceOrigin } from './copy';
 import { ENV } from './env';
 
 export interface LiveMarket {
@@ -26,9 +29,10 @@ export interface LiveMarket {
   open: Wad;
   /** 24h change in percent (display only). */
   chg: number;
-  /** Funding per hour in percent, e.g. 0.0042. */
-  funding: number;
-  oi: number;
+  /** Funding per hour in percent, e.g. 0.0042; null when the API has none (mainnet). */
+  funding: number | null;
+  /** Open interest in USDG; null when the API has none (mainnet). */
+  oi: number | null;
   maxLev: number;
   /** Last-hour sparkline, oldest first (display only). */
   hist: number[];
@@ -36,8 +40,12 @@ export interface LiveMarket {
   stale: boolean;
   /** Price source reported by the API: 'demo' (simulated), 'robinhood' or 'chainlink'. */
   priceSource: string;
-  /** No live price: the API reports none (source null) or, on mainnet, nothing has arrived yet. Displayed as a dash. */
+  /** No live price: the API reports none (source null, no usable price, or on mainnet a source that is not real) or nothing has arrived yet. Displayed as a dash. */
   noData: boolean;
+  /** The API flags this market's protocol metrics (OI, funding) as demo data. */
+  demo: boolean;
+  /** The stock market is closed (API staleReason marketClosed): the last price is shown, marked closed, never tradable on mainnet. */
+  closed: boolean;
 }
 
 export type FeedSource = 'seed' | 'api' | 'local';
@@ -89,8 +97,55 @@ export function priceState(m: LiveMarket | undefined, feed: FeedHealth & { feedS
   return tradablePrice(m, feed, now, mainnet) === null ? 'stale' : 'live';
 }
 
-const w = (s: string | undefined, fallback: Wad): Wad => (s ? parseWad(s) ?? fallback : fallback);
+/** A positive decimal price from the API, or null for anything else (empty, malformed, zero, negative). */
+export const apiPrice = (s: unknown): Wad | null => {
+  if (typeof s !== 'string' || !s.trim()) return null;
+  const v = parseWad(s.trim());
+  return v !== null && v > 0n ? v : null;
+};
 const pctChange = (price: Wad, open: Wad) => (open > 0n ? (toNumber(price - open) / toNumber(open)) * 100 : 0);
+
+/** The price sources mainnet accepts as real data (audit web F2); anything else there is no data. */
+export const REAL_SOURCES: readonly string[] = ['robinhood', 'chainlink'];
+
+/** `updatedAt` from the API (ms since epoch, or an ISO string), or null when missing or unreadable. */
+export function apiTime(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? v : null;
+  if (typeof v === 'string' && v.trim()) {
+    const n = /^\d+$/.test(v.trim()) ? Number(v.trim()) : Date.parse(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+}
+
+/** A protocol metric from the API (funding, open interest) as a number, or null when absent or unreadable. */
+export const apiMetric = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * How one API market reads (pure, so tests can check both networks): `noData` when there is no
+ * usable price (source null, an unparsable price, or on mainnet any source but robinhood/chainlink),
+ * `stale` when the API says so or leaves it out, or, on mainnet, when `updatedAt` is missing or older
+ * than PRICE_MAX_AGE_MS at the server's time (`serverNow`, from the response's Date header).
+ * `closed` when the API reports the stock market closed (staleReason marketClosed, or marketOpen
+ * false): the price is the last quote, hours old on weekends, so it is always stale (never live or
+ * tradable) but shown with a closed note, not as an error.
+ */
+export function readApiMarket(d: MarketDTO, serverNow: number, mainnet: boolean): { price: Wad | null; noData: boolean; stale: boolean; closed: boolean } {
+  const price = apiPrice(d.price);
+  const sourceOk = mainnet ? typeof d.source === 'string' && REAL_SOURCES.includes(d.source) : d.source !== null;
+  const noData = !sourceOk || price === null;
+  const closed = d.staleReason === 'marketClosed' || d.marketOpen === false;
+  let stale = d.stale !== false || closed;
+  if (mainnet && !stale) {
+    const t = apiTime(d.updatedAt);
+    stale = t === null || serverNow - t > PRICE_MAX_AGE_MS;
+  }
+  return { price, noData, stale, closed };
+}
 
 function seedMarkets(): Record<string, LiveMarket> {
   const out: Record<string, LiveMarket> = {};
@@ -109,12 +164,14 @@ function seedMarkets(): Record<string, LiveMarket> {
       chg: 0,
       funding: Number(m.fundingPerHour),
       oi: Number(m.openInterest),
-      maxLev: 5,
+      maxLev: PROTOCOL.maxLeverage,
       hist: Array.from({ length: 60 }, () => n),
       dir: 1,
       stale: true,
       priceSource: 'demo',
       noData: IS_MAINNET,
+      demo: true,
+      closed: false,
     };
   }
   return out;
@@ -180,32 +237,43 @@ export function tokPx(t: string, now = Date.now()): Wad | null {
   return livePrice(t, now);
 }
 
-function applyApi(list: MarketDTO[], now: number) {
+function applyApi(list: MarketDTO[], now: number, serverNow: number) {
   useMarkets.setState((s) => {
     const bySym = { ...s.bySym };
     for (const d of list) {
       const prev = bySym[d.symbol];
       if (!prev) continue;
-      const noData = d.source === null || (IS_MAINNET && !d.source);
-      const meta = { name: d.name, status: d.status, token: d.token, funding: Number(d.fundingPerHour), oi: Number(d.openInterest), maxLev: d.maxLeverage, stale: !!d.stale };
-      if (noData) {
-        // With no live data the API sends the config seed price: never store it (or anything derived
-        // from it) as this market's price. The last real values stay, flagged; the UI shows a dash.
+      const r = readApiMarket(d, serverNow, IS_MAINNET);
+      const meta = {
+        name: d.name,
+        status: d.status,
+        token: d.token,
+        funding: apiMetric(d.fundingPerHour),
+        oi: apiMetric(d.openInterest),
+        maxLev: Math.min(Number(d.maxLeverage) || PROTOCOL.maxLeverage, PROTOCOL.maxLeverage),
+        stale: r.stale,
+        demo: d.demo === true,
+        closed: r.closed,
+      };
+      if (r.noData || r.price === null) {
+        // No usable price: never store what the API sent (it may be the config seed or garbage), nor
+        // fall back to the previous or seed price. The last real values stay, flagged; the UI shows a dash.
         bySym[d.symbol] = { ...prev, ...meta, noData: true };
         continue;
       }
-      const price = w(d.price, prev.price);
-      const open = w(d.open24h, prev.open);
-      const spark = d.spark?.length ? d.spark.map(Number) : prev.hist;
+      const price = r.price;
+      const open = apiPrice(d.open24h) ?? price;
+      const chg = Number(d.change24h);
+      const spark = Array.isArray(d.spark) && d.spark.length ? d.spark.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
       bySym[d.symbol] = {
         ...prev,
         ...meta,
         price,
         priceNum: toNumber(price),
-        mark: w(d.mark, price),
+        mark: apiPrice(d.mark) ?? price,
         open,
-        chg: d.change24h !== undefined ? Number(d.change24h) : pctChange(price, open),
-        hist: spark,
+        chg: Number.isFinite(chg) ? chg : pctChange(price, open),
+        hist: spark.length > 1 ? spark : prev.hist,
         dir: price === prev.price ? prev.dir : price > prev.price ? 1 : -1,
         priceSource: d.source ?? prev.priceSource,
         noData: false,
@@ -213,6 +281,25 @@ function applyApi(list: MarketDTO[], now: number) {
     }
     return { bySym, source: 'api', tick: s.tick + 1, lastOkAt: now, failures: 0, feedStale: false };
   });
+}
+
+/**
+ * Where the prices on screen come from (for copy that names the source, audit web F2): a real
+ * source only when some market has a usable price from it.
+ */
+export function priceOrigin(s: Pick<MarketsState, 'bySym' | 'source'>, mainnet = IS_MAINNET): PriceOrigin {
+  if (s.source === 'seed') return mainnet ? 'loading' : 'demo';
+  if (s.source === 'local') return 'demo';
+  const live = Object.values(s.bySym).filter((m) => !m.noData);
+  if (live.some((m) => m.priceSource === 'robinhood')) return 'robinhood';
+  if (live.some((m) => m.priceSource === 'chainlink')) return 'chainlink';
+  return live.length ? 'demo' : 'none';
+}
+
+export function usePriceOrigin(): PriceOrigin {
+  const bySym = useMarkets((s) => s.bySym);
+  const source = useMarkets((s) => s.source);
+  return priceOrigin({ bySym, source });
 }
 
 /* ---------- local demo simulator (prototype tick) ---------- */
@@ -296,34 +383,50 @@ export function startMarketFeed(): () => void {
     if (stale !== s.feedStale) useMarkets.setState({ feedStale: stale });
   };
 
+  // One poll at a time (audit web F6): a poll that is still running when the tab becomes visible
+  // again is not doubled, and only the newest request's answer is applied.
+  let inFlight = false;
+  let seq = 0;
+  const schedule = (ms: number) => {
+    if (timer) clearTimeout(timer);
+    timer = stopped ? undefined : setTimeout(() => void poll(), ms);
+  };
   const poll = async () => {
-    if (stopped) return;
+    if (stopped || inFlight) return;
+    inFlight = true;
+    const my = ++seq;
+    if (timer) clearTimeout(timer);
+    timer = undefined;
     ctrl = new AbortController();
     const t = setTimeout(() => ctrl?.abort(), 4000);
     try {
-      const list = await api.markets(ctrl.signal);
+      const { list, serverNow } = await api.marketsAt(ctrl.signal);
       if (!Array.isArray(list)) throw new Error('Bad markets payload');
-      failures = 0;
-      stopLocal();
-      applyApi(list, Date.now());
+      if (my === seq && !stopped) {
+        failures = 0;
+        stopLocal();
+        const now = Date.now();
+        applyApi(list, now, serverNow ?? now);
+      }
     } catch {
-      failures++;
-      useMarkets.setState({ failures });
-      checkHealth();
-      if (failures >= 2) goLocal();
+      if (my === seq && !stopped) {
+        failures++;
+        useMarkets.setState({ failures });
+        checkHealth();
+        if (failures >= 2) goLocal();
+      }
     } finally {
       clearTimeout(t);
+      inFlight = false;
     }
-    if (!stopped) timer = setTimeout(poll, localTimer ? 10_000 : 2000);
+    schedule(localTimer ? 10_000 : 2000);
   };
   // Catches a stalled poll loop too (e.g. timers throttled in a background tab).
   const health = setInterval(checkHealth, 5000);
 
   const onVisible = () => {
-    if (document.visibilityState === 'visible' && !stopped) {
-      if (timer) clearTimeout(timer);
-      void poll();
-    }
+    // Poll now, unless a poll is already running (it schedules the next one itself).
+    if (document.visibilityState === 'visible' && !stopped && !inFlight) void poll();
   };
   document.addEventListener('visibilitychange', onVisible);
   void poll();

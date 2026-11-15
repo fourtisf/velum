@@ -2,10 +2,10 @@
 import { MARKETS, isLive } from '@velum/config';
 import { amountHint, amountInputProps } from '@/lib/amount';
 import { swapCalc } from '@/lib/calc';
-import { SIM } from '@/lib/copy';
+import { CLOSED, SIM, UI } from '@/lib/copy';
 import { doSwap } from '@/lib/demo';
-import { dp, floorTo, fmt, sig4 } from '@/lib/format';
-import { usePriceTick } from '@/lib/markets';
+import { dp, floorTo, fmt, fmtBal, sig4 } from '@/lib/format';
+import { mk, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 import { I } from '../icons';
 
@@ -42,11 +42,12 @@ export function SwapView() {
   else if (c.a <= 0n) btn = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
   else if (c.a > c.have) {
     btn = { label: `Not enough private ${f}`, cls: 'btn-dark', disabled: true };
-    hint = `You have ${fmt(c.have, dp(f))} ${f} available.`;
+    hint = `You have ${fmtBal(c.have, dp(f))} ${f} available.`;
   } else if (!c.priced) {
     // No live price for one side: no quote and no swap (audit round 2, M4).
-    btn = { label: 'Price unavailable', cls: 'btn-dark', disabled: true };
-    hint = 'One of these tokens has no live price right now.';
+    const closed = [f, t].some((x) => x !== 'USDG' && mk(x).sym === x && mk(x).closed);
+    btn = { label: closed ? CLOSED.label : 'Price unavailable', cls: 'btn-dark', disabled: true };
+    hint = closed ? CLOSED.hint : 'One of these tokens has no live price right now.';
   } else btn = { label: 'Swap privately', cls: 'btn-white', disabled: false, onClick: doSwap };
   const quoted = !same && c.priced;
   const [visK, visV] = SIM.visibleRow('The pool changed');
@@ -56,7 +57,7 @@ export function SwapView() {
       <div className="vhead">
         <div>
           <h1 className="vtitle">Swap privately</h1>
-          <p className="vsub">Trade USDG and stock tokens through private pools. Stock to stock routes through USDG in one action.</p>
+          <p className="vsub">{UI.swapSub}</p>
         </div>
       </div>
       <div className="card swapcard">
@@ -64,7 +65,7 @@ export function SwapView() {
           <div className="lb">
             <span>You pay</span>
             <span>
-              Available <b className="num pv">{connected ? `${fmt(c.have, dp(f))} ${f}` : '—'}</b>
+              Available <b className="num pv">{connected ? `${fmtBal(c.have, dp(f))} ${f}` : '—'}</b>
             </span>
           </div>
           <div className="srow">
@@ -130,7 +131,7 @@ export function SwapView() {
         </p>
         <p className="note">
           <I.lock />
-          <span>Pool reserves are private, so nobody can work out your trade from public data.</span>
+          <span>{UI.swapNote}</span>
         </p>
       </div>
     </div>

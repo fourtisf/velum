@@ -3,9 +3,10 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { fromNumber, pnl } from '@velum/math';
-import { METRICS } from '@/lib/copy';
+import { COPY, METRICS } from '@/lib/copy';
 import { compact, fmt, sgnUsd } from '@/lib/format';
-import { useLivePrice, useMarkets } from '@/lib/markets';
+import { useLivePrice, useMarkets, usePriceOrigin } from '@/lib/markets';
+import { useApp } from '@/lib/store';
 import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
 import { Terminal } from '../trade/Terminal';
 
@@ -42,6 +43,16 @@ export function HeroFrame() {
       </div>
     </div>
   );
+}
+
+/**
+ * The line under the hero terminal: names the price source only when it is the real one (F2), always
+ * carries the test-token notice on testnet, and says what is simulated once a wallet is connected (F3, F11).
+ */
+export function FrameCap() {
+  const origin = usePriceOrigin();
+  const connected = useApp((s) => s.account !== null);
+  return <p className="frame-cap">{COPY.frameCap(origin, connected)}</p>;
 }
 
 export function RevealCard({ children }: { children: ReactNode }) {
@@ -106,7 +117,7 @@ export function LandingMarkets() {
             <td className="hide-sm">
               <Spark sym={s} />
             </td>
-            <td className="r num hide-sm">{METRICS.real ? compact(m.oi) : METRICS.dash}</td>
+            <td className="r num hide-sm">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.dash}</td>
             <td className="r">
               {m.status === 'live' ? (
                 <Link className="btn btn-dark btn-sm" href={`/app/trade/${s}?mode=perps`}>

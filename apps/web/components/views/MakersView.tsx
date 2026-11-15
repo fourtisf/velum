@@ -3,7 +3,8 @@ import { MARKETS, isLive } from '@velum/config';
 import { useState } from 'react';
 import { amountHint, amountInputProps, amountOrZero, bpsOrNull } from '@/lib/amount';
 import { earnPer1000, postOffer, withdrawOffer } from '@/lib/demo';
-import { fmt, usd } from '@/lib/format';
+import { fmt, fmtBal, usd, usdBal } from '@/lib/format';
+import { UI } from '@/lib/copy';
 import { OFFER_EXPIRIES as EXPIRIES, bal, useApp } from '@/lib/store';
 import { I } from '../icons';
 import { Av, Pv } from '../ui';
@@ -50,12 +51,12 @@ function Offers() {
                 </div>
               </td>
               <td className="r num">
-                <Pv>{fmt(o.back, 0) + ' USDG'}</Pv>
+                <Pv>{fmtBal(o.back, 0) + ' USDG'}</Pv>
               </td>
               <td className="r num">{o.fills}</td>
               <td className="r num">
                 <Pv>
-                  <span className="up">{usd(o.earned)}</span>
+                  <span className="up">{usdBal(o.earned)}</span>
                 </Pv>
               </td>
               <td className="r num hide-sm">
@@ -96,7 +97,7 @@ export function MakersView() {
   else if (v.back <= 0n) b = { label: 'Enter backing', cls: 'btn-dark', disabled: true };
   else if (v.back > have) {
     b = { label: 'Not enough private USDG', cls: 'btn-dark', disabled: true };
-    hint = `You have ${fmt(have)} USDG available.`;
+    hint = `You have ${fmtBal(have)} USDG available.`;
   } else if (openBps === null || closeBps === null) {
     b = { label: 'Check your spreads', cls: 'btn-dark', disabled: true };
     hint = 'Spreads must be numbers from 0 to 1,000 bps.';
@@ -130,7 +131,7 @@ export function MakersView() {
           <div className="fl">
             <label htmlFor="of-back">Backing</label>
             <span>
-              Available <b className="num pv">{s.account ? fmt(have) + ' USDG' : '—'}</b>
+              Available <b className="num pv">{s.account ? fmtBal(have) + ' USDG' : '—'}</b>
             </span>
           </div>
           <div className="inp sm">
@@ -211,7 +212,7 @@ export function MakersView() {
             </div>
           </section>
           <section className="card">
-            <h2 className="ph">What others can see about you</h2>
+            <h2 className="ph">{UI.makersSeeTitle}</h2>
             <div className="tbl-wrap" style={{ marginTop: 8 }}>
               <table className="tbl">
                 <tbody>

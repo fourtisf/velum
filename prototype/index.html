@@ -650,7 +650,10 @@ const I = {
   offer: ic('<path d="M4 7h16M4 12h10M4 17h7"/>'),
   info: ic('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
 };
-const MARK = `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M2.4 12.6h19.2A9.6 9.6 0 0 1 2.4 12.6Z" fill="currentColor"/></svg>`;
+// Velum mark "Curtain" (brand update 2026-11-15): a V whose lower half dissolves into scan lines, in the
+// brand gradient. Rendered more than once per page, so every copy gets its own gradient/pattern/mask ids.
+let markN = 0;
+const MARK = () => { const u = 'vm' + (++markN); return `<svg viewBox="6 6 52 52" aria-hidden="true" focusable="false"><defs><linearGradient id="${u}v" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C2B8FF"/><stop offset=".55" stop-color="#8F96FF"/><stop offset="1" stop-color="#6E79F3"/></linearGradient><pattern id="${u}s" width="64" height="4" patternUnits="userSpaceOnUse"><rect width="64" height="2" fill="#fff"/></pattern><mask id="${u}m" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="35" fill="#fff"/><rect y="35" width="64" height="29" fill="url(#${u}s)"/></mask></defs><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#${u}v)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#${u}m)"/></svg>`; };
 
 /* ---------------- data ---------------- */
 const MARKETS = [
@@ -754,7 +757,7 @@ function duoRows(priv) {
 }
 function initLanding() {
   $('#pill-chev').innerHTML = I.chev;
-  $('#foot-brand').innerHTML = MARK + '<span>Velum</span>';
+  $('#foot-brand').innerHTML = MARK() + '<span>Velum</span>';
   $('#steps-mini').innerHTML = [['Lock margin in a private note', ''], ['Generate proof in your browser', '1.8s'], ['Relayer submits and pays gas', '']].map(([t, s]) => `<div><span class="ck">${I.check}</span>${t}${s ? `<small>${s}</small>` : ''}</div>`).join('');
   $('#pub-rows').innerHTML = duoRows(false);
   $('#priv-rows').innerHTML = duoRows(true);
@@ -916,7 +919,7 @@ function renderNav() {
     ? `<button class="walletbtn" data-act="account"><i></i><span class="hide-sm">${shortH(S.addr)}</span><span class="b num pv" data-total>${usd(privTotal())}</span></button>`
     : app ? `<button class="btn btn-white" data-act="connect">Connect wallet</button>` : `<button class="btn btn-ghost hide-sm" data-act="connect">Connect wallet</button>`;
   const launch = app ? '' : `<a class="btn btn-white" href="#/app/trade">Launch app</a>`;
-  $('#nav-in').innerHTML = `<a href="#/" class="brand" aria-label="Velum home">${MARK}<span>Velum</span></a>${links}<div class="nright">${app || S.connected ? eye : ''}${wal}${launch}</div>`;
+  $('#nav-in').innerHTML = `<a href="#/" class="brand" aria-label="Velum home">${MARK()}<span>Velum</span></a>${links}<div class="nright">${app || S.connected ? eye : ''}${wal}${launch}</div>`;
 }
 function applySearch() {
   const q = S.q.toLowerCase().trim();

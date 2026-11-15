@@ -203,21 +203,28 @@ official_rpc() {
 #    https://rpc.wallet.coinbase.com. keys.coinbase.com opens as a popup window, not a frame, and the
 #    web turns telemetry off (no cca-lite/as.coinbase.com).
 CSP_COINBASE_CONNECT='https://www.walletlink.org wss://www.walletlink.org https://rpc.wallet.coinbase.com'
-#  - WalletConnect 2.21.1 (@walletconnect/core: relay, Verify API iframe + attestation fetch, pulse
-#    events) and Reown AppKit 1.7.8, the QR modal (appkit-common ConstantsUtil: blockchain API,
-#    api.web3modal.org wallet list and images fetched as blobs, secure.walletconnect.org W3mFrame;
-#    appkit-ui ThemeUtil imports the Inter font from Google Fonts). Added only with a project ID.
-CSP_WC_CONNECT='wss://relay.walletconnect.org https://rpc.walletconnect.org https://pulse.walletconnect.org https://api.web3modal.org https://verify.walletconnect.org https://verify.walletconnect.com'
+#  - WalletConnect 2.26.0 (@walletconnect/ethereum-provider, pinned by the root package.json override;
+#    @walletconnect/core: relay, Verify API iframe + attestation fetch; its own telemetry is off in
+#    lib/wagmi.ts) and Reown AppKit 1.8.19, the QR modal (appkit-common ConstantsUtil: blockchain API
+#    rpc.walletconnect.org, api.web3modal.org wallet list and images fetched as blobs,
+#    secure.walletconnect.org W3mFrame; appkit-ui ThemeUtil loads its font from fonts.reown.com).
+#    Added only with a project ID.
+#  - Not allowed (audit web F7): pulse.walletconnect.org. AppKit sends its events there, with the page
+#    URL and the connected wallet address, even with analytics off (INITIALIZE and CONNECT_SUCCESS are
+#    mandatory), and wagmi's connector cannot switch AppKit's analytics off; the CSP blocks them.
+CSP_WC_CONNECT='wss://relay.walletconnect.org https://rpc.walletconnect.org https://api.web3modal.org https://verify.walletconnect.org https://verify.walletconnect.com'
 CSP_WC_FRAME='https://verify.walletconnect.org https://verify.walletconnect.com https://secure.walletconnect.org'
-CSP_WC_STYLE='https://fonts.googleapis.com'
-CSP_WC_FONT='https://fonts.gstatic.com'
+CSP_WC_FONT='https://fonts.reown.com'
 CSP_WC_IMG='blob:'
+# Images: the app's own files and data: URIs (EIP-6963 wallet icons must be data:image/…, and the web
+# renders nothing else from a wallet); company logos are inline SVG (apps/web/lib/logos.ts).
+CSP_IMG="'self' data:"
 
 # render_security_headers ENV_FILE — prints the Nginx headers snippet for the full app (audit L10).
 # connect-src follows the configured network and NEXT_PUBLIC_RPC_URL; WalletConnect hosts appear only
 # when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set. Fails on an unusable RPC URL.
 render_security_headers() {
-  local env_file="$1" net rpc rpc_origin official origins connect frame="'none'" style="'self' 'unsafe-inline'" font="'self'" img="'self' data: https:"
+  local env_file="$1" net rpc rpc_origin official origins connect frame="'none'" style="'self' 'unsafe-inline'" font="'self'" img="${CSP_IMG}"
   net="$(env_get "${env_file}" NEXT_PUBLIC_VELUM_NETWORK)"
   [ -n "${net}" ] || net="$(env_get "${env_file}" VELUM_NETWORK)"
   official="$(official_rpc "${net}")"
@@ -231,7 +238,6 @@ render_security_headers() {
   if [ -n "$(env_get "${env_file}" NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID)" ]; then
     connect="${connect} ${CSP_WC_CONNECT}"
     frame="${CSP_WC_FRAME}"
-    style="${style} ${CSP_WC_STYLE}"
     font="${font} ${CSP_WC_FONT}"
     img="${img} ${CSP_WC_IMG}"
   fi

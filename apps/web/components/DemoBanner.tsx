@@ -6,7 +6,8 @@ import { useMarkets } from '@/lib/markets';
 const hhmm = (t: number) => new Date(t).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
 /**
- * Required by the roadmap: visible whenever trades are simulated. Testnet keeps the prototype's words.
+ * Required by the roadmap: visible whenever trades are simulated. Testnet keeps the prototype's words,
+ * with "Testnet. Test tokens have no value." in full at every width (CLAUDE.md §1.4).
  * Mainnet never simulates prices (no local fallback): when the live feed is stale it says trading is
  * paused instead (audit round 2, M4).
  */
@@ -34,9 +35,8 @@ export function DemoBanner() {
             Trades are simulated. Your tokens never leave your wallet.
           </>
         ) : (
-          <>
-            Trades are simulated.<span className="hide-sm"> Testnet.</span> Test tokens have no value.
-          </>
+          // The full notice at every width, 360 px included (audit web F11).
+          <>Trades are simulated. Testnet. Test tokens have no value.</>
         )}
       </span>
     </div>

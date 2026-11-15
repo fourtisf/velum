@@ -1,10 +1,10 @@
 'use client';
 import { Fragment } from 'react';
 import { posPnl } from '@/lib/calc';
-import { SIM } from '@/lib/copy';
+import { CLOSED, SIM } from '@/lib/copy';
 import { closePos } from '@/lib/demo';
 import { ago, fmt, fmtLev, pct, sgnUsd, shortH } from '@/lib/format';
-import { useLivePrice, usePriceTick } from '@/lib/markets';
+import { mk, useLivePrice, usePriceTick } from '@/lib/markets';
 import { useApp, type Activity, type Position } from '@/lib/store';
 import { toNumber } from '@velum/math';
 import { Icon } from '../icons';
@@ -35,7 +35,7 @@ function PnlCell({ p }: { p: Position }) {
 function CloseButton({ p }: { p: Position }) {
   const price = useLivePrice(p.sym);
   return (
-    <button className="btn btn-dark btn-sm" disabled={price === null} title={price === null ? 'Price unavailable' : undefined} onClick={() => closePos(p.id)}>
+    <button className="btn btn-dark btn-sm" disabled={price === null} title={price === null ? (mk(p.sym).closed ? CLOSED.label : 'Price unavailable') : undefined} onClick={() => closePos(p.id)}>
       Close
     </button>
   );
@@ -118,7 +118,8 @@ export function PosTable({ list, wide }: { list: Position[]; wide?: boolean }) {
                     <td colSpan={cols}>
                       <div className="chainbox">
                         <div>
-                          What the public chain sees<b>A position changed in {p.sym}</b>
+                          {SIM.chainSeesLabel}
+                          <b>A position changed in {p.sym}</b>
                         </div>
                         <div>
                           Commitment<b>{shortH(p.commit)}</b>

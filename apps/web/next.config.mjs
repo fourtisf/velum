@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 /**
  * Security headers as defence in depth (audit web L9). Nginx sends these too (and owns CSP and HSTS);
  * keep the values compatible. The app needs no inline event handlers and talks only to its own /api,
@@ -20,6 +22,9 @@ const SECURITY_HEADERS = [
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // The pnpm workspace root. Next 15 otherwise guesses it from the outermost lockfile it finds, which on
+  // the server can be the base clone above a release directory.
+  outputFileTracingRoot: fileURLToPath(new URL('../..', import.meta.url)),
   // No image optimizer: removes the attack surface of several Next 14 advisories (audit web M5).
   images: { unoptimized: true },
   transpilePackages: ['@velum/config', '@velum/math'],

@@ -1,6 +1,7 @@
 'use client';
 import { getMarket } from '@velum/config';
 import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
+import { CLOSED, isDemoMetric } from '@/lib/copy';
 import { fmt, pct, usd } from '@/lib/format';
 import { LOGOS } from '@/lib/logos';
 import { useMarket, usePriceState } from '@/lib/markets';
@@ -55,9 +56,9 @@ export function Px({ sym, raw, as, className }: { sym: string; raw?: boolean; as
     el.classList.add(m.dir >= 0 ? 'flash-up' : 'flash-down');
   }, [txt, m.dir]);
   return (
-    <Tag ref={ref} className={stale ? `${className ?? ''} px-stale`.trim() : className} title={stale ? 'Stale: no fresh price, trading paused' : undefined}>
+    <Tag ref={ref} className={stale ? `${className ?? ''} px-stale`.trim() : className} title={stale ? (m.closed ? CLOSED.title : 'Stale: no fresh price, trading paused') : undefined}>
       {txt}
-      {stale ? <small className="stale-tag">stale</small> : null}
+      {stale ? <small className="stale-tag">{m.closed ? CLOSED.tag : 'stale'}</small> : null}
     </Tag>
   );
 }
@@ -91,4 +92,17 @@ export function Spark({ sym, w = 110, h = 30, className = 'spark', style }: { sy
 
 export function ComingSoon() {
   return <span className="badge">Coming soon</span>;
+}
+
+/**
+ * "Demo" beside a protocol metric that is demo data (DV-03): every such metric on testnet, and any the
+ * API flags `demo: true` (lib/copy.ts isDemoMetric). Render it only where the metric itself is shown.
+ */
+export function DemoTag({ flag }: { flag?: boolean }) {
+  if (!isDemoMetric(flag)) return null;
+  return (
+    <span className="badge demo-tag" title="Demo data, not real trading activity">
+      Demo
+    </span>
+  );
 }

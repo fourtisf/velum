@@ -3,11 +3,11 @@ import { CHAIN, getMarket, isMarketSymbol } from '@velum/config';
 import type { Wad } from '@velum/math';
 import Link from 'next/link';
 import { privTotal, valueOf } from '@/lib/calc';
-import { dp, fmt, usdOrDash } from '@/lib/format';
+import { dp, fmtBal, usdBal, usdOrDash } from '@/lib/format';
 import { usePublicBalances } from '@/lib/balances';
 import { tokPx, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
-import { COPY, SIM } from '@/lib/copy';
+import { COPY, SIM, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { ActList, PosTable } from '../trade/Positions';
 import { Av, Pv, Px } from '../ui';
@@ -18,7 +18,7 @@ const ORDER = ['ETH', 'USDG', 'TSLA', 'AMZN', 'PLTR', 'NVDA', 'NFLX', 'AMD', 'AA
 
 function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
   // No live price (or ETH on mainnet): a dash, never a value from a seed or stale price (audit round 2, M4).
-  const v = usdOrDash(valueOf(t, amt));
+  const v = usdBal(valueOf(t, amt));
   return (
     <tr>
       <td>
@@ -30,9 +30,29 @@ function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
           </div>
         </div>
       </td>
-      <td className="r num">{pub ? fmt(amt, dp(t)) : <Pv>{fmt(amt, dp(t))}</Pv>}</td>
+      <td className="r num">{pub ? fmtBal(amt, dp(t)) : <Pv>{fmtBal(amt, dp(t))}</Pv>}</td>
       {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usdOrDash(tokPx(t))}</td>}
       <td className="r num">{pub ? v : <Pv>{v}</Pv>}</td>
+    </tr>
+  );
+}
+
+/** A token whose public balance could not be read this time (audit web F12): never shown as zero or left out. */
+function UnavailableRow({ t }: { t: string }) {
+  return (
+    <tr>
+      <td>
+        <div className="mcell">
+          <Av sym={t} size="sm" />
+          <div>
+            <b>{t}</b>
+            <small>Balance could not be read</small>
+          </div>
+        </div>
+      </td>
+      <td className="r num">—</td>
+      {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usdOrDash(tokPx(t))}</td>}
+      <td className="r num">—</td>
     </tr>
   );
 }
@@ -40,7 +60,7 @@ function AssetRow({ t, amt, pub }: { t: string; amt: Wad; pub?: boolean }) {
 function Faucets() {
   return (
     <>
-      Get ETH and stock tokens from the{' '}
+      Get ETH and Stock Tokens from the{' '}
       <a className="lnk" href={CHAIN.faucets.ethAndStockTokens} target="_blank" rel="noreferrer">
         Robinhood Chain faucet
       </a>{' '}
@@ -79,7 +99,7 @@ export function PortfolioView() {
         </div>
         <div className="card empty" style={{ padding: '72px 20px' }}>
           <p style={{ fontSize: 17, color: 'var(--text)', fontWeight: 500 }}>Connect your wallet to open your private account.</p>
-          <p>One signature creates your private keys in this browser. It costs no gas, and the same wallet opens the same account on any device.</p>
+          <p>{UI.portfolioConnect}</p>
           <button className="btn btn-white btn-lg" onClick={() => s.openModal({ kind: 'connect' })}>
             Connect wallet
           </button>
@@ -94,7 +114,9 @@ export function PortfolioView() {
 
   const { ledger, account } = s;
   const priv = ORDER.filter((t) => bal(ledger.priv, t) > DUST);
-  const pubToks = ORDER.filter((t) => bal(pub.data ?? {}, t) > DUST);
+  const pubBal = pub.data?.bal ?? {};
+  const pubToks = ORDER.filter((t) => bal(pubBal, t) > DUST);
+  const pubGone = ORDER.filter((t) => pub.data?.unavailable.includes(t));
   const copy = () => {
     if (navigator.clipboard) navigator.clipboard.writeText(account.paddr).catch(() => undefined);
     s.toast('Private address copied');
@@ -113,7 +135,7 @@ export function PortfolioView() {
             <span className="muted" style={{ fontSize: 13.5 }}>
               Private balance
             </span>
-            <div className="pf-big num pv">{usdOrDash(privTotal(ledger))}</div>
+            <div className="pf-big num pv">{usdBal(privTotal(ledger))}</div>
             <div className="pf-sub">
               <span className="paddr">
                 <Pv>{account.paddr.slice(0, 12) + '…' + account.paddr.slice(-6)}</Pv>
@@ -164,8 +186,15 @@ export function PortfolioView() {
               <table className="tbl">
                 {head}
                 <tbody>
-                  {pubToks.length ? (
-                    pubToks.map((t) => <AssetRow key={t} t={t} amt={bal(pub.data ?? {}, t)} pub />)
+                  {pubToks.length || pubGone.length ? (
+                    <>
+                      {pubToks.map((t) => (
+                        <AssetRow key={t} t={t} amt={bal(pubBal, t)} pub />
+                      ))}
+                      {pubGone.map((t) => (
+                        <UnavailableRow key={t} t={t} />
+                      ))}
+                    </>
                   ) : (
                     <tr>
                       <td colSpan={4} className="empty">
@@ -179,7 +208,7 @@ export function PortfolioView() {
                               No test tokens yet. <Faucets />
                             </>
                           ) : (
-                            'No USDG or supported stock tokens in this wallet yet.'
+                            'No USDG or supported Stock Tokens in this wallet yet.'
                           )}</span>
                         )}
                       </td>

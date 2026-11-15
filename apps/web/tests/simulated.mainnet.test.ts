@@ -9,12 +9,13 @@ vi.hoisted(() => {
   process.env.NEXT_PUBLIC_VELUM_NETWORK = 'mainnet';
 });
 
-import { IS_MAINNET } from '@velum/config';
-import { SIM, simCopy } from '@/lib/copy';
-import { doSwap, lpGo, lpRemove, moveGo, openPerps, closePos, postOffer, receiptRows, spotTrade, withdrawOffer } from '@/lib/demo';
+import { IS_MAINNET, PROTOCOL } from '@velum/config';
+import { COPY, LANDING, SIM, UI, isDemoMetric, priceSourceText, simCopy } from '@/lib/copy';
+import { NO_FUNDS, OVER_CAP, doSwap, lpGo, lpRemove, moveGo, openPerps, closePos, postOffer, receiptRows, spotTrade, withdrawOffer } from '@/lib/demo';
 import { useMarkets } from '@/lib/markets';
 import { NO_COMMIT, chainSaw, demoChainEvent, emptyLedger, loadLedger, saveLedger, seedLedger, useApp } from '@/lib/store';
-import { W, WALLET, connect, flowText, installStorage, setLiveMarkets, takeFlow, text } from './helpers';
+import { claimsIn, claimsInSource, strings } from './claims';
+import { W, WALLET, connect, flowText, installStorage, patchMarket, setLiveMarkets, takeFlow, text } from './helpers';
 
 /** Strings that would claim something happened on a chain where nothing did. */
 export const FABRICATED: RegExp[] = [
@@ -78,6 +79,82 @@ describe('copy around simulated actions', () => {
 
   it('simCopy(true) and SIM agree (the build picked mainnet)', () => {
     expect(simCopy(true).portfolioSub).toBe(SIM.portfolioSub);
+  });
+});
+
+describe('privacy claims are labelled as simulated (owner decision of 2026-11-15)', () => {
+  it('no string the web shows states a simulated feature, a key or a price source as fact', () => {
+    const all = [
+      ...strings(COPY),
+      ...(['robinhood', 'chainlink', 'demo', 'loading', 'none'] as const).flatMap((o) => [COPY.frameCap(o, false), COPY.frameCap(o, true), COPY.marketsSub(o)]),
+      ...strings(LANDING),
+      ...LANDING.stepsMini.flat(),
+      ...Object.values(UI),
+      SIM.accountBadge,
+      SIM.portfolioSub,
+      ...(['shield', 'unshield', 'send'] as const).flatMap((k) => [SIM.moveText(k), SIM.moveNote(k)]),
+      SIM.sendLast.t,
+      SIM.sendLast.d,
+    ].join('\n');
+    expect(claimsIn(all)).toEqual([]);
+    expect(COPY.heroPill).toBe('Private trading demo on Robinhood Chain');
+    expect(LANDING.metaDescription).toMatch(/^Velum is a private exchange for Stock Tokens/);
+    expect(UI.perpsNote).toMatch(/^In the full version, size, side and entry stay encrypted/);
+    expect(UI.spotNote).toMatch(/^In the full version, pool reserves and your trade stay private/);
+    expect(UI.swapNote).toMatch(/^In the full version, pool reserves are private/);
+    expect(UI.signIntro).toBe(
+      'Sign one message to open your demo private account: this browser turns the signature into a demo private address. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.',
+    );
+    expect(UI.accountNote).toMatch(/Disconnecting forgets it here \(your practice balance stays saved in this browser\); signing again opens the same one\.$/);
+  });
+
+  it('nothing in the web source makes such a claim (the signed message aside)', () => {
+    expect(claimsInSource()).toEqual([]);
+  });
+
+  it('the price source is named only when it is real; a demo source reads as unavailable', () => {
+    expect(priceSourceText('robinhood')).toBe("Prices from Robinhood's public Stock Token API.");
+    expect(priceSourceText('chainlink')).toBe('Prices from Chainlink price feeds.');
+    expect(priceSourceText('demo')).toBe('Live prices are unavailable right now.');
+    expect(COPY.marketsSub('none')).toBe('Live prices are unavailable right now. Trading here is simulated until contracts launch.');
+    expect(COPY.marketsSub('demo')).not.toMatch(/Robinhood/);
+  });
+
+  it('connected on the landing page, the caption says what is simulated (F3)', () => {
+    expect(COPY.frameCap('robinhood', true)).toBe(
+      "Prices from Robinhood's public Stock Token API. Demo mode: trades and your practice balance are simulated, and your tokens never leave your wallet.",
+    );
+    expect(COPY.frameCap('robinhood', false)).toMatch(/Connect your wallet to try a simulated private trade\.$/);
+  });
+
+  it('metrics stay dashes on mainnet; a demo flag from the API is honoured where they are shown', () => {
+    expect(isDemoMetric()).toBe(false);
+    expect(isDemoMetric(true)).toBe(true);
+  });
+});
+
+describe('perps fill re-checks the position cap at the fill price (audit web F13)', () => {
+  it('a price drop during the flow that puts the position over the token cap cancels it', () => {
+    const cap = PROTOCOL.maxTokensPerPosition;
+    // 99 tokens at 100 USDG (plus the maker spread): under the cap when quoted.
+    setLiveMarkets({ TSLA: '100' });
+    useApp.setState({ sel: 'TSLA', size: '9900', lev: 5, side: 'long' });
+    openPerps();
+    const f = takeFlow();
+    const before = useApp.getState().ledger;
+    patchMarket('TSLA', { price: W('90'), priceNum: 90 }); // the same size now buys 110 tokens
+    expect(f.done()).toBe(OVER_CAP);
+    expect(useApp.getState().ledger).toBe(before);
+    expect(OVER_CAP.rows[0]![1]).toBe(`Cancelled: above the ${cap}-token limit at the fill price`);
+  });
+
+  it('a balance that shrank before the fill cancels it too', () => {
+    useApp.setState({ sel: 'TSLA', size: '500', lev: 1, side: 'long' });
+    openPerps();
+    const f = takeFlow();
+    useApp.setState({ ledger: { ...useApp.getState().ledger, priv: { USDG: W('10') } } });
+    expect(f.done()).toBe(NO_FUNDS);
+    expect(useApp.getState().ledger.positions).toEqual([]);
   });
 });
 

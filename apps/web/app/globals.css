@@ -455,6 +455,11 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .px-stale{color:var(--faint)}
 .px-stale .stale-tag{display:inline;margin-left:5px;font-family:var(--sans);font-size:11px;font-weight:500;letter-spacing:0;color:var(--down);vertical-align:middle}
 .demo-bar .stale-msg{color:var(--text);font-weight:500}
+/* The brand line under every /app page (audit web F11): small and quiet, like the landing footer note. */
+.app-brand{max-width:1480px;margin:22px auto 0;padding:0 24px;font-size:12px;color:var(--faint);text-align:center}
+/* "Demo" on testnet metrics (DV-03): the badge style, smaller, beside a label. */
+.badge.demo-tag{height:16px;padding:0 5px;border-radius:4px;font-size:10.5px;margin-left:6px;vertical-align:1px;gap:0}
+.stat b .demo-tag{font-family:var(--sans);letter-spacing:0;vertical-align:5px}
 /* Landing nav while connected at phone width (audit round 2, N6): the wallet button keeps only its
    avatar so "Launch app" fits at 360 px. Desktop and the app nav are unchanged. */
 @media (max-width:480px){.nav-land .walletbtn{padding:0 5px}.nav-land .walletbtn .b{display:none}}

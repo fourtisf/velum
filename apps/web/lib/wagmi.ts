@@ -20,7 +20,7 @@ export const walletConnectConnector = (): CreateConnectorFn | null =>
         telemetryEnabled: false,
         metadata: {
           name: 'Velum',
-          description: `Private stock trading on ${CHAIN.label}`,
+          description: `Private Stock Token trading on ${CHAIN.label}`,
           url: ENV.siteUrl || 'https://velum.example',
           icons: [],
         },

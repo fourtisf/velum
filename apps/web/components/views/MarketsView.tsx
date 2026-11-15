@@ -5,11 +5,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { compact, fmt, usd } from '@/lib/format';
-import { useMarkets } from '@/lib/markets';
+import { apiMetric, useMarkets, usePriceOrigin } from '@/lib/markets';
 import { useApp } from '@/lib/store';
 import { COPY, METRICS } from '@/lib/copy';
 import { I } from '../icons';
-import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
+import { Av, Chg, ComingSoon, DemoTag, Px, Spark } from '../ui';
 
 export function MarketsView() {
   const order = useMarkets((s) => s.order);
@@ -17,8 +17,9 @@ export function MarketsView() {
   const q = useApp((s) => s.q);
   const set = useApp((s) => s.set);
   const router = useRouter();
+  const origin = usePriceOrigin();
   const stats = useQuery({ queryKey: ['stats'], queryFn: ({ signal }) => api.stats(signal), refetchInterval: 30_000, retry: 1 });
-  const oi = order.reduce((a, s) => a + bySym[s]!.oi, 0);
+  const oi = order.reduce((a, s) => a + (bySym[s]!.oi ?? 0), 0);
   const needle = q.toLowerCase().trim();
   const match = (s: string) => !needle || (s + ' ' + bySym[s]!.name).toLowerCase().includes(needle);
 
@@ -27,7 +28,7 @@ export function MarketsView() {
       <div className="vhead">
         <div>
           <h1 className="vtitle">Markets</h1>
-          <p className="vsub">{COPY.marketsSub}</p>
+          <p className="vsub">{COPY.marketsSub(origin)}</p>
         </div>
         <label className="search">
           <I.search />
@@ -56,15 +57,24 @@ export function MarketsView() {
         </div>
         <div className="card stat">
           <small>Open interest</small>
-          <b className="num">{METRICS.real ? compact(stats.data ? Number(stats.data.openInterest) : oi) : METRICS.dash}</b>
+          <b className="num">
+            {METRICS.real ? compact(apiMetric(stats.data?.openInterest) ?? oi) : METRICS.dash}
+            {METRICS.real ? <DemoTag flag={stats.data?.demo} /> : null}
+          </b>
         </div>
         <div className="card stat">
           <small>Shielded value</small>
-          <b className="num">{METRICS.real ? compact(Number(stats.data?.shieldedValue ?? DEMO.shieldedValue)) : METRICS.dash}</b>
+          <b className="num">
+            {METRICS.real ? compact(Number(stats.data?.shieldedValue ?? DEMO.shieldedValue)) : METRICS.dash}
+            {METRICS.real ? <DemoTag flag={stats.data?.demo} /> : null}
+          </b>
         </div>
         <div className="card stat">
           <small>Proofs verified today</small>
-          <b className="num">{METRICS.real ? fmt(stats.data?.proofsToday ?? DEMO.proofsTodayBase, 0) : METRICS.dash}</b>
+          <b className="num">
+            {METRICS.real ? fmt(stats.data?.proofsToday ?? DEMO.proofsTodayBase, 0) : METRICS.dash}
+            {METRICS.real ? <DemoTag flag={stats.data?.demo} /> : null}
+          </b>
         </div>
       </div>
       <div className="card tbl-wrap">
@@ -75,8 +85,12 @@ export function MarketsView() {
               <th className="r">Price</th>
               <th className="r">24h</th>
               <th className="hide-md">Last hour</th>
-              <th className="r hide-md">Funding / h</th>
-              <th className="r hide-md">Open interest</th>
+              <th className="r hide-md">
+                Funding / h{METRICS.real ? <DemoTag /> : null}
+              </th>
+              <th className="r hide-md">
+                Open interest{METRICS.real ? <DemoTag /> : null}
+              </th>
               <th className="r hide-sm">Max leverage</th>
               <th className="r">
                 <span className="sr">Actions</span>
@@ -102,8 +116,8 @@ export function MarketsView() {
                   <td className="hide-md">
                     <Spark sym={s} />
                   </td>
-                  <td className="r num hide-md">{METRICS.real ? `${fmt(m.funding, 4)}%` : METRICS.dash}</td>
-                  <td className="r num hide-md">{METRICS.real ? usd(m.oi, 0) : METRICS.dash}</td>
+                  <td className="r num hide-md">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.dash}</td>
+                  <td className="r num hide-md">{METRICS.real && m.oi !== null ? usd(m.oi, 0) : METRICS.dash}</td>
                   <td className="r num hide-sm">{m.maxLev}×</td>
                   <td className="r">
                     {m.status === 'live' ? (

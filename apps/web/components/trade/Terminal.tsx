@@ -6,7 +6,7 @@ import { compact, fmt } from '@/lib/format';
 import { useMarket, useMarkets } from '@/lib/markets';
 import { METRICS } from '@/lib/copy';
 import { useApp } from '@/lib/store';
-import { Av, Chg, Px } from '../ui';
+import { Av, Chg, DemoTag, Px } from '../ui';
 import { AccountCard } from './AccountCard';
 import { Chart } from './Chart';
 import { PositionsCard } from './Positions';
@@ -59,7 +59,7 @@ function ChartCard({ sym }: { sym: string }) {
                 / USDG
               </span>
             </b>
-            <small>{m.name} stock token</small>
+            <small>{m.name} Stock Token</small>
           </div>
         </div>
         <div className="seg" role="group" aria-label="Market type">
@@ -92,12 +92,16 @@ function ChartCard({ sym }: { sym: string }) {
           <b className="num">{METRICS.real ? fmt(m.mark) : METRICS.dash}</b>
         </div>
         <div className="hide-sm">
-          <small>Funding / h</small>
-          <b className="num">{METRICS.real ? `${fmt(m.funding, 4)}%` : METRICS.dash}</b>
+          <small>
+            Funding / h{METRICS.real ? <DemoTag flag={m.demo} /> : null}
+          </small>
+          <b className="num">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.dash}</b>
         </div>
         <div className="hide-sm">
-          <small>Open interest</small>
-          <b className="num">{METRICS.real ? compact(m.oi) : METRICS.dash}</b>
+          <small>
+            Open interest{METRICS.real ? <DemoTag flag={m.demo} /> : null}
+          </small>
+          <b className="num">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.dash}</b>
         </div>
       </div>
       <Chart sym={sym} />

@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useId, type CSSProperties, type JSX, type ReactNode } from 'react';
 
 function Ic({ children, style }: { children: ReactNode; style?: CSSProperties }) {
   return (
@@ -134,12 +134,36 @@ export function Icon({ name }: { name: IconName }) {
   return <C />;
 }
 
-/** Velum mark: a circle with the lower half filled (a veil). */
+/**
+ * Velum mark "Curtain": a V whose lower half dissolves into horizontal scan lines, in the brand
+ * gradient (not currentColor). Drawn on the 64-unit grid of the brand source; the viewBox is cropped
+ * to the V (6..58) so it fills the 22 px box (.brand svg) the way the previous mark did. It renders
+ * more than once per page (nav, footer), so its gradient, pattern and mask ids are unique per
+ * instance (useId, reduced to characters that are safe inside url(#…)). The favicon (app/icon.svg)
+ * is a cut with fewer, pixel-aligned lines for 16 px.
+ */
 export function Mark() {
+  const uid = 'vm' + useId().replace(/[^A-Za-z0-9_-]/g, '');
+  const veil = `${uid}-veil`;
+  const scan = `${uid}-scan`;
+  const mask = `${uid}-mask`;
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="9.6" fill="none" stroke="currentColor" strokeWidth="2.4" />
-      <path d="M2.4 12.6h19.2A9.6 9.6 0 0 1 2.4 12.6Z" fill="currentColor" />
+    <svg viewBox="6 6 52 52" aria-hidden="true" focusable="false">
+      <defs>
+        <linearGradient id={veil} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#C2B8FF" />
+          <stop offset=".55" stopColor="#8F96FF" />
+          <stop offset="1" stopColor="#6E79F3" />
+        </linearGradient>
+        <pattern id={scan} width="64" height="4" patternUnits="userSpaceOnUse">
+          <rect width="64" height="2" fill="#fff" />
+        </pattern>
+        <mask id={mask} maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+          <rect x="0" y="0" width="64" height="35" fill="#fff" />
+          <rect x="0" y="35" width="64" height="29" fill={`url(#${scan})`} />
+        </mask>
+      </defs>
+      <path d="M12 12 L32 52 L52 12" fill="none" stroke={`url(#${veil})`} strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" mask={`url(#${mask})`} />
     </svg>
   );
 }

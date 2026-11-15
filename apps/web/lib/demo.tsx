@@ -5,13 +5,15 @@
  *
  * Every price comes from livePrice() and is read again when the flow completes: if the market has
  * lost its price meanwhile, the action is cancelled and nothing changes (audit round 2, M4).
- * On mainnet nothing is on-chain, so flows record no simulated chain event (audit round 2, M2).
+ * Nothing is on-chain on either network in Phase 2: flows are titled "Simulated", steps for the
+ * privacy layer say what the full version will do, and every receipt ends by saying nothing was
+ * sent (owner decision of 2026-11-15). Mainnet records no simulated chain event (audit round 2, M2).
  */
-import { DEMO, IS_MAINNET, isLive } from '@velum/config';
-import { WAD, bps, fromNumber, isLiquidatable, liquidationReturn, perpsClose, perpsOpen, wmul, type Wad } from '@velum/math';
+import { DEMO, PROTOCOL, isLive } from '@velum/config';
+import { WAD, bps, checkPerps, fromNumber, isLiquidatable, liquidationReturn, perpsClose, perpsOpen, wmul, type Wad } from '@velum/math';
 import type { ReactNode } from 'react';
 import { DEMO_PARAMS, PARAMS, perpsCalc, spotCalc, swapCalc } from './calc';
-import { SIM } from './copy';
+import { P, SIM } from './copy';
 import { dp, fmt, fmtFloor, fmtLev, receiptId, sgnUsd, sig4, uid, usd } from './format';
 import { livePrice, mk, tokPx } from './markets';
 import { NO_COMMIT, addBal, bal, chainSaw, demoChainEvent, logAct, useApp, type FlowResult, type Ledger, type Offer } from './store';
@@ -19,18 +21,24 @@ import { NO_COMMIT, addBal, bal, chainSaw, demoChainEvent, logAct, useApp, type 
 const app = () => useApp.getState();
 const rid = () => '#' + receiptId();
 const Up = ({ v, children }: { v: boolean; children: React.ReactNode }) => <span className={v ? 'up' : 'down'}>{children}</span>;
+const { step } = SIM;
 
 type Row = [ReactNode, ReactNode];
-/** A receipt's "Visible onchain" row: testnet only, since nothing is on-chain on mainnet. */
-const visible = (v: string): Row[] => (IS_MAINNET ? [] : [['Visible onchain', v]]);
 
-/** What a receipt shows: mainnet receipts end by saying nothing touched the chain. */
-export function receiptRows(rows: Row[], mainnet = IS_MAINNET): Row[] {
-  return mainnet ? [...rows.filter(([k]) => k !== 'Visible onchain'), SIM.receiptDemoRow] : rows;
+/** What a receipt shows: no "Visible onchain" claim, and a last row saying nothing touched the chain. */
+export function receiptRows(rows: Row[]): Row[] {
+  return [...rows.filter(([k]) => k !== 'Visible onchain'), SIM.receiptDemoRow];
 }
 
 /** The result of a flow whose market lost its price before it completed: nothing was applied. */
 export const PRICE_GONE: FlowResult = { rows: [['Status', 'Cancelled: price unavailable']], toast: 'Price unavailable', warn: true };
+/** The fill price moved the position over the token cap (or the balance changed): nothing was applied. */
+export const OVER_CAP: FlowResult = {
+  rows: [['Status', `Cancelled: above the ${PROTOCOL.maxTokensPerPosition}-token limit at the fill price`]],
+  toast: 'Position not opened',
+  warn: true,
+};
+export const NO_FUNDS: FlowResult = { rows: [['Status', 'Cancelled: not enough private USDG']], toast: 'Position not opened', warn: true };
 
 export function openPerps() {
   const s = app();
@@ -42,16 +50,21 @@ export function openPerps() {
   s.runFlow({
     title: `Open ${side} ${m.sym}`,
     steps: [
-      { t: 'Locking margin in a private note', d: `${fmt(c.margin)} USDG leaves your free balance`, ms: 700 },
-      { t: 'Generating proof in your browser', d: 'Proves the trade follows the rules without revealing it', ms: 1900, proof: true },
-      { t: 'Relayer submitting proof', d: 'The relayer pays gas, so your wallet stays off the trade', ms: 800 },
-      { t: 'Matching with a maker', d: 'Waiting for a standing offer', ms: 1100 },
+      { ...step.lock('margin', `${fmt(c.margin)} USDG leaves your free balance`), ms: 700 },
+      { ...step.proof('the trade follows the rules without revealing it'), ms: 1900, proof: true },
+      { ...step.relay('submits the proof and pays gas, so your wallet stays off the trade'), ms: 800 },
+      { t: 'Simulating a maker fill', d: 'A demo maker takes the other side', ms: 1100 },
     ],
     done: () => {
       // Fill at the price when the maker matches, like the prototype; no price, no fill.
       const price = livePrice(m.sym);
       if (price === null) return PRICE_GONE;
       const q = perpsOpen({ price, size: c.size, leverage: lev, side }, PARAMS, DEMO_PARAMS);
+      // The fill price can differ from the quote: the 100-token cap and the balance are checked again
+      // at the price the position actually opens at (audit web F13).
+      const check = checkPerps(q, bal(app().ledger.priv, 'USDG'), PARAMS);
+      if (check === 'over_limit') return OVER_CAP;
+      if (check !== 'ok') return NO_FUNDS;
       const [lo, hi] = DEMO.closeSpreadBpsRange;
       const cs = bps(lo) + BigInt(Math.floor(Math.random() * Number(bps(hi) - bps(lo))));
       const ev = demoChainEvent(`A ${m.sym} position changed`);
@@ -72,7 +85,6 @@ export function openPerps() {
           ['Entry', fmt(q.entry)],
           ['Liquidation', q.liq ? fmt(q.liq) : 'None'],
           ['Fee', `${fmt(q.fee)} USDG`],
-          ...visible('A position changed'),
           ['Receipt', rid()],
         ],
         toast: `${Side} opened on ${m.sym}`,
@@ -90,10 +102,10 @@ export function spotTrade() {
   s.runFlow({
     title: `${buy ? 'Buy' : 'Sell'} ${m.sym}`,
     steps: [
-      { t: 'Locking your tokens in a private swap request', d: `${fmt(c.amt, dp(c.tin))} ${c.tin}`, ms: 650 },
-      { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
-      { t: 'Filling against the private pool', d: `Only at or above ${fmtFloor(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
+      { ...step.lock('your tokens for a private swap', `${fmt(c.amt, dp(c.tin))} ${c.tin}`), ms: 650 },
+      { ...step.proof('the swap is valid without revealing it'), ms: 1700, proof: true },
+      { ...step.relay('submits it, so your wallet stays off the trade'), ms: 700 },
+      { t: 'Simulating the pool fill', d: `Only at or above ${fmtFloor(c.min, dp(c.tout))} ${c.tout}`, ms: 800 },
     ],
     done: () => {
       if (livePrice(m.sym) === null) return PRICE_GONE;
@@ -110,7 +122,6 @@ export function spotTrade() {
           ['You paid', `${fmt(c.amt, dp(c.tin))} ${c.tin}`],
           ['You got', `${fmt(c.out, dp(c.tout))} ${c.tout}`],
           ['Pool fee', `${fmt(c.feeAmt)} USDG`],
-          ...visible('The pool changed'),
           ['Receipt', rid()],
         ],
         toast: `${buy ? 'Bought' : 'Sold'} ${m.sym}`,
@@ -126,9 +137,9 @@ export function closePos(id: string) {
   s.runFlow({
     title: `Close ${p.side} ${p.sym}`,
     steps: [
-      { t: 'Generating proof in your browser', d: 'Proves you own this position', ms: 1500, proof: true },
-      { t: 'Relayer submitting proof', d: 'No maker signature needed', ms: 700 },
-      { t: 'Settling at the oracle price', d: 'Minus the close spread your maker committed to', ms: 700 },
+      { ...step.proof('you own this position'), ms: 1500, proof: true },
+      { ...step.relay('submits it, with no maker signature needed'), ms: 700 },
+      { t: 'Settling at the current price', d: 'Minus the close spread your maker committed to', ms: 700 },
     ],
     done: () => {
       if (!app().ledger.positions.some((x) => x.id === id)) return { rows: [['Status', 'Already settled']], toast: 'Position already closed' };
@@ -178,7 +189,7 @@ export function checkLiq() {
       next = logAct(
         { ...next, priv: addBal(next.priv, 'USDG', back), positions: next.positions.filter((x) => x.id !== p.id) },
         `Liquidated ${p.side} ${p.sym}`,
-        `${fmt(back)} USDG returned after the 1% penalty`,
+        `${fmt(back)} USDG returned after the ${P.penalty} penalty`,
         'trade',
       );
     }
@@ -210,10 +221,10 @@ export function doSwap() {
   s.runFlow({
     title: `Swap ${f} for ${t}`,
     steps: [
-      { t: 'Locking your tokens in a private swap request', d: `${fmt(c.a, dp(f))} ${f}`, ms: 650 },
-      { t: 'Generating proof in your browser', d: 'Shows the swap is valid without revealing it', ms: 1700, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the trade', ms: 700 },
-      { t: c.hops === 2 ? 'Filling both pools in one action' : 'Filling against the private pool', d: `Only at or above ${sig4(c.min, 'floor')} ${t}`, ms: 800 },
+      { ...step.lock('your tokens for a private swap', `${fmt(c.a, dp(f))} ${f}`), ms: 650 },
+      { ...step.proof('the swap is valid without revealing it'), ms: 1700, proof: true },
+      { ...step.relay('submits it, so your wallet stays off the trade'), ms: 700 },
+      { t: c.hops === 2 ? 'Simulating both pool fills in one action' : 'Simulating the pool fill', d: `Only at or above ${sig4(c.min, 'floor')} ${t}`, ms: 800 },
     ],
     done: () => {
       if (tokPx(f) === null || tokPx(t) === null) return PRICE_GONE;
@@ -243,14 +254,14 @@ export function lpGo(sym: string, a: Wad) {
   app().runFlow({
     title: `Add liquidity to ${sym}`,
     steps: [
-      { t: 'Generating proof in your browser', d: 'Shows you own the USDG you are adding', ms: 1600, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the deposit', ms: 700 },
+      { ...step.proof('you own the USDG you are adding'), ms: 1600, proof: true },
+      { ...step.relay('submits it, so your wallet stays off the deposit'), ms: 700 },
       { t: `Swapping half into ${sym} and adding both`, d: 'One action, no in-between balance', ms: 800 },
     ],
     done: () => {
       if (livePrice(sym) === null) return PRICE_GONE;
       app().setLedger((l) =>
-        logAct(chainSaw({ ...l, priv: addBal(l.priv, 'USDG', -a), lp: addBal(l.lp, sym, a) }, `The ${sym} pool changed`), `Added ${fmt(a)} USDG to the ${sym} pool`, 'Your share stays private', 'drop'),
+        logAct(chainSaw({ ...l, priv: addBal(l.priv, 'USDG', -a), lp: addBal(l.lp, sym, a) }, `The ${sym} pool changed`), `Added ${fmt(a)} USDG to the ${sym} pool`, 'In the full version, your share stays private', 'drop'),
       );
       return { rows: [['Pool', `${sym} / USDG`], ['Added', `${fmt(a)} USDG in value`], ['Receipt', rid()]], toast: 'Liquidity added' };
     },
@@ -261,9 +272,9 @@ export function lpRemove(sym: string) {
   app().runFlow({
     title: `Remove liquidity from ${sym}`,
     steps: [
-      { t: 'Generating proof in your browser', d: 'Proves you own this share', ms: 1400, proof: true },
-      { t: 'Relayer submitting proof', d: 'Your wallet stays off the withdrawal', ms: 700 },
-      { t: 'Returning your share as USDG', d: 'Into your private balance', ms: 700 },
+      { ...step.proof('you own this share'), ms: 1400, proof: true },
+      { ...step.relay('submits it, so your wallet stays off the withdrawal'), ms: 700 },
+      { t: 'Returning your share as USDG', d: 'Into your practice balance', ms: 700 },
     ],
     done: () => {
       // Credit the share as it stands when the withdrawal completes, fees earned meanwhile included (audit web I9).
@@ -294,11 +305,7 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
     },
     unshield: {
       title: `Unshield ${t}`,
-      steps: [
-        { t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true },
-        { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
-        SIM.unshieldLast(to),
-      ],
+      steps: [{ ...step.proof('you own these tokens'), ms: 1500, proof: true }, { ...step.relay(), ms: 700 }, SIM.unshieldLast(to)],
       apply: (l: Ledger) => {
         const shielded = own ? { ...l.shielded, [t]: bal(l.shielded, t) > a ? bal(l.shielded, t) - a : 0n } : l.shielded;
         return logAct(chainSaw({ ...l, priv: addBal(l.priv, t, -a), shielded }, `Public withdrawal of ${fmt(a, dp(t))} ${t}`), `Unshielded ${fmt(a, dp(t))} ${t}`, SIM.unshieldSub(to), 'shieldOut');
@@ -307,11 +314,7 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
     },
     send: {
       title: `Send ${t} privately`,
-      steps: [
-        { t: 'Generating proof in your browser', d: 'Proves you own these tokens', ms: 1500, proof: true },
-        { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
-        SIM.sendLast,
-      ],
+      steps: [{ ...step.proof('you own these tokens'), ms: 1500, proof: true }, { ...step.relay(), ms: 700 }, SIM.sendLast],
       apply: (l: Ledger) => logAct(chainSaw({ ...l, priv: addBal(l.priv, t, -a) }, 'An encrypted note was created'), `Sent ${fmt(a, dp(t))} ${t} privately`, `To ${to.slice(0, 12)}…`, 'send'),
       toast: `Sent ${t} privately`,
     },
@@ -325,7 +328,6 @@ export function moveGo(kind: MoveKind, t: string, a: Wad, to: string) {
         rows: [
           ['Token', t],
           ['Amount', fmt(a, dp(t))],
-          ...visible(kind === 'send' ? 'Nothing readable' : 'Wallet, token, amount, time'),
           ['Receipt', rid()],
         ],
         toast: F.toast,
@@ -347,9 +349,9 @@ export function postOffer(v: OfferInput) {
   app().runFlow({
     title: `Post ${v.sym} offer`,
     steps: [
-      { t: 'Locking backing in a private note', d: `${fmt(v.back)} USDG`, ms: 650 },
-      { t: 'Generating proof in your browser', d: 'Proves you hold the backing', ms: 1500, proof: true },
-      { t: 'Sending your offer to the coordinator', d: 'Against a one-time address', ms: 700 },
+      { ...step.lock('backing', `${fmt(v.back)} USDG`), ms: 650 },
+      { ...step.proof('you hold the backing'), ms: 1500, proof: true },
+      { t: 'Simulating the coordinator', d: 'In the full version, your offer goes to the coordinator against a one-time address', ms: 700 },
     ],
     done: () => {
       const o: Offer = { id: uid(), ...v, exp, fills: 0, earned: 0n };
@@ -374,9 +376,9 @@ export function withdrawOffer(id: string) {
   app().runFlow({
     title: `Withdraw ${o.sym} offer`,
     steps: [
-      { t: 'Generating proof in your browser', d: 'Proves this offer is yours', ms: 1300, proof: true },
-      { t: 'Relayer submitting proof', d: 'The relayer pays gas', ms: 700 },
-      { t: 'Releasing unused backing', d: 'Back to your private balance', ms: 600 },
+      { ...step.proof('this offer is yours'), ms: 1300, proof: true },
+      { ...step.relay(), ms: 700 },
+      { t: 'Releasing unused backing', d: 'Back to your practice balance', ms: 600 },
     ],
     done: () => {
       // Read the offer as it stands now; if it is gone (withdrawn meanwhile), credit nothing.

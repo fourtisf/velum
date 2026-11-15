@@ -37,6 +37,17 @@ const abs = (n: Num): Num => (typeof n === 'bigint' ? wabs(n) : Math.abs(n));
 export const usd = (n: Num, d = 2): string => (isNeg(n) && fmt(abs(n), d) !== fmt(0, d) ? '-$' : '$') + fmt(abs(n), d);
 /** usd(), or a dash when there is no value (no live price). */
 export const usdOrDash = (n: Wad | null, d = 2): string => (n === null ? '—' : usd(n, d));
+
+/**
+ * Holdings (balances, "available", totals of what you own) round down, never up, so a display can
+ * never show more than is there (audit web F10): 0.995 USDG is 0.99, not 1.00.
+ */
+export const fmtBal = (n: Wad, d = 2): string => fmtFloor(n, d);
+/** usd() for holdings: rounded down; a dash when there is no value. */
+export const usdBal = (n: Wad | null, d = 2): string => (n === null ? '—' : usd(roundTo(n, d, 'floor'), d));
+
+/** A basis-point protocol number as a percent label: 30 → "0.30%", 100 with 0 decimals → "1%". */
+export const bpsPct = (b: number, d = 2): string => `${(b / 100).toFixed(d)}%`;
 export const pct = (n: number, d = 2): string => (n >= 0 ? '+' : '') + fmt(n, d) + '%';
 export const sgnUsd = (n: Num): string => (isNeg(n) && fmt(abs(n)) !== '0.00' ? '-$' : '+$') + fmt(abs(n));
 

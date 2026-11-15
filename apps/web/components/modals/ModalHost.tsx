@@ -5,14 +5,14 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { UserRejectedRequestError, type Address, type Hex } from 'viem';
 import { useAccount, useConfig, useConnect, useDisconnect, useSwitchChain, type Connector, type CreateConnectorFn } from 'wagmi';
-import { signMessage } from 'wagmi/actions';
+import { getAccount, signMessage } from 'wagmi/actions';
 import { accountFingerprint, buildSignMessage, checkPublicAddress, checkSignature, derivePrivateAddress, isPrivateAddress } from '@/lib/account';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { usePublicBalances } from '@/lib/balances';
 import { lpGo, moveGo, receiptRows, type MoveKind } from '@/lib/demo';
-import { dp, floorTo, fmt, shortH } from '@/lib/format';
-import { COPY, SIM } from '@/lib/copy';
-import { useLivePrice } from '@/lib/markets';
+import { dp, floorTo, fmt, fmtBal, shortH } from '@/lib/format';
+import { CLOSED, COPY, P, SIM, UI } from '@/lib/copy';
+import { mk, useLivePrice } from '@/lib/markets';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
 import {
   bal,
@@ -111,12 +111,14 @@ function ConnectModal({ error }: { error?: string }) {
   return (
     <>
       <Head title="Connect wallet" />
-      <p className="m-text">Your wallet is your public address. Next, one signature opens your private account.</p>
+      <p className="m-text">{UI.connectIntro}</p>
       {detected.length ? (
         detected.map((c) => (
           <button key={c.uid} className="wopt" disabled={isPending} aria-busy={busy === c.uid} onClick={() => void connect(c, c.uid)}>
             <span className="ic">
-              {c.icon ? (
+              {/* EIP-6963 icons must be data: images; anything else (a remote URL that would track the
+                  visitor, javascript:, data:text/html) is ignored and the generic icon shown (audit web F8). */}
+              {c.icon?.startsWith('data:image/') ? (
                 // eslint-disable-next-line @next/next/no-img-element -- wallet-provided data: URI icon
                 <img src={c.icon} alt="" width={22} height={22} />
               ) : (
@@ -204,7 +206,7 @@ const SIGN_LABEL: Record<SignStage, string> = {
   idle: 'Sign message',
   first: 'Waiting for your signature…',
   second: 'Sign once more to check your wallet…',
-  deriving: 'Creating your private keys…',
+  deriving: UI.signDeriving,
 };
 /** A pending wallet request can be abandoned after this long (audit round 2, N7). */
 const CANCEL_AFTER_MS = 5000;
@@ -245,7 +247,19 @@ function SignModal() {
     [],
   );
 
+  /** The wallet is still connected to this account (checked after every await: it can switch account meanwhile). */
+  const stillOn = (wallet: Address) => {
+    const a = getAccount(config);
+    return a.status === 'connected' && a.address?.toLowerCase() === wallet.toLowerCase();
+  };
+  const walletChanged = () => {
+    setChanged(null);
+    setErr('Your wallet switched to another account, so nothing was opened. Sign again with the account you want to use.');
+    stop();
+  };
   const finish = (wallet: Address, paddr: string, fp: string) => {
+    // Never open the previous account's session after the wallet moved on (audit web F5).
+    if (!stillOn(wallet)) return walletChanged();
     rememberAccountFingerprint(wallet, fp);
     rememberSession(wallet, paddr);
     s.set({ account: { addr: wallet, paddr }, ledger: loadLedger(wallet) ?? seedLedger(), modal: null, modalLocked: false });
@@ -272,6 +286,7 @@ function SignModal() {
       const message = buildSignMessage(address);
       const first = await checkSignature(await signMessage(config, { message, account: address }), message, address);
       if (!live()) return;
+      if (!stillOn(address)) return walletChanged();
       if (!first.ok) {
         setRefused(first.reason);
         return stop();
@@ -283,6 +298,7 @@ function SignModal() {
         setStage('second');
         const again = await checkSignature(await signMessage(config, { message, account: address }), message, address);
         if (!live()) return;
+        if (!stillOn(address)) return walletChanged();
         if (!again.ok || again.sig !== sig) {
           sig = null;
           setRefused(again.ok ? 'unstable' : again.reason);
@@ -295,6 +311,7 @@ function SignModal() {
       sig = null;
       await sleep(700);
       if (!live()) return;
+      if (!stillOn(address)) return walletChanged();
       const fp = accountFingerprint(CHAIN.id, address, paddr);
       const before = recallAccountFingerprint(address);
       if (before && before !== fp) {
@@ -360,7 +377,7 @@ function SignModal() {
       <p className="m-text" aria-live="polite">
         {stage === 'second'
           ? 'Sign the same message once more. This checks that your wallet always gives the same signature, so it always opens the same account. You only do this once in this browser.'
-          : 'Sign one message to create your private keys in this browser. It costs no gas and sends nothing to a server. The same wallet opens the same account on any device.'}
+          : UI.signIntro}
       </p>
       <div className="boxnote warn">
         <I.info />
@@ -415,7 +432,7 @@ function AccountModal() {
         </div>
       </div>
       <p className="m-text" style={{ marginTop: 12 }}>
-        Nothing onchain links these two addresses. Disconnecting removes your keys from this browser; signing again restores them.
+        {UI.accountNote}
       </p>
       {wrong ? (
         <button className="btn btn-white btn-block" onClick={() => s.openModal({ kind: 'network' })}>
@@ -439,13 +456,15 @@ const ADDRESS_HINT = {
 function MoveModal({ kind }: { kind: MoveKind }) {
   const s = useApp();
   const pub = usePublicBalances(s.account?.addr);
+  // Tokens whose balance could not be read are not offered (nothing known to shield).
+  const pubBal = pub.data?.bal ?? {};
   const shieldable = (t: string): Wad => {
-    const v = bal(pub.data ?? {}, t) - bal(s.ledger.shielded, t);
+    const v = bal(pubBal, t) - bal(s.ledger.shielded, t);
     return v > 0n ? v : 0n;
   };
   const toks =
     kind === 'shield'
-      ? Object.keys(pub.data ?? {}).filter((t) => t !== 'ETH' && shieldable(t) > 10n ** 11n)
+      ? Object.keys(pubBal).filter((t) => t !== 'ETH' && shieldable(t) > 10n ** 11n)
       : Object.keys(s.ledger.priv).filter((t) => t !== 'ETH' && bal(s.ledger.priv, t) > 10n ** 11n);
   const [tok, setTok] = useState(toks[0] ?? '');
   const [amt, setAmt] = useState('');
@@ -486,10 +505,10 @@ function MoveModal({ kind }: { kind: MoveKind }) {
       </select>
       {emptyShield ? (
         <p className="m-text" style={{ marginTop: 10, fontSize: 13 }}>
-          {pub.isLoading ? 'Reading your public wallet…' : CHAIN.faucets.usdg ? 'No test tokens in this wallet yet. ' : 'No USDG or supported stock tokens in this wallet yet.'}
+          {pub.isLoading ? 'Reading your public wallet…' : CHAIN.faucets.usdg ? 'No test tokens in this wallet yet. ' : 'No USDG or supported Stock Tokens in this wallet yet.'}
           {pub.isLoading || !CHAIN.faucets.usdg ? null : (
             <>
-              Get ETH and stock tokens from the{' '}
+              Get ETH and Stock Tokens from the{' '}
               <a className="lnk" href={CHAIN.faucets.ethAndStockTokens} target="_blank" rel="noreferrer">
                 Robinhood Chain faucet
               </a>{' '}
@@ -507,7 +526,7 @@ function MoveModal({ kind }: { kind: MoveKind }) {
         <span>
           {kind === 'shield' ? 'In wallet' : 'Available'}{' '}
           <b className="num">
-            {fmt(have, dp(t))} {t}
+            {fmtBal(have, dp(t))} {t}
           </b>
         </span>
       </div>
@@ -554,7 +573,7 @@ function MoveModal({ kind }: { kind: MoveKind }) {
         {{ shield: 'Shield', unshield: 'Unshield', send: 'Send' }[kind]} {t}
       </button>
       <p className="hint" id="mv-hint">
-        {hint || bad || (over ? `You have ${fmt(have, dp(t))} ${t} available.` : '')}
+        {hint || bad || (over ? `You have ${fmtBal(have, dp(t))} ${t} available.` : '')}
       </p>
     </>
   );
@@ -578,7 +597,7 @@ function LpAddModal({ sym }: { sym: string }) {
       <div className="fl">
         <label htmlFor="lp-amt">Amount</label>
         <span>
-          Available <b className="num pv">{fmt(have)} USDG</b>
+          Available <b className="num pv">{fmtBal(have)} USDG</b>
         </span>
       </div>
       <div className="inp">
@@ -596,7 +615,7 @@ function LpAddModal({ sym }: { sym: string }) {
         </div>
         <div>
           <span>You earn</span>
-          <b>0.30% of swaps</b>
+          <b>{P.poolFee} of swaps</b>
         </div>
         <div>
           <span>{visK}</span>
@@ -607,7 +626,7 @@ function LpAddModal({ sym }: { sym: string }) {
         Add liquidity
       </button>
       <p className="hint" id="lp-hint">
-        {bad || (price === null ? `No live price for ${sym} right now, so liquidity can't be added.` : a > have ? `You have ${fmt(have)} USDG available.` : '')}
+        {bad || (price === null ? (mk(sym).closed ? CLOSED.hint : `No live price for ${sym} right now, so liquidity can't be added.`) : a > have ? `You have ${fmtBal(have)} USDG available.` : '')}
       </p>
     </>
   );

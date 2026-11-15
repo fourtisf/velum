@@ -1,10 +1,12 @@
 'use client';
+import { IS_MAINNET } from '@velum/config';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { privTotal } from '@/lib/calc';
-import { shortH, usdOrDash } from '@/lib/format';
+import { shortH, usdBal } from '@/lib/format';
 import { usePriceTick } from '@/lib/markets';
 import { useApp } from '@/lib/store';
+import { DemoBanner } from './DemoBanner';
 import { I, Mark } from './icons';
 
 const TABS: Array<[string, string]> = [
@@ -38,7 +40,7 @@ export function EyeButton() {
 function WalletTotal() {
   usePriceTick();
   const ledger = useApp((s) => s.ledger);
-  return <span className="b num pv">{usdOrDash(privTotal(ledger))}</span>;
+  return <span className="b num pv">{usdBal(privTotal(ledger))}</span>;
 }
 
 export function Nav({ variant }: { variant: 'landing' | 'app' }) {
@@ -51,51 +53,56 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
   const connected = !!account;
 
   return (
-    <header className={app ? 'nav' : 'nav nav-land'}>
-      <div className="nav-in">
-        <Brand />
-        {app ? (
-          <nav className="nlinks tabs" aria-label="App">
-            {TABS.map(([k, l]) => (
-              <Link key={k} href={k === 'trade' ? `/app/trade/${sel}` : `/app/${k}`} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined}>
-                {l}
-              </Link>
-            ))}
-          </nav>
-        ) : (
-          <nav className="nlinks land" aria-label="Main">
-            <a href="#features">Product</a>
-            <a href="#how">How it works</a>
-            <a href="#privacy">Privacy</a>
-            <a href="#markets">Markets</a>
-            <a href="#developers">Developers</a>
-          </nav>
-        )}
-        <div className="nright">
-          {app || connected ? <EyeButton /> : null}
-          {connected ? (
-            <button className="walletbtn" onClick={() => openModal({ kind: 'account' })}>
-              <span className="sr">Your account</span>
-              <i />
-              <span className="hide-sm">{shortH(account.addr)}</span>
-              <WalletTotal />
-            </button>
-          ) : app ? (
-            <button className="btn btn-white" onClick={() => openModal({ kind: 'connect' })}>
-              Connect wallet
-            </button>
+    <>
+      <header className={app ? 'nav' : 'nav nav-land'}>
+        <div className="nav-in">
+          <Brand />
+          {app ? (
+            <nav className="nlinks tabs" aria-label="App">
+              {TABS.map(([k, l]) => (
+                <Link key={k} href={k === 'trade' ? `/app/trade/${sel}` : `/app/${k}`} className={view === k ? 'on' : ''} aria-current={view === k ? 'page' : undefined}>
+                  {l}
+                </Link>
+              ))}
+            </nav>
           ) : (
-            <button className="btn btn-ghost hide-sm" onClick={() => openModal({ kind: 'connect' })}>
-              Connect wallet
-            </button>
+            <nav className="nlinks land" aria-label="Main">
+              <a href="#features">Product</a>
+              <a href="#how">How it works</a>
+              <a href="#privacy">Privacy</a>
+              <a href="#markets">Markets</a>
+              <a href="#developers">Developers</a>
+            </nav>
           )}
-          {app ? null : (
-            <Link className="btn btn-white" href="/app/trade/TSLA">
-              Launch app
-            </Link>
-          )}
+          <div className="nright">
+            {app || connected ? <EyeButton /> : null}
+            {connected ? (
+              <button className="walletbtn" onClick={() => openModal({ kind: 'account' })}>
+                <span className="sr">Your account</span>
+                <i />
+                <span className="hide-sm">{shortH(account.addr)}</span>
+                {/* Mainnet: the real wallet address is never shown next to the simulated practice total (audit web F3). */}
+                {IS_MAINNET ? null : <WalletTotal />}
+              </button>
+            ) : app ? (
+              <button className="btn btn-white" onClick={() => openModal({ kind: 'connect' })}>
+                Connect wallet
+              </button>
+            ) : (
+              <button className="btn btn-ghost hide-sm" onClick={() => openModal({ kind: 'connect' })}>
+                Connect wallet
+              </button>
+            )}
+            {app ? null : (
+              <Link className="btn btn-white" href="/app/trade/TSLA">
+                Launch app
+              </Link>
+            )}
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
+      {/* Mainnet landing page while connected: the same demo note as in the app (audit web F3). */}
+      {!app && connected && IS_MAINNET ? <DemoBanner /> : null}
+    </>
   );
 }

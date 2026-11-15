@@ -21,7 +21,7 @@
     "viem": "2.57.19"
   },
   "devDependencies": {
-    "tsup": "8.5.1",
+    "tsup": "9.0.0",
     "tsx": "4.23.15",
     "vitest": "4.1.12"
   }

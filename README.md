@@ -1,10 +1,11 @@
 # Velum
 
-Private spot and perps for tokenized stocks on Robinhood Chain (testnet).
+Private spot and perps for Stock Tokens on Robinhood Chain.
 
 > Status: **Phase 2**, a production frontend with demo trading. Wallet connect, public balances,
-> prices and candles are real. Trades are simulated in the browser behind a visible "Demo mode" banner.
-> Claude Code: start with `CLAUDE.md`.
+> prices and candles are real; trades are simulated in the browser behind a visible "Demo mode" banner.
+> The site runs on testnet, or on mainnet in read-only mode (real wallet and balances, live prices,
+> simulated trades). Velum contracts exist on testnet only. Claude Code: start with `CLAUDE.md`.
 
 ## What's in this repo
 
@@ -12,14 +13,17 @@ Private spot and perps for tokenized stocks on Robinhood Chain (testnet).
 |---|---|
 | `CLAUDE.md` | Master brief: rules, stack, routes, phases |
 | `prototype/index.html` | Approved UI (Phase 1 serves it as-is). Visual source of truth |
-| `apps/web` | Next.js 14 port of the prototype: landing + `/app/*` (wagmi v2 + viem) |
+| `apps/web` | Next.js 15 port of the prototype: landing + `/app/*` (wagmi v2 + viem) |
 | `apps/api` | Fastify read API: health, markets, candles, pools, stats, quote |
 | `apps/workers` | BullMQ workers: price relay + candles |
-| `packages/config` | Verified chain constants, tokens, markets, protocol numbers, Redis contract |
+| `packages/config` | Verified chain constants, tokens, markets, protocol numbers, session calendar, Redis contract |
 | `packages/math` | 1e18 fixed-point money math and every formula in docs/01 §6 |
 | `packages/db` | Prisma schema, migrations, generated client |
-| `deploy/` | Nginx, PM2, Phase 1 script, Phase 2 server setup and release scripts |
-| `docs/` | Product spec, architecture, API, contracts + privacy, deploy, roadmap |
+| `contracts/` | Foundry project: the Phase 3 contracts, tests and deploy script (testnet only, not audited) |
+| `deploy/` | Nginx, PM2, Phase 1 script, Phase 2 server setup, release scripts, dedicated Redis (`redis-velum.sh`) |
+| `docs/` | Product spec, architecture, API, contracts + privacy, deploy, roadmap (with the owner's decisions) |
+| `.github/` | CI (lint, typecheck, test, build, Foundry) and Dependabot |
+| `LICENSE`, `SECURITY.md` | Proprietary licence (all rights reserved); how to report a vulnerability |
 
 ## Phase 1: the prototype live (static)
 
@@ -36,12 +40,15 @@ port), and issues HTTPS. `www.` is included only if its DNS points at the server
 ## Phase 2: full stack
 
 ```
-apps/web      Next.js 14   127.0.0.1:3000             (PM2 cluster ×2 as velum-web; next free port if taken)
+apps/web      Next.js 15   127.0.0.1:3000             (PM2 cluster ×2 as velum-web; next free port if taken)
 apps/api      Fastify      /run/velum-api/api.sock    (PM2 cluster ×2 as velum; Nginx /api/ → the socket)
 apps/workers  BullMQ       no port                    (PM2 fork ×1 as velum)
-PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password)
+PostgreSQL    :5432 (localhost)   Redis :6379 (localhost, password), or Velum's own Redis on a socket
 ```
-Each user's PM2 daemon runs under its own systemd unit (`pm2-velum`, `pm2-velum-web`).
+Each user's PM2 daemon runs under its own systemd unit (`pm2-velum`, `pm2-velum-web`), started after
+PostgreSQL and Redis at boot. On a shared server, give Velum its own Redis (a unix socket only `velum`
+can reach, its own password): `sudo bash /srv/velum/deploy/redis-velum.sh`, then `deploy.sh`
+(docs/05, "Dedicated Redis for Velum").
 
 First time on the server, as root in tmux (installs only what's missing, writes `.env` atomically with
 generated passwords, adds the Nginx site and security headers, issues HTTPS, runs the first release,
@@ -85,7 +92,7 @@ new users before rotating secrets. See that file for the security model, manual 
 
 ## Local development
 
-Needs Node 20+, pnpm 9, PostgreSQL 16 and Redis 7.
+Needs Node 22 LTS, pnpm 9, PostgreSQL 16 and Redis 7.
 
 ```bash
 pnpm install
@@ -96,31 +103,40 @@ pnpm --filter @velum/api dev       # http://127.0.0.1:4000/v1/health
 API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://localhost:3000
 ```
 
-Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
+Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
+The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
 ## What changed in Phase 2
 
 - **Real prices** (`PRICE_SOURCE=robinhood`): official quotes from api.robinhood.com/rhj/prices
-  (documented at docs.robinhood.com/chain/stock-token-apis), using the bid/ask midpoint. Each quote must name
-  the exact mainnet token address. Switching between simulated and real prices clears stored history
-  once, so charts never mix the two. On mainnet, protocol metrics (open interest, funding, pool size,
-  APR, proofs) show "—" until contracts exist.
+  (documented at docs.robinhood.com/chain/stock-token-apis). The price is the midpoint of the token's
+  bid and ask. The documented `bid`/`ask` are the raw underlying-equity quote; Velum reads the
+  undocumented `tokenBid`/`tokenAsk` (equal to `bid`/`ask` × `currentMultiplier`, which includes
+  corporate actions) and, when a quote lacks them, computes `bid`/`ask` × `currentMultiplier` from
+  api.robinhood.com/rhj/assets itself. Each quote must name the exact mainnet token address. A quote
+  that stops changing (weekends, US holidays, an early close) is not shown as live: snapshots carry the
+  quote time, and the API marks the market stale (`marketClosed` from a 24/5 session calendar, or
+  `quoteFrozen` after 15 minutes without a change). Switching between simulated and real prices clears
+  stored history once, so charts never mix the two; mainnet refuses simulated prices. On mainnet,
+  protocol metrics (open interest, funding, pool size, APR, proofs) are null in the API and show "—"
+  until contracts exist.
 - **Testnet or mainnet** (`VELUM_NETWORK`). Mainnet constants in `packages/config/robinhood-mainnet.json`
   come from docs.robinhood.com and Robinhood's own asset list (api.robinhood.com/rhj/assets), and
   each was checked on-chain. On mainnet all 10 markets exist. Every sentence that says "testnet"
   switches to wording that is true there, and receipts add "Simulated, nothing was sent onchain".
 - **Verified chain constants** (`packages/config/robinhood-testnet.json`). Chain ID 46630, RPC and
   explorer match docs.robinhood.com and the RPC itself. All six token contracts were checked on-chain:
-  USDG has 6 decimals, stock tokens have 18. Multicall3 is deployed. Chainlink feed addresses are not verified yet, so
+  USDG has 6 decimals, Stock Tokens have 18. Multicall3 is deployed. Chainlink feed addresses are not verified yet, so
   `PRICE_SOURCE=demo` stays the default.
 - **Web**: every prototype route ported with its CSS verbatim, giving the same layout at 1440, 1024 and 390 px. The only
   visible additions are the demo banner and "Coming soon" on NVDA, AAPL, META, MSFT and COIN, which have
-  no testnet token. Lighthouse: performance 91–92, accessibility 96, best practices 100, SEO 100.
+  no testnet token. Lighthouse scores are a target (CLAUDE.md §6), not a measured claim here.
 - **Wallet**: every installed wallet listed by name and icon (EIP-6963: MetaMask, Rabby, Phantom, …),
   plus WalletConnect when `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set,
   plus the Coinbase/passkey connector. Wrong networks prompt a switch. Public balances come from the chain
-  through Multicall3. Third-party wallet SDKs load only when chosen and with telemetry off, so a session
-  talks only to our API and the testnet RPC.
+  through Multicall3. Third-party wallet SDKs load only when chosen and with telemetry off: the browser
+  talks to Velum's API and the configured network's RPC, plus the chosen wallet SDK's own services
+  (WalletConnect relay, Coinbase Wallet) once the user picks one.
 - **Private account (demo)**: one signature is hashed in the browser into a `velum1…` address. The
   signature is never stored or sent. Private balances, positions, offers and LP are a demo ledger kept
   per wallet in `localStorage`, using the prototype's flows, receipts and toasts and the fixed-point
@@ -128,8 +144,8 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
   prototype's NVDA, which is not on testnet).
 - **API**: per docs/03-api.md. Money is returned as strings, quotes are rounded down to 4 significant
   figures, rate limits live in Redis, there is one error format, and the API holds no per-user state or keys.
-- **Workers**: demo or Chainlink price source, Redis snapshots with a last-hour sparkline,
-  PriceTick rows, 15m/1h/4h/1D candles, demo backfill and tick pruning.
+- **Workers**: demo, Robinhood or Chainlink price source, Redis snapshots with a last-hour sparkline,
+  PriceTick rows, 15m/1h/4h/1D candles tagged with their price source, demo backfill and tick pruning.
 - **Deploy**: Nginx security headers now survive per-location `add_header`. Cross-origin isolation
   is deferred to Phase 4 because it breaks wallet popups. Server setup is now one script, and the release script
   re-runs itself after pulling.
@@ -161,12 +177,31 @@ Checks (run before every commit): `pnpm lint && pnpm typecheck && pnpm test && p
   as Velum's own role (`deploy/backup-db.sh`); docs/05 adds a "Compromise suspected" path (new users first,
   then rotation), and the users a base runs as are recorded in `.velum-users`.
 
+- **Full backend audit (November 2026)**: prices frozen over a weekend are no longer reported as live
+  (quote time in snapshots, `marketOpen`, `quoteAge` and `staleReason` in `/v1/markets`); everything
+  read back from Redis is validated and a queued candle job is never trusted (its tick is read back
+  from Postgres), so another tenant of a shared Redis cannot plant prices or candles, and
+  `deploy/redis-velum.sh` gives Velum a Redis of its own; the workers wait for Postgres and Redis at
+  boot instead of exiting (PM2 backoff, systemd ordering); candles dated in the future are dropped;
+  IPv6 clients are rate limited per /64; `API_SOCKET` requires `PROXY_SECRET`; a Redis outage degrades
+  the API (stale last-known prices, in-memory rate limits) instead of failing it; `/v1/markets` is
+  cached for a second and has its own budget; secret values are redacted from logs; demo numbers carry
+  `"demo": true` on testnet and are null on mainnet; `/v1/health` checks the RPC's chain id and always
+  reports `demoMode: true`; the workers no longer receive a hot key in Phase 2.
+
 ## Stack
 
-Next.js 14 · Fastify · Prisma · PostgreSQL · Redis · BullMQ · wagmi/viem · PM2 · Nginx
-(Foundry and Noir arrive in Phases 3–4.)
+Next.js 15 · React 19 · Node 22 LTS · Fastify · Prisma · PostgreSQL · Redis · BullMQ · wagmi/viem ·
+PM2 · Nginx · Foundry (`contracts/`, testnet only). Noir circuits arrive in Phase 4.
+
+## Licence
+
+Proprietary: all rights reserved (see `LICENSE`). The source is public to read, not to use. Report
+vulnerabilities privately (see `SECURITY.md`).
 
 ## Disclaimer
 
-An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet only.
-Test tokens have no value. Trades are simulated in Phase 2. Contracts are not audited.
+An independent project on Robinhood Chain, not affiliated with Robinhood. The site runs on Robinhood
+Chain mainnet in read-only mode (real wallet and balances, live prices, simulated trades) or on testnet.
+Velum contracts are deployed on testnet only and are not audited; none goes to mainnet before an
+external audit. Test tokens have no value.

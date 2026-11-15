@@ -177,9 +177,9 @@ describe('L9: candle cache follows Postgres, failed jobs are retried', () => {
       const m = await prisma.market.upsert({ where: { symbol: 'ZZC' }, create: { symbol: 'ZZC', name: 'ZZC', status: 'live', maxLeverage: 5, takerFeeBps: 6 }, update: {}, select: { id: true } });
       await prisma.candle.deleteMany({ where: { marketId: m.id } });
       const row = (price: string) => ({ marketId: m.id, tf: '1h' as const, t: T0, price });
-      await prisma.$executeRaw(candleUpsertSql([row('100')]));
-      await prisma.$executeRaw(candleUpsertSql([row('105')]));
-      await prisma.$executeRaw(candleUpsertSql([row('90')], { keepClose: true }));
+      await prisma.$executeRaw(candleUpsertSql([row('100')], { source: 'robinhood' }));
+      await prisma.$executeRaw(candleUpsertSql([row('105')], { source: 'robinhood' }));
+      await prisma.$executeRaw(candleUpsertSql([row('90')], { source: 'robinhood', keepClose: true }));
       const c = await prisma.candle.findFirstOrThrow({ where: { marketId: m.id } });
       expect([c.o, c.h, c.l, c.c].map((d) => d.toFixed())).toEqual(['100', '105', '90', '105']);
       await prisma.candle.deleteMany({ where: { marketId: m.id } });

@@ -26,6 +26,9 @@ const env: ApiEnv = {
   logLevel: 'silent',
   proxySecret: null,
   socketPath: null,
+  redis: { db: 0 },
+  rateMarketsPerMin: 600,
+  network: 'testnet',
 };
 const snap = (symbol: string, price: string): MarketSnapshot => ({ symbol, price, mark: price, open24h: price, spark: [price], source: 'demo', updatedAt: NOW - 1000 });
 

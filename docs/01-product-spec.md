@@ -149,10 +149,17 @@ backing. Offers table: market, backing, fills, earned, spreads, ends, `Withdraw`
 | MSFT | Microsoft | 508.10 | .0008 | 389,000 | .0009% |
 | COIN | Coinbase | 301.70 | .0024 | 212,000 | .0068% |
 
-Phase 2+: replace with real oracle prices. Testnet tokens known today: TSLA, AMZN, PLTR,
-NFLX, AMD (see `packages/config/robinhood-testnet.json`). Others render as "Coming soon".
+These are **Stock Tokens** on Robinhood Chain (the brand's term; Velum copy never says "tokenized stocks").
+Phase 2+: replace the seed with real prices (mainnet: official Robinhood quotes, docs/03). Testnet
+Stock Tokens known today: TSLA, AMZN, PLTR, NFLX, AMD (see `packages/config/robinhood-testnet.json`).
+Others render as "Coming soon". On mainnet all ten exist; open interest and funding have no real source
+before Phase 3 and show "—".
 
-Avatars: neutral circle with the company initial (no third-party logos).
+Avatars (owner decision, replacing the prototype's neutral initials): each stock shows its company logo
+on a disc in the brand colour, from `apps/web/lib/logos.ts` (Simple Icons glyphs for eight companies,
+used only to identify each company's Stock Token, with the attribution and trademark note kept in that
+file; Amazon and Microsoft get a monogram in their brand colour). USDG, ETH and unknown tokens keep the
+neutral circle with the initial. Robinhood's logo is never used (CLAUDE.md brand rules).
 
 ## 6. Formulas
 

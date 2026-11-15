@@ -66,9 +66,11 @@ const ALLOW = {
     prefixes: ['RATE_LIMIT_'],
   },
   'velum-workers': {
+    // No hot key in Phase 2 (audit I-6): the workers sign nothing. PRICE_RELAY_PRIVATE_KEY comes back with
+    // the Phase 3 on-chain price relay.
     keys: [
       'NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE',
-      'PRICE_POLL_MS', 'PRICE_SOURCE', 'PRICE_TICK_RETENTION_DAYS', 'LOG_LEVEL', 'PRICE_RELAY_PRIVATE_KEY',
+      'PRICE_POLL_MS', 'PRICE_SOURCE', 'PRICE_TICK_RETENTION_DAYS', 'LOG_LEVEL',
     ],
     prefixes: [],
   },
@@ -92,6 +94,12 @@ const PATH = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
 
 // API force-exits 10 s after SIGTERM; give it time to drain before PM2 sends SIGKILL (audit L13).
 const common = { kill_timeout: 12_000, autorestart: true };
+// api and workers (audit M-3): a crash is restarted after 1 s, then 1.5x longer each time up to 15 s
+// (PM2 resets the delay after 30 s up), so a process that cannot start yet (Postgres or Redis still
+// booting) keeps being retried instead of PM2 marking it errored after max_restarts fast restarts. A run
+// shorter than min_uptime counts as unstable; with the backoff fewer than max_restarts fit into PM2's
+// min_uptime x max_restarts window. The workers also wait for Postgres and Redis themselves.
+const backend = { exp_backoff_restart_delay: 1000, min_uptime: 5000, max_restarts: 16 };
 
 const all = [
   {
@@ -109,6 +117,7 @@ const all = [
   },
   {
     ...common,
+    ...backend,
     name: 'velum-api',
     cwd: path.join(appRoot, 'apps/api'),
     script: 'dist/server.js',
@@ -121,6 +130,7 @@ const all = [
   },
   {
     ...common,
+    ...backend,
     name: 'velum-workers',
     cwd: path.join(appRoot, 'apps/workers'),
     script: 'dist/index.js',

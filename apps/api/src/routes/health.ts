@@ -11,14 +11,22 @@ export const WORKERS_HEARTBEAT = 'workers';
  * never ran). In Phase 3+ it becomes the indexer's block lag. `workers` is the number of seconds
  * since the workers process last reported alive (null if never), whether or not a price source has
  * quotes; deploy/deploy.sh checks it after each release (audit R2-L5). `block` is null when the RPC
- * is unreachable; that alone does not fail the check. 503 only when Postgres or Redis is down.
+ * is unreachable; that alone does not fail the check. `rpcChainId` is RPC_URL's eth_chainId (null until
+ * the RPC answered, audit I-5). 503 when Postgres or Redis is down, or when RPC_URL serves another chain
+ * than CHAIN_ID. `demoMode` is always true in Phase 2: every trade is simulated (audit DV-08).
  * Rate limited per IP (RATE_LIMIT_HEALTH_PER_MIN): each call pings Postgres and Redis (audit L6).
+ * Keep `"workers":<n>` followed by another field: deploy.sh reads it with a pattern.
  */
 export function healthRoutes(deps: AppDeps): FastifyPluginAsync {
   const now = deps.now ?? Date.now;
   return async (app) => {
     app.get('/v1/health', { config: { rateLimit: { max: deps.env.rateHealthPerMin, timeWindow: '1 minute' } } }, async (_req, reply) => {
-      const [db, redis, block] = await Promise.all([deps.db.ping(), deps.cache.ping(), deps.chain.blockNumber()]);
+      const [db, redis, block, rpcChainId] = await Promise.all([
+        deps.db.ping(),
+        deps.cache.ping(),
+        deps.chain.blockNumber(),
+        deps.chain.chainId ? deps.chain.chainId().catch(() => null) : Promise.resolve(null),
+      ]);
       let lag: number | null = null;
       let workers: number | null = null;
       if (redis) {
@@ -30,7 +38,8 @@ export function healthRoutes(deps: AppDeps): FastifyPluginAsync {
         lag = age(hb);
         workers = age(alive);
       }
-      const ok = db && redis;
+      const chainOk = rpcChainId === null || rpcChainId === deps.env.chainId;
+      const ok = db && redis && chainOk;
       return reply.code(ok ? 200 : 503).send({
         ok,
         chainId: deps.env.chainId,
@@ -39,7 +48,8 @@ export function healthRoutes(deps: AppDeps): FastifyPluginAsync {
         workers,
         db,
         redis,
-        demoMode: deps.env.demoMode,
+        demoMode: true,
+        rpcChainId,
       });
     });
   };

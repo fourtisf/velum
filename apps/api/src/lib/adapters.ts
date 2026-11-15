@@ -1,27 +1,35 @@
 /** Production implementations of the readers in deps.ts (Redis, Prisma, viem). */
-import { cacheKeys, type Candle, type MarketSnapshot, type Timeframe } from '@velum/config';
+import { TIMEFRAME_MS, cacheKeys, parseCandles, parseHeartbeat, parseSnapshot, type Candle, type MarketSnapshot, type Timeframe } from '@velum/config';
 import { Prisma, type PrismaClient } from '@velum/db';
 import type { Redis } from 'ioredis';
 import { createPublicClient, http } from 'viem';
 import type { CacheReader, ChainReader, DbReader, PublishedPool } from './deps';
+import { circuit, timeout } from './memo';
 
 const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
   Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms).unref())]);
 
-function parseJson<T>(raw: string | null): T | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
-}
+/** Longest wait for one Redis read; the routes then answer degraded (audit L-4). */
+export const REDIS_READ_TIMEOUT_MS = 250;
+/** After a failed read, reads fail at once for this long (one timeout per outage, not one per request). */
+export const REDIS_BREAKER_MS = 2000;
 
-export function redisCache(redis: Redis): CacheReader {
+/**
+ * Reads what the workers wrote. Redis may be shared with other tenants (audit M-2), so every value is
+ * validated with the parsers in packages/config (cache.ts): malformed, oversized or future-dated values
+ * count as missing. Reads time out after REDIS_READ_TIMEOUT_MS (rejecting) instead of waiting for the
+ * client's reconnects, and after a failure they fail at once for REDIS_BREAKER_MS (ping is exempt:
+ * /v1/health must see the truth).
+ */
+export function redisCache(redis: Redis, opts: { now?: () => number; timeoutMs?: number } = {}): CacheReader {
+  const now = opts.now ?? Date.now;
+  const ms = opts.timeoutMs ?? REDIS_READ_TIMEOUT_MS;
+  const guarded = circuit(REDIS_BREAKER_MS);
+  const read = <T>(p: () => Promise<T>) => guarded(() => timeout(p(), ms, 'Redis read'));
   return {
     async ping() {
       try {
-        return (await withTimeout(redis.ping(), 1500, 'TIMEOUT')) === 'PONG';
+        return (await withTimeout(redis.ping(), 500, 'TIMEOUT')) === 'PONG';
       } catch {
         return false;
       }
@@ -29,21 +37,20 @@ export function redisCache(redis: Redis): CacheReader {
     async snapshots(symbols) {
       const out = new Map<string, MarketSnapshot>();
       if (!symbols.length) return out;
-      const raws = await redis.mget(...symbols.map((s) => cacheKeys.price(s)));
+      const raws = await read(() => redis.mget(...symbols.map((s) => cacheKeys.price(s))));
+      const t = now();
       raws.forEach((raw, i) => {
-        const snap = parseJson<MarketSnapshot>(raw);
-        if (snap && typeof snap.price === 'string') out.set(symbols[i]!, snap);
+        const snap = parseSnapshot(raw, symbols[i]!, t);
+        if (snap) out.set(symbols[i]!, snap);
       });
       return out;
     },
     async candles(symbol, tf) {
-      const arr = parseJson<Candle[]>(await redis.get(cacheKeys.candles(symbol, tf)));
-      return Array.isArray(arr) ? arr : null;
+      const raw = await read(() => redis.get(cacheKeys.candles(symbol, tf)));
+      return parseCandles(raw, TIMEFRAME_MS[tf], now());
     },
     async heartbeat(worker) {
-      const raw = await redis.get(cacheKeys.heartbeat(worker));
-      const n = raw ? Number(raw) : NaN;
-      return Number.isFinite(n) ? n : null;
+      return parseHeartbeat(await read(() => redis.get(cacheKeys.heartbeat(worker))), now());
     },
   };
 }
@@ -85,9 +92,14 @@ export function prismaDb(prisma: PrismaClient): DbReader {
       );
       return withTimeout(query, 2000, false);
     },
-    async candles(symbol, tf: Timeframe, limit) {
+    async candles(symbol, tf: Timeframe, limit, query = {}) {
       const rows = await prisma.candle.findMany({
-        where: { tf, market: { symbol } },
+        where: {
+          tf,
+          market: { symbol },
+          ...(query.until !== undefined ? { t: { lte: new Date(query.until) } } : {}),
+          ...(query.realOnly ? { source: { not: 'demo' } } : {}),
+        },
         orderBy: { t: 'desc' },
         take: limit,
       });
@@ -114,7 +126,22 @@ export function viemChain(rpcUrl: string, cacheMs = 5000): ChainReader {
   const client = createPublicClient({ transport: http(rpcUrl, { timeout: 3000, retryCount: 0 }) });
   let cached: { at: number; value: bigint | null } | null = null;
   let inflight: Promise<bigint | null> | null = null;
+  // eth_chainId: re-checked every 10 minutes once known, every 30 s while the RPC has not answered.
+  let chain: { at: number; value: number | null } | null = null;
+  let chainInflight: Promise<number | null> | null = null;
   return {
+    async chainId() {
+      if (chain && Date.now() - chain.at < (chain.value === null ? 30_000 : 600_000)) return chain.value;
+      chainInflight ??= client
+        .getChainId()
+        .catch(() => null)
+        .then((value) => {
+          chain = { at: Date.now(), value: value ?? chain?.value ?? null };
+          chainInflight = null;
+          return chain.value;
+        });
+      return chainInflight;
+    },
     async blockNumber() {
       if (cached && Date.now() - cached.at < cacheMs) return cached.value;
       inflight ??= client

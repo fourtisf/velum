@@ -22,14 +22,20 @@ export function demoProofsToday(now: number): number {
   return Math.floor(DEMO.proofsTodayBase * frac * (1 + 0.02 * dayJitter(day)));
 }
 
+/**
+ * GET /v1/stats. Open interest, shielded value and proofs have no real source before Phases 3-4: on
+ * testnet they are demo values and the answer says "demo": true; on mainnet they are null (audit DV-03).
+ */
 export function statsRoutes(deps: AppDeps): FastifyPluginAsync {
   const now = deps.now ?? Date.now;
+  const demo = deps.env.network !== 'mainnet';
   return async (app) => {
     app.get('/v1/stats', async () => ({
       markets: MARKETS.length,
-      openInterest: OPEN_INTEREST,
-      shieldedValue: DEMO.shieldedValue,
-      proofsToday: demoProofsToday(now()),
+      openInterest: demo ? OPEN_INTEREST : null,
+      shieldedValue: demo ? DEMO.shieldedValue : null,
+      proofsToday: demo ? demoProofsToday(now()) : null,
+      demo,
     }));
   };
 }

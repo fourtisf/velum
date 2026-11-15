@@ -1,38 +1,61 @@
+import { once } from 'node:events';
 import { PrismaClient } from '@velum/db';
 import { Redis } from 'ioredis';
 import { buildApp } from './app';
 import { loadEnv } from './env';
 import { prismaDb, redisCache, viemChain } from './lib/adapters';
 import { listenOnSocket } from './lib/listen';
-import { redactUrls } from './lib/redact';
+import { redact } from './lib/redact';
+
+/** Error serializer for the request log: messages and stacks pass through redact() (audit L-6). */
+const errSerializer = (e: unknown) => {
+  if (!(e instanceof Error)) return { message: redact(String(e)) };
+  const code = (e as { code?: unknown }).code;
+  return { type: e.name, message: redact(e.message), stack: e.stack ? redact(e.stack) : undefined, ...(code !== undefined ? { code } : {}) };
+};
 
 async function main(): Promise<void> {
   const env = loadEnv();
 
   const prisma = new PrismaClient({ datasources: { db: { url: env.databaseUrl } } });
-  const redis = new Redis(env.redisUrl, {
+  // REDIS_URL may name a TCP Redis or the unix socket of deploy/redis-velum.sh (env.redis, audit M-2).
+  // Requests never wait for Redis (audit L-4): no offline queue (a command fails at once while Redis is
+  // unreachable), short command timeouts; the routes then answer from memory, marked stale.
+  const redis = new Redis({
+    ...env.redis,
     maxRetriesPerRequest: 1,
-    connectTimeout: 3000,
-    commandTimeout: 2000,
+    connectTimeout: 2000,
+    commandTimeout: 500,
+    enableOfflineQueue: false,
     enableAutoPipelining: true,
   });
   redis.on('error', () => {
     /* surfaced through /v1/health; ioredis keeps reconnecting */
   });
+  // Give the first connection a moment so the first requests after a (re)start are not answered degraded.
+  await Promise.race([once(redis, 'ready'), new Promise((r) => setTimeout(r, 2000).unref())]).catch(() => undefined);
 
+  const chain = viemChain(env.rpcUrl);
   const app = await buildApp(
     {
       env,
       cache: redisCache(redis),
       db: prismaDb(prisma),
-      chain: viemChain(env.rpcUrl),
+      chain,
       rateLimitRedis: redis,
       onClose: async () => {
         await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
       },
     },
-    { logger: { level: env.logLevel } },
+    { logger: { level: env.logLevel, serializers: { err: errSerializer } } },
   );
+
+  // RPC_URL must serve CHAIN_ID (audit I-5). Checked in the background: an unreachable RPC only warns
+  // (and is checked again by /v1/health); a wrong chain makes /v1/health answer 503 (ok: false).
+  void chain.chainId?.().then((got) => {
+    if (got === null) app.log.warn({ expected: env.chainId }, 'RPC unreachable at start; chain id not verified yet');
+    else if (got !== env.chainId) app.log.error({ expected: env.chainId, got }, 'RPC_URL serves another chain than CHAIN_ID; /v1/health reports unhealthy');
+  });
 
   let closing = false;
   const shutdown = (signal: string) => {
@@ -61,7 +84,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  // Never print RPC, database or Redis URLs: they carry API keys and passwords (audit L7).
-  console.error(redactUrls(err instanceof Error ? err.message : String(err)));
+  // Never print secrets: RPC, database or Redis URLs carry API keys and passwords (audit L7, L-6).
+  console.error(redact(err instanceof Error ? err.message : String(err)));
   process.exit(1);
 });

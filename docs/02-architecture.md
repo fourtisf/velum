@@ -62,11 +62,29 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
 ## 3. Data flow by phase
 
 **Phase 2 (demo trading):**
-- Prices: `price-relay` reads oracle feeds (or a market data provider in dev) every 2 s →
-  Redis `price:{sym}` + `PriceTick` rows → `candles` job builds candles.
+- Prices: `price-relay` reads the price source every 2 s (`PRICE_SOURCE`: `demo` on testnet,
+  official Robinhood quotes on mainnet, where `demo` is refused) → Redis `velum:price:{sym}`
+  snapshots stamped with the **quote time** (when the quote last changed) and the time it was read →
+  `PriceTick` rows in Postgres → a BullMQ job naming the tick time → the `candles` worker reads that
+  tick back from Postgres (a queued job's payload is never trusted) and builds 15m/1h/4h/1D candles,
+  each tagged with its price source.
+- The API serves `stale` with a reason: no snapshot, pipeline outdated, a demo price on mainnet, the
+  US-equity session closed (`usEquitySession` in packages/config: Robinhood's 24/5 window minus NYSE
+  holidays) or a quote frozen for 15 minutes (docs/03).
 - Web reads `/v1/markets`, `/v1/markets/:sym/candles`. Wallet connect is real; public
   balances via viem `balanceOf`. Private balance and trades are simulated in the browser
   store, seeded like the prototype, persisted in `localStorage` per wallet (try/catch).
+
+**Redis** holds only rebuildable state (snapshots, candle caches, queues, heartbeats, rate-limit
+counters) and is treated as untrusted input: readers validate every value (packages/config
+`parseSnapshot`, `parseCandles`, `parseHeartbeat`). On a shared server it should be Velum's own
+instance (`deploy/redis-velum.sh`: a unix socket only the app user can reach, own password,
+`noeviction`); `REDIS_URL` takes `redis://`, `rediss://` or `unix://`. The API degrades instead of
+failing when Redis is down (last known values marked stale, in-memory rate limits, short timeouts).
+
+**Start-up order:** the workers wait for Postgres and Redis with backoff (never exiting, so PM2 never
+marks them errored) and report alive only once started; PM2 restarts api and workers with an
+exponential backoff, and each PM2 daemon's systemd unit starts after PostgreSQL and Redis.
 
 **Phase 3 (public contracts):** web sends txs directly with wagmi; indexer stores events;
 positions/pools come from chain via API.
@@ -91,7 +109,8 @@ processes, least privilege. Rotate on any incident.
 
 ## 5. Performance targets
 
-- `/v1/markets` p95 < 50 ms (Redis). Candles cached per timeframe.
+- `/v1/markets` p95 < 50 ms (a 1 s in-process cache in front of Redis). Candles cached per timeframe;
+  a cold cache falls back to Postgres with one shared query per series.
 - Proof generation in browser < 3 s on a mid laptop (UltraHonk, WASM, threads when
   cross-origin isolated: set `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp` on `/app/*`).

@@ -24,6 +24,9 @@ const env: ApiEnv = {
   logLevel: 'silent',
   proxySecret: null,
   socketPath: null,
+  redis: { db: 0 },
+  rateMarketsPerMin: 600,
+  network: 'testnet',
 };
 
 const snap = (symbol: string, price: string, over: Partial<MarketSnapshot> = {}): MarketSnapshot => ({
@@ -76,7 +79,7 @@ describe('health', () => {
   it('reports chain, block and lag', async () => {
     const res = await (await make()).inject('/v1/health');
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true, chainId: 46630, block: 153118480, lag: 3, workers: 3, db: true, redis: true, demoMode: true });
+    expect(res.json()).toEqual({ ok: true, chainId: 46630, block: 153118480, lag: 3, workers: 3, db: true, redis: true, demoMode: true, rpcChainId: null });
   });
   it('stays healthy when the RPC is down, fails when Redis is down', async () => {
     const a = await make({ chain: { blockNumber: async () => null } });
@@ -163,6 +166,7 @@ describe('pools and stats', () => {
       aprEst: '14.2',
       updatedHour: NOW,
       status: 'live',
+      demo: true,
     });
     expect(body.find((p) => p.symbol === 'NVDA')).toMatchObject({ status: 'coming_soon', sizeRounded: '1500000' });
   });
@@ -175,7 +179,7 @@ describe('pools and stats', () => {
   });
   it('returns stats', async () => {
     const res = (await (await make()).inject('/v1/stats')).json();
-    expect(res).toEqual({ markets: 10, openInterest: '4977000', shieldedValue: '4800000', proofsToday: demoProofsToday(NOW) });
+    expect(res).toEqual({ markets: 10, openInterest: '4977000', shieldedValue: '4800000', proofsToday: demoProofsToday(NOW), demo: true });
     expect(demoProofsToday(NOW)).toBeGreaterThan(8000);
     expect(demoProofsToday(NOW + 60_000)).toBeGreaterThanOrEqual(demoProofsToday(NOW));
   });

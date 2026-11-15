@@ -1,5 +1,28 @@
 # 06 — Roadmap and acceptance criteria
 
+## Decisions (owner approvals)
+
+CLAUDE.md asks for sign-off before changing the stack, any number in its §5, adding paid services or
+touching mainnet. The owner's approvals so far:
+
+- **November 2026: mainnet in read-only mode.** The site may run on Robinhood Chain mainnet with a real
+  wallet connection, real public balances and live official prices, while every trade stays simulated
+  (`deploy/set-network.sh mainnet`). Nothing is sent onchain by Velum on mainnet.
+- **November 2026: Phase 3 contracts on testnet.** The Foundry contracts (`contracts/`) are built and
+  deployed on Robinhood Chain testnet only.
+- **Standing rule: no contract on mainnet before an external audit.** Velum contracts are never
+  deployed to mainnet before the Phase 5 external audit of contracts and circuits (the deploy script
+  refuses chain 4663).
+- **2026-11-15:**
+  - Stack update to **Next.js 15, React 19 and Node 22 LTS** (CLAUDE.md §1 names Next.js 14 and Node 20).
+  - Product wording **"Stock Tokens"** (Robinhood Chain brand guidelines; never "tokenized stocks").
+  - Privacy features are **labelled as simulated on both networks** until the Phase 4 privacy layer
+    exists.
+  - **Proprietary licence** (root `LICENSE`: all rights reserved; public source grants no licence).
+  - Contracts: a **taker forced exit pays the committed close spread and fee**, like a normal close.
+  - Contracts: positions **below half the maintenance margin may be liquidated during the sequencer
+    grace period** (the other checks wait for the grace period to end).
+
 ## Phase 1 — Live today (static)
 **Build:** nothing; serve `prototype/index.html`.
 **Accept when:** `https://<domain>` loads the prototype over HTTPS; all demo flows work;
@@ -8,16 +31,16 @@ mobile layout correct; Lighthouse ≥ 90.
 ## Phase 2 — Production frontend, demo trading
 **Build**
 - pnpm monorepo (`apps/web`, `apps/api`, `apps/workers`, `packages/db`, `packages/config`).
-- Next.js 14 port of every route in the prototype, component by component, using
+- Next.js port (14, then 15 after the 2026-11-15 decision) of every route in the prototype, component by component, using
   `design/tokens.css`. Fonts: Inter + Inter Tight via `next/font`.
 - wagmi v2 + viem with a custom chain for Robinhood Chain testnet (`packages/config`).
   Connect: injected, WalletConnect, Coinbase/passkey connector.
-- Real public balances (USDG + stock tokens) in Portfolio "Public wallet".
+- Real public balances (USDG + Stock Tokens) in Portfolio "Public wallet".
 - `apps/api`: `/v1/health`, `/v1/markets`, `/v1/markets/:sym/candles`, `/v1/pools`,
   `/v1/stats`, `/v1/quote` (see 03-api.md). Prices from `price-relay` worker.
 - Demo trading in the browser store (same flows, same receipts as the prototype),
   `DEMO_MODE=true` banner: "Demo mode. Trades are simulated."
-- Faucet links in Portfolio empty state (Robinhood Chain faucet for ETH + stock tokens,
+- Faucet links in Portfolio empty state (Robinhood Chain faucet for ETH + Stock Tokens,
   Paxos faucet for USDG).
 
 **Accept when**

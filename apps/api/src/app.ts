@@ -5,6 +5,7 @@ import type { Redis } from 'ioredis';
 import { clientKeyGenerator } from './lib/client-address';
 import type { AppDeps } from './lib/deps';
 import { ApiError, ERROR_CODES, errorBody, type ErrorCode } from './lib/errors';
+import { fallbackStore } from './lib/rate-limit-store';
 import { candlesRoutes } from './routes/candles';
 import { healthRoutes } from './routes/health';
 import { marketsRoutes } from './routes/markets';
@@ -13,17 +14,18 @@ import { quoteRoutes } from './routes/quote';
 import { statsRoutes } from './routes/stats';
 
 export interface BuildOptions {
-  logger?: boolean | { level: string };
+  logger?: boolean | { level: string; serializers?: Record<string, (value: unknown) => unknown> };
 }
 
 /** Builds the Fastify app. All I/O goes through `deps`, so tests can pass fakes. */
 export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<FastifyInstance> {
   // With PROXY_SECRET set, only requests carrying Nginx's secret header may name a client address
   // (lib/client-address.ts, audit R2-I4). Without it, trust X-Forwarded-For from loopback as before.
+  // The key generator is always ours (audit L-3): it never throws and keys IPv6 by /64 (audit L-2).
   const keyGenerator = clientKeyGenerator(deps.env.proxySecret);
   const app = Fastify({
     logger: opts.logger ?? false,
-    trustProxy: keyGenerator ? false : 'loopback',
+    trustProxy: deps.env.proxySecret ? false : 'loopback',
     bodyLimit: 16 * 1024,
     ajv: { customOptions: { coerceTypes: 'array', useDefaults: true, removeAdditional: false, allErrors: false } },
   });
@@ -52,9 +54,15 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
     global: true,
     max: deps.env.rateReadPerMin,
     timeWindow: '1 minute',
-    ...(deps.rateLimitRedis ? { redis: deps.rateLimitRedis as Redis, nameSpace: 'velum:rl:' } : {}),
-    ...(keyGenerator ? { keyGenerator } : {}),
-    // Never take the API down because the rate-limit store is unreachable.
+    // Shared counters in Redis; while Redis errors or is slow, each instance counts in memory instead,
+    // so the limits stay on during an outage (audit L-4).
+    store: fallbackStore({
+      redis: deps.rateLimitRedis as Redis | undefined,
+      nameSpace: 'velum:rl:',
+      onFallback: (err) => app.log.warn({ err: err.message }, 'rate-limit store unavailable; counting in memory'),
+    }),
+    keyGenerator,
+    // Never take the API down because the rate-limit store fails (the store itself falls back first).
     skipOnError: true,
     errorResponseBuilder: (_req, ctx) => {
       const e = new Error(`Too many requests. Try again in ${ctx.after}.`) as Error & { statusCode: number; code: string };

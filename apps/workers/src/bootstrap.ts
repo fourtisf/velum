@@ -1,12 +1,14 @@
 import {
   CANDLE_CACHE_SIZE,
   MARKETS,
+  MAX_FUTURE_SKEW_MS,
   POOLS,
   PROTOCOL,
   SPARK_INTERVAL_MS,
   SPARK_POINTS,
   TIMEFRAMES,
   cacheKeys,
+  parseSnapshot,
   type MarketSnapshot,
   type PriceSource,
 } from '@velum/config';
@@ -41,28 +43,45 @@ export async function upsertMarkets(prisma: PrismaClient): Promise<Map<string, s
   return ids;
 }
 
-export async function loadSnapshots(redis: Redis): Promise<Map<string, MarketSnapshot>> {
+/**
+ * Snapshots from Redis, each checked with parseSnapshot (audit M-2): a malformed, oversized or
+ * future-dated entry (another tenant of a shared Redis can write it) is ignored and rewritten on the
+ * next tick.
+ */
+export async function loadSnapshots(redis: Redis, now = Date.now()): Promise<Map<string, MarketSnapshot>> {
   const raws = await redis.mget(...MARKETS.map((m) => cacheKeys.price(m.symbol)));
   const out = new Map<string, MarketSnapshot>();
   raws.forEach((raw, i) => {
-    if (!raw) return;
-    try {
-      const snap = JSON.parse(raw) as MarketSnapshot;
-      if (typeof snap.price === 'string') out.set(MARKETS[i]!.symbol, snap);
-    } catch {
-      /* ignore corrupt entry; it is rewritten on the next tick */
-    }
+    const symbol = MARKETS[i]!.symbol;
+    const snap = parseSnapshot(raw, symbol, now);
+    if (snap) out.set(symbol, snap);
   });
   return out;
 }
 
-/** Last CANDLE_CACHE_SIZE candles per market and timeframe from Postgres. */
-export async function loadSeries(prisma: PrismaClient, ids: Map<string, string>): Promise<Map<string, WadCandle[]>> {
+/**
+ * Removes candles and price ticks dated ahead of now (audit L-1, M-2): a clock that stepped back or an
+ * injected candle job could have written them. Left in place, a future bucket makes every real tick
+ * "late" (the chart freezes) and, once its time comes, keeps its bogus open, high and low.
+ */
+export async function dropFutureHistory(prisma: PrismaClient, log: Logger, now = Date.now()): Promise<number> {
+  const cutoff = new Date(now + MAX_FUTURE_SKEW_MS);
+  const [candles, ticks] = await Promise.all([prisma.candle.deleteMany({ where: { t: { gt: cutoff } } }), prisma.priceTick.deleteMany({ where: { at: { gt: cutoff } } })]);
+  if (candles.count || ticks.count) log.warn('removed history dated in the future', { candles: candles.count, ticks: ticks.count });
+  return candles.count + ticks.count;
+}
+
+/**
+ * Last CANDLE_CACHE_SIZE candles per market and timeframe from Postgres, only those built from
+ * `source` (audit I-7) and none dated ahead of now.
+ */
+export async function loadSeries(prisma: PrismaClient, ids: Map<string, string>, source: PriceSource, now = Date.now()): Promise<Map<string, WadCandle[]>> {
   const series = new Map<string, WadCandle[]>();
+  const until = new Date(now + MAX_FUTURE_SKEW_MS);
   await Promise.all(
     [...ids].flatMap(([symbol, marketId]) =>
       TIMEFRAMES.map(async (tf) => {
-        const rows = await prisma.candle.findMany({ where: { marketId, tf }, orderBy: { t: 'desc' }, take: CANDLE_CACHE_SIZE });
+        const rows = await prisma.candle.findMany({ where: { marketId, tf, source, t: { lte: until } }, orderBy: { t: 'desc' }, take: CANDLE_CACHE_SIZE });
         series.set(
           seriesKey(symbol, tf),
           rows.reverse().map((r) => fromStrings(r.t.getTime(), r.o.toFixed(), r.h.toFixed(), r.l.toFixed(), r.c.toFixed())),
@@ -81,11 +100,13 @@ export async function loadSeries(prisma: PrismaClient, ids: Map<string, string>)
  * at or before this time: the newest one still applies normally, older retries only extend high/low.
  * One indexed query per market (PriceTick has an index on marketId, at).
  */
-export async function loadLastTickAt(prisma: PrismaClient, ids: Map<string, string>): Promise<Map<string, number>> {
+export async function loadLastTickAt(prisma: PrismaClient, ids: Map<string, string>, now = Date.now()): Promise<Map<string, number>> {
   const out = new Map<string, number>();
+  const until = new Date(now + MAX_FUTURE_SKEW_MS);
   await Promise.all(
     [...ids].map(async ([symbol, marketId]) => {
-      const row = await prisma.priceTick.findFirst({ where: { marketId }, orderBy: { at: 'desc' }, select: { at: true } });
+      // A tick dated ahead (clock stepped back) would make every new tick "late" (audit L-1).
+      const row = await prisma.priceTick.findFirst({ where: { marketId, at: { lte: until } }, orderBy: { at: 'desc' }, select: { at: true } });
       if (row) out.set(symbol, row.at.getTime());
     }),
   );
@@ -115,7 +136,7 @@ export async function demoBackfill(
   rng: Rng = Math.random,
 ): Promise<BackfillResult> {
   const result: BackfillResult = { candlesInserted: 0, snapshotsSeeded: 0 };
-  const empty = (await prisma.candle.count()) === 0;
+  const empty = (await prisma.candle.count({ where: { source: 'demo' } })) === 0;
   const pipe = redis.pipeline();
 
   for (const m of MARKETS) {
@@ -130,6 +151,7 @@ export async function demoBackfill(
         genCandles(price, m.vol, tf, CANDLE_CACHE_SIZE, now, rng).map((c) => ({
           marketId,
           tf,
+          source: 'demo',
           t: new Date(c.t),
           o: floatToDec(c.o),
           h: floatToDec(c.h),
@@ -152,6 +174,7 @@ export async function demoBackfill(
         spark,
         source: 'demo',
         updatedAt: now,
+        checkedAt: now,
       };
       snapshots.set(m.symbol, snap);
       pipe.set(cacheKeys.price(m.symbol), JSON.stringify(snap));
@@ -167,16 +190,16 @@ export async function demoBackfill(
 
 /**
  * Never mix simulated and real price history. The decision rests on evidence in Postgres, not on a
- * cache key: every PriceTick is tagged with its source. If the new source is real and demo ticks
- * exist (or the reverse), candles, cached snapshots and the other kind's ticks are removed once;
- * demo backfill then re-seeds if the new source is demo. With no contrary evidence nothing is
- * deleted. Switching between two real sources keeps history.
+ * cache key: every PriceTick and every Candle (audit I-7) is tagged with its source. If the new source
+ * is real and demo ticks or candles exist (or the reverse), candles, cached snapshots and the other
+ * kind's ticks are removed once; demo backfill then re-seeds if the new source is demo. With no
+ * contrary evidence nothing is deleted. Switching between two real sources keeps history.
  */
 export async function resetHistoryOnSourceChange(prisma: PrismaClient, redis: Redis, source: PriceSource, log: Logger): Promise<boolean> {
   const real = source !== 'demo';
   const rows = real
-    ? await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" = 'demo') AS found`
-    : await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" <> 'demo') AS found`;
+    ? await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT (EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" = 'demo') OR EXISTS (SELECT 1 FROM "Candle" WHERE "source" = 'demo')) AS found`
+    : await prisma.$queryRaw<Array<{ found: boolean }>>`SELECT (EXISTS (SELECT 1 FROM "PriceTick" WHERE "source" <> 'demo') OR EXISTS (SELECT 1 FROM "Candle" WHERE "source" <> 'demo')) AS found`;
   await redis.set(cacheKeys.priceSource(), source).catch(() => undefined);
   if (!rows[0]?.found) return false;
   await prisma.$executeRaw`DELETE FROM "Candle"`;

@@ -23,6 +23,9 @@ const env: ApiEnv = {
   logLevel: 'silent',
   proxySecret: SECRET,
   socketPath: null,
+  redis: { db: 0 },
+  rateMarketsPerMin: 600,
+  network: 'testnet',
 };
 
 let app: FastifyInstance | undefined;

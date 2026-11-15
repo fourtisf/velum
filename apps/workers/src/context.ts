@@ -9,6 +9,11 @@ import type { PriceReader } from './sources';
 export const PRICE_WORKER = 'price-relay';
 export const CANDLES_WORKER = 'candles';
 
+/**
+ * A candle job. Only `at` is read from a queued job: the worker loads the prices of that tick from
+ * PriceTick in Postgres (jobs/candles.ts, audit M-2). `prices` is what price-relay read, kept for tests
+ * and logs.
+ */
 export interface CandleJobData {
   at: number;
   /** symbol -> decimal price string */
@@ -34,5 +39,7 @@ export interface WorkerContext {
   series: Map<string, WadCandle[]>;
   /** symbol -> time of the newest tick folded into candles (a retried older tick must not move the close back). */
   lastTickAt: Map<string, number>;
+  /** When runPriceRelay last ran (it skips runs closer than half a poll interval, audit M-2). */
+  lastRelayAt?: number;
   enqueueCandles(data: CandleJobData): Promise<void>;
 }

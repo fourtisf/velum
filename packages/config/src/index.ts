@@ -157,6 +157,8 @@ export const MARKET_SYMBOLS = MARKETS.map((m) => m.symbol);
 
 /** Official Robinhood Stock Token quotes (docs.robinhood.com/chain/stock-token-apis), 60 req/s. */
 export const ROBINHOOD_PRICES_URL = 'https://api.robinhood.com/rhj/prices';
+/** Official Stock Token list with each token's corporate-action multiplier (currentMultiplier). */
+export const ROBINHOOD_ASSETS_URL = 'https://api.robinhood.com/rhj/assets';
 /** Mainnet token addresses, used to check that a quote is for the exact Robinhood token. */
 export const MAINNET_TOKEN_ADDRESSES: Record<string, string> = Object.fromEntries(
   Object.entries(mainnetJson.tokens as Record<string, { address: string }>).map(([k, v]) => [k, v.address.toLowerCase()]),
@@ -205,3 +207,5 @@ export function explorerTxUrl(hash: string): string {
 }
 
 export * from './cache';
+export * from './redis-url';
+export * from './session';

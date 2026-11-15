@@ -1,18 +1,35 @@
-import { CHAIN, NETWORK } from '@velum/config';
+import { CHAIN, NETWORK, parseRedisUrl, type NetworkName, type RedisConnection } from '@velum/config';
 import { redactUrls } from './lib/redact';
+
+/** Log levels LOG_LEVEL accepts (pino's, audit I-5). */
+export const LOG_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'] as const;
 
 export interface ApiEnv {
   host: string;
   port: number;
   databaseUrl: string;
   redisUrl: string;
+  /** ioredis options parsed from REDIS_URL: TCP, or the unix socket of deploy/redis-velum.sh (audit M-2). */
+  redis: RedisConnection;
   corsOrigins: string[] | true | false;
   rateReadPerMin: number;
   rateQuotePerMin: number;
   rateHealthPerMin: number;
+  /**
+   * Per-client budget for GET /v1/markets and /v1/markets/:symbol (audit L-5), separate from the read
+   * budget: the web polls every 2 s, so one browser tab uses 30 a minute and several users behind one
+   * NAT address would starve each other at 120. These answers come from a 1 s in-process cache.
+   */
+  rateMarketsPerMin: number;
   rpcUrl: string;
   chainId: number;
-  demoMode: boolean;
+  /** testnet or mainnet (VELUM_NETWORK). Mainnet returns null for numbers that have no real source yet. */
+  network: NetworkName;
+  /**
+   * Always true in Phase 2 (audit DV-08): the web simulates every trade whatever DEMO_MODE says, so
+   * /v1/health must never claim otherwise. DEMO_MODE=false takes effect with the Phase 3 contracts.
+   */
+  demoMode: true;
   logLevel: string;
   /**
    * Shared secret Nginx sends in X-Velum-Proxy-Secret (deploy/server-setup.sh generates it). When set,
@@ -32,11 +49,6 @@ export interface ApiEnv {
 /** Absolute path, plain characters, short enough for sun_path (108 bytes, minus margin). */
 const SOCKET_PATH_RE = /^\/[A-Za-z0-9._/-]{1,99}$/;
 
-const bool = (v: string | undefined, dflt: boolean): boolean => {
-  if (v === undefined || v === '') return dflt;
-  return ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase());
-};
-
 /** Read and validate the environment. Throws one error listing every problem. */
 export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
   const problems: string[] = [];
@@ -55,7 +67,8 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
   if (!/^postgres(ql)?:\/\//.test(databaseUrl)) problems.push('DATABASE_URL must be a postgresql:// URL.');
 
   const redisUrl = e.REDIS_URL ?? '';
-  if (!/^rediss?:\/\//.test(redisUrl)) problems.push('REDIS_URL must be a redis:// URL.');
+  const redis = parseRedisUrl(redisUrl);
+  if (!redis.ok) problems.push(redis.error);
 
   const rpcUrl = e.RPC_URL && !e.RPC_URL.startsWith('VERIFY') ? e.RPC_URL : CHAIN.rpcUrl;
   if (!/^https?:\/\//.test(rpcUrl)) problems.push('RPC_URL must be an http(s) URL.');
@@ -82,20 +95,32 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
   if (socketPath && (!SOCKET_PATH_RE.test(socketPath) || socketPath.split('/').includes('..'))) {
     problems.push('API_SOCKET must be an absolute path of at most 100 plain characters (letters, digits, . _ - /), e.g. /run/velum-api/api.sock.');
   }
+  // On the socket no request has a client address of its own: without the proxy secret every visitor
+  // would share one rate-limit bucket (audit L-3).
+  if (socketPath && !proxySecret) {
+    problems.push('API_SOCKET is set but PROXY_SECRET is empty: on the socket every client would share one rate limit. Set PROXY_SECRET (deploy/server-setup.sh generates one and gives it to Nginx) or clear API_SOCKET to listen on HOST:PORT_API.');
+  }
+
+  const logLevel = (e.LOG_LEVEL ?? '').trim() || (e.NODE_ENV === 'production' ? 'info' : 'debug');
+  if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')} (got "${e.LOG_LEVEL}").`);
+  const network: NetworkName = (e.VELUM_NETWORK ?? '').trim().toLowerCase() === 'mainnet' ? 'mainnet' : NETWORK;
 
   const env: ApiEnv = {
     host: e.HOST || '127.0.0.1',
     port: int('PORT_API', e.PORT_API ?? e.PORT, 4000, 1, 65535),
     databaseUrl,
     redisUrl,
+    redis: redis.ok ? redis.options : { db: 0 },
     corsOrigins,
     rateReadPerMin: int('RATE_LIMIT_READ_PER_MIN', e.RATE_LIMIT_READ_PER_MIN, 120, 1, 100_000),
     rateQuotePerMin: int('RATE_LIMIT_QUOTE_PER_MIN', e.RATE_LIMIT_QUOTE_PER_MIN, 30, 1, 100_000),
     rateHealthPerMin: int('RATE_LIMIT_HEALTH_PER_MIN', e.RATE_LIMIT_HEALTH_PER_MIN, 60, 1, 100_000),
+    rateMarketsPerMin: int('RATE_LIMIT_MARKETS_PER_MIN', e.RATE_LIMIT_MARKETS_PER_MIN, 600, 1, 100_000),
     rpcUrl,
     chainId,
-    demoMode: bool(e.DEMO_MODE, true),
-    logLevel: e.LOG_LEVEL || (e.NODE_ENV === 'production' ? 'info' : 'debug'),
+    network,
+    demoMode: true,
+    logLevel,
     proxySecret: proxySecret || null,
     socketPath: socketPath || null,
   };

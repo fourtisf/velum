@@ -3,7 +3,8 @@ import { WAD, parseWad, pctToWad, roundSig, roundTo, swapHops, swapQuote, toDeci
 import type { FastifyPluginAsync } from 'fastify';
 import type { AppDeps } from '../lib/deps';
 import { ApiError, badRequest } from '../lib/errors';
-import { isFresh } from '../lib/market-view';
+import { priceState } from '../lib/market-view';
+import { snapshotReader } from '../lib/snapshots';
 
 /** Quotes are rounded so they can't be used to back out pool reserves. */
 export const QUOTE_SIG_FIGS = 4;
@@ -21,8 +22,17 @@ const sig = (w: Wad) => toDecimalString(roundSig(w, QUOTE_SIG_FIGS, 'floor'));
 /** Names the configured network ("Robinhood Chain" on mainnet), never a hard-coded "testnet". */
 export const marketClosedMessage = (sym: string, networkLabel: string = CHAIN.label): string => `${sym} isn't on ${networkLabel} yet.`;
 
+/** Why a quote is refused when a price is not live (audit M-1). */
+export const notLiveMessage = (sym: string, reason: string | null): string =>
+  reason === 'marketClosed'
+    ? `The US stock market is closed, so the ${sym} price is not live. Try again when it reopens.`
+    : reason === 'quoteFrozen'
+      ? `The ${sym} quote has not changed for a while, so it is not treated as live. Try again later.`
+      : `The ${sym} price is out of date. Try again in a moment.`;
+
 export function quoteRoutes(deps: AppDeps): FastifyPluginAsync {
   const now = deps.now ?? Date.now;
+  const read = snapshotReader(deps.cache);
   return async (app) => {
     app.post<{ Body: QuoteBody }>(
       '/v1/quote',
@@ -58,14 +68,17 @@ export function quoteRoutes(deps: AppDeps): FastifyPluginAsync {
         if (amount > MAX_AMOUNT) throw badRequest('Amount is too large.');
 
         const stocks = [from, to].filter((s) => s !== QUOTE_SYMBOL);
-        const snaps = await deps.cache.snapshots(stocks);
+        const { snaps, ok } = await read(stocks);
+        // Redis down or slow (audit L-4): a fast 503 instead of a 500 after the client's timeouts.
+        if (!ok) throw new ApiError(503, 'UNAVAILABLE', 'Prices are temporarily unavailable. Try again in a moment.');
         const t = now();
         const price = (sym: string): Wad => {
           if (sym === QUOTE_SYMBOL) return WAD;
           const snap = snaps.get(sym);
-          if (!isFresh(snap, t)) throw new ApiError(503, 'STALE_PRICE', `The ${sym} price is out of date. Try again in a moment.`);
+          const state = priceState(snap, t, deps.env.network);
+          if (state.stale || !snap) throw new ApiError(503, 'STALE_PRICE', notLiveMessage(sym, state.staleReason));
           const p = parseWad(snap.price);
-          if (p === null || p <= 0n) throw new ApiError(503, 'STALE_PRICE', `The ${sym} price is out of date. Try again in a moment.`);
+          if (p === null || p <= 0n) throw new ApiError(503, 'STALE_PRICE', notLiveMessage(sym, null));
           return p;
         };
 

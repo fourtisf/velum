@@ -99,7 +99,7 @@ describe('R3-03: unix socket listener', () => {
   });
 
   it('API_SOCKET is validated', () => {
-    const base = { DATABASE_URL: 'postgresql://a', REDIS_URL: 'redis://b' };
+    const base = { DATABASE_URL: 'postgresql://a', REDIS_URL: 'redis://b', PROXY_SECRET: 'ab'.repeat(16) };
     expect(loadEnv(base).socketPath).toBeNull();
     expect(loadEnv({ ...base, API_SOCKET: '/run/velum-api/api.sock' }).socketPath).toBe('/run/velum-api/api.sock');
     for (const bad of ['run/api.sock', '/run/velum api/api.sock', '/run/../etc/api.sock', `/run/${'a'.repeat(120)}.sock`, '/run/x;y.sock']) {

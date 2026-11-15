@@ -273,6 +273,74 @@ address (derived as `velum`, isolated like every other user command). A valid ex
 any other existing value (or a duplicated line) is refused, never replaced. Run a release afterwards so
 the workers get it.
 
+## Dedicated Redis for Velum (recommended on a shared server)
+
+By default Velum shares the server's Redis (`REDIS_DB`, default 5) and its `requirepass`. Every other
+program that knows that password can select Velum's database and read or write its keys: queue jobs,
+price snapshots, rate-limit counters (backend audit M-2). The apps validate everything they read back
+and never trust a queued job's payload, but only a separate Redis keeps other tenants out entirely.
+`deploy/redis-velum.sh` (root, idempotent, under the deploy lock) runs one just for Velum and leaves
+the system Redis, its config and its data untouched:
+
+| What | Where | Owner, mode |
+|---|---|---|
+| systemd unit `velum-redis` (User=redis, sandboxed, `RestrictAddressFamilies=AF_UNIX`) | `/etc/systemd/system/velum-redis.service` | root 644 |
+| config: `port 0` (no TCP), unix socket, own random password, `maxmemory` (`REDIS_MAXMEMORY`, default 256mb) with `maxmemory-policy noeviction` (BullMQ needs it), AOF + RDB, `CONFIG`/`DEBUG`/`MODULE` disabled | `/etc/velum-redis/redis.conf` | root:redis 640 |
+| data | `/var/lib/velum-redis` | redis 750 |
+| socket directory, recreated at boot | `/run/velum-redis` (`/etc/tmpfiles.d/velum-redis.conf`) | redis:velum 2770 |
+| socket | `/run/velum-redis/redis.sock` | redis:velum 660: only `velum` (api + workers) connects; `velum-web`, Nginx and other users cannot |
+| the shared `REDIS_URL` from before the switch | `/etc/velum-redis/shared-redis-url` | root 600 |
+
+It needs a release of this version running first (so `deploy.sh` can safely switch back if the next
+release fails), then:
+
+```bash
+sudo -i
+tmux new -s velum-redis
+bash /srv/velum/deploy/deploy.sh             # only if the running release predates redis-velum.sh
+bash /srv/velum/deploy/redis-velum.sh        # REDIS_MAXMEMORY=512mb bash … for a larger limit
+bash /srv/velum/deploy/deploy.sh             # api and workers reconnect to the socket
+```
+The script starts `velum-redis`, checks that it answers on the socket with no TCP port and
+`noeviction`, that `velum` can reach the socket and `velum-web` cannot, and only then sets
+`REDIS_URL=unix://:<password>@/run/velum-redis/redis.sock` in `.env` (backed up first). Nothing has to be
+copied: prices, candle caches, queues and heartbeats are rebuilt by the workers on start (candles live
+in Postgres); rate-limit counters start from zero. Re-running it keeps the password and the data and
+restarts `velum-redis` only when its config or unit changed.
+
+Verify:
+```bash
+systemctl status velum-redis
+ss -lx | grep velum-redis                     # the socket; ss -ltn shows no port for it
+curl -s --unix-socket /run/velum-api/api.sock http://velum-api/v1/health | cat -v   # "redis":true, "workers":<a few s>
+REDISCLI_AUTH="$(sed -n 's/^requirepass //p' /etc/velum-redis/redis.conf)" redis-cli -s /run/velum-redis/redis.sock info keyspace
+bash /srv/velum/deploy/as-user.sh velum-web redis-cli -s /run/velum-redis/redis.sock ping   # Permission denied
+```
+Optional, once the release is healthy: remove Velum's old keys from the shared Redis (with its
+password, on Velum's database only), e.g.
+`REDISCLI_AUTH=… redis-cli -n 5 --scan --pattern 'velum:*'` and `--pattern 'bull:velum-*'`, then delete
+what they list.
+
+Roll back to the shared Redis:
+```bash
+bash /srv/velum/deploy/redis-velum.sh --rollback   # REDIS_URL back to the saved shared URL (.env backed up)
+bash /srv/velum/deploy/deploy.sh
+systemctl disable --now velum-redis                 # optional; its data stays in /var/lib/velum-redis
+```
+To remove it for good afterwards: `rm /etc/systemd/system/velum-redis.service /etc/tmpfiles.d/velum-redis.conf`,
+`systemctl daemon-reload`, then `rm -r /etc/velum-redis /var/lib/velum-redis /run/velum-redis`.
+
+Notes:
+- `server-setup.sh` checks Redis over TCP (`redis-cli -h/-p` from `REDIS_URL`), so while `REDIS_URL`
+  names the socket it stops at "Cannot reach Redis". To re-run setup: `redis-velum.sh --rollback`,
+  `server-setup.sh`, then `redis-velum.sh` and `deploy.sh` again.
+- `deploy.sh --rollback` to a release older than `redis-velum.sh` would start code that only knows
+  `redis://` URLs: roll Redis back first.
+- The PM2 units (`pm2-velum`, `pm2-velum-web`) want and start after `postgresql`, `redis-server` and
+  `velum-redis` at boot. `Wants=` starts an installed unit even when it is disabled (a missing one is
+  skipped): to keep the system Redis off on a server where nothing else uses it, `systemctl mask
+  redis-server`.
+
 ## Upgrading a server set up before the November 2026 hardening
 
 Older setups `chown`ed the checkout (`/opt/velum`) to `velum`, sourced `.env` in `deploy.sh` and

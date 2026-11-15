@@ -17,15 +17,24 @@ export interface PublishedPool {
   hour: number;
 }
 
+export interface CandleQuery {
+  /** Ignore buckets that start after this time (Unix ms): future rows are never served (audit L-1). */
+  until?: number;
+  /** Only candles built from a real price source (Candle.source not "demo"), used on mainnet (audit I-7). */
+  realOnly?: boolean;
+}
+
 export interface DbReader {
   ping(): Promise<boolean>;
-  candles(symbol: string, tf: Timeframe, limit: number): Promise<Candle[]>;
+  candles(symbol: string, tf: Timeframe, limit: number, query?: CandleQuery): Promise<Candle[]>;
   publishedPools(): Promise<PublishedPool[]>;
 }
 
 export interface ChainReader {
   /** Latest block number, or null when the RPC is unreachable. Cached briefly. */
   blockNumber(): Promise<bigint | null>;
+  /** eth_chainId of RPC_URL, or null while the RPC has not answered (audit I-5). Cached. */
+  chainId?(): Promise<number | null>;
 }
 
 export interface AppDeps {

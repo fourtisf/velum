@@ -1,4 +1,4 @@
-import { CANDLE_CACHE_SIZE, TIMEFRAME_MS, type Candle, type Timeframe } from '@velum/config';
+import { CANDLE_CACHE_SIZE, TIMEFRAME_MS, type Candle, type PriceSource, type Timeframe } from '@velum/config';
 import { Prisma } from '@velum/db';
 import { parseWad, toDecimalString, wmax, wmin, type Wad } from '@velum/math';
 
@@ -62,19 +62,27 @@ export interface CandleUpsert {
   price: string;
 }
 
+export interface CandleUpsertOptions {
+  /** Price source the tick came from; stored in Candle.source (audit I-7). */
+  source: PriceSource;
+  /** A retried tick older than the last one applied: only high/low may change. */
+  keepClose?: boolean;
+}
+
 /**
- * One INSERT … ON CONFLICT for many buckets. New buckets open at the tick price; existing
- * buckets keep their open and extend high/low, close follows the tick (unless `keepClose`, used
- * for retried ticks older than the last one applied). Values are parameters.
+ * One INSERT … ON CONFLICT for many buckets. New buckets open at the tick price and are tagged with the
+ * tick's price source; existing buckets keep their open (and tag) and extend high/low, close follows the
+ * tick (unless `keepClose`, used for retried ticks older than the last one applied). Values are
+ * parameters. Buckets of another kind of source never meet here: resetHistoryOnSourceChange removes them.
  */
-export function candleUpsertSql(rows: CandleUpsert[], opts: { keepClose?: boolean } = {}): Prisma.Sql {
+export function candleUpsertSql(rows: CandleUpsert[], opts: CandleUpsertOptions): Prisma.Sql {
   const values = rows.map(
     (r) =>
-      Prisma.sql`(${r.marketId}, ${r.tf}, CAST(${utcTimestamp(r.t)} AS TIMESTAMP(3)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)))`,
+      Prisma.sql`(${r.marketId}, ${r.tf}, CAST(${utcTimestamp(r.t)} AS TIMESTAMP(3)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), CAST(${r.price} AS DECIMAL(38,12)), ${opts.source})`,
   );
   const close = opts.keepClose ? Prisma.sql`"Candle"."c"` : Prisma.sql`EXCLUDED."c"`;
   return Prisma.sql`
-    INSERT INTO "Candle" ("marketId", "tf", "t", "o", "h", "l", "c")
+    INSERT INTO "Candle" ("marketId", "tf", "t", "o", "h", "l", "c", "source")
     VALUES ${Prisma.join(values)}
     ON CONFLICT ("marketId", "tf", "t") DO UPDATE SET
       "h" = GREATEST("Candle"."h", EXCLUDED."h"),

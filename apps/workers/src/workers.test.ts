@@ -105,14 +105,21 @@ describe('candle buckets', () => {
   });
 
   it('builds a parameterised upsert', () => {
-    const sql = candleUpsertSql([
-      { marketId: 'm1', tf: '1h', t: Date.UTC(2026, 10, 14, 10), price: '391.65' },
-      { marketId: 'm2', tf: '15m', t: Date.UTC(2026, 10, 14, 10, 30), price: '233.4' },
-    ]);
+    const sql = candleUpsertSql(
+      [
+        { marketId: 'm1', tf: '1h', t: Date.UTC(2026, 10, 14, 10), price: '391.65' },
+        { marketId: 'm2', tf: '15m', t: Date.UTC(2026, 10, 14, 10, 30), price: '233.4' },
+      ],
+      { source: 'robinhood' },
+    );
     expect(sql.sql).toContain('ON CONFLICT ("marketId", "tf", "t") DO UPDATE');
     expect(sql.sql).toContain('GREATEST("Candle"."h", EXCLUDED."h")');
+    expect(sql.sql).toContain('"source")');
     expect(sql.sql).not.toContain('391.65');
-    expect(sql.values).toEqual(['m1', '1h', '2026-11-14T10:00:00.000', '391.65', '391.65', '391.65', '391.65', 'm2', '15m', '2026-11-14T10:30:00.000', '233.4', '233.4', '233.4', '233.4']);
+    expect(sql.values).toEqual([
+      ...['m1', '1h', '2026-11-14T10:00:00.000', '391.65', '391.65', '391.65', '391.65', 'robinhood'],
+      ...['m2', '15m', '2026-11-14T10:30:00.000', '233.4', '233.4', '233.4', '233.4', 'robinhood'],
+    ]);
   });
 });
 
@@ -152,7 +159,7 @@ describe('snapshots', () => {
 
   it('keeps one spark point per minute, the last tracking the live price', () => {
     const a = buildSnapshot(undefined, 'TSLA', '100', '99', 'demo', NOW);
-    expect(a).toEqual({ symbol: 'TSLA', price: '100', mark: '100.04', open24h: '99', spark: ['100'], source: 'demo', updatedAt: NOW });
+    expect(a).toEqual({ symbol: 'TSLA', price: '100', mark: '100.04', open24h: '99', spark: ['100'], source: 'demo', updatedAt: NOW, checkedAt: NOW });
     const b = buildSnapshot(a, 'TSLA', '101', '99', 'demo', NOW + 2000);
     expect(b.spark).toEqual(['101']);
     const c = buildSnapshot(b, 'TSLA', '102', '99', 'demo', NOW + SPARK_INTERVAL_MS);

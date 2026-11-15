@@ -576,7 +576,10 @@ systemd_running() { [ -d /run/systemd/system ] && command -v systemctl >/dev/nul
 
 # render_pm2_unit USER HOME — prints the unit. Like PM2's own template (Type=forking, PIDFile in the PM2
 # home, ExecStart=pm2 resurrect), plus: its own TMPDIR and a private /tmp (R3-02), no privilege gain
-# through setuid programs, umask 027, and a PATH of system directories only.
+# through setuid programs, umask 027, and a PATH of system directories only. At boot it starts after
+# PostgreSQL and Redis (audit M-3): the system redis-server and Velum's dedicated velum-redis
+# (deploy/redis-velum.sh). Wants= starts them if they are installed and simply skips a unit that does not
+# exist; After= only orders. The workers also wait for both themselves.
 render_pm2_unit() {
   local user="$1" home="$2" group pm2 node mkdir_bin path="" d
   group="$(id -gn "${user}")"
@@ -592,7 +595,8 @@ render_pm2_unit() {
 [Unit]
 Description=PM2 process manager for ${user} (Velum)
 Documentation=https://pm2.keymetrics.io/
-After=network.target
+Wants=postgresql.service redis-server.service velum-redis.service
+After=network.target postgresql.service redis-server.service velum-redis.service
 
 [Service]
 Type=forking

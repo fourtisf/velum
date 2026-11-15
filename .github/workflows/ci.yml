@@ -1,0 +1,103 @@
+# Continuous integration on GitHub-hosted runners (free for public repositories), audit SC-09.
+# Actions are pinned by commit SHA (the tag is in the comment); Dependabot proposes updates weekly.
+# Node 22 LTS only: Node 20 reached end of life in April 2026 and the owner moved Velum to Node 22.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Lint, typecheck, test, build (Node 22)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: velum
+          POSTGRES_PASSWORD: velum-ci
+          POSTGRES_DB: velum_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U velum -d velum_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # The Postgres-backed tests run against this scratch database (they are skipped without it).
+      TEST_DATABASE_URL: postgresql://velum:velum-ci@127.0.0.1:5432/velum_test?schema=public
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      # pnpm version from package.json "packageManager".
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Migrate the test database, then check the schema has no drift
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          pnpm --filter @velum/db exec prisma migrate deploy
+          pnpm --filter @velum/db exec prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+      - name: Lint
+        run: pnpm -r lint
+      - name: Typecheck
+        run: pnpm -r typecheck
+      - name: Test
+        run: pnpm -r test
+      - name: Build (web for testnet)
+        env:
+          NEXT_PUBLIC_VELUM_NETWORK: testnet
+          NEXT_PUBLIC_CHAIN_ID: '46630'
+          NEXT_PUBLIC_API_URL: /api
+          NEXT_PUBLIC_SITE_URL: https://velum.example
+        run: pnpm -r build
+      - name: Build the web for mainnet
+        env:
+          NEXT_PUBLIC_VELUM_NETWORK: mainnet
+          NEXT_PUBLIC_CHAIN_ID: '4663'
+          NEXT_PUBLIC_API_URL: /api
+          NEXT_PUBLIC_SITE_URL: https://velum.example
+        run: pnpm --filter @velum/web build
+      - name: Audit production dependencies (advisory, does not fail the build)
+        continue-on-error: true
+        run: pnpm audit --prod --audit-level high
+
+  contracts:
+    name: Contracts (Foundry)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: v1.5.1
+      - name: Build
+        run: forge build
+      - name: Test (CI profile, more fuzz and invariant runs)
+        env:
+          FOUNDRY_PROFILE: ci
+        run: forge test

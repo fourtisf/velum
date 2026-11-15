@@ -1,10 +1,13 @@
-import { cacheKeys } from '@velum/config';
-import { buildSnapshot } from '../lib/snapshot';
+import { cacheKeys, type PriceSource } from '@velum/config';
+import { buildSnapshot, quoteTime } from '../lib/snapshot';
 import { PRICE_WORKER, type CandleJobData, type WorkerContext } from '../context';
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 const OPEN_REFRESH_MS = 60_000;
+
+/** PriceTick.source for a price source ("oracle" for Chainlink, as before). */
+export const tickSourceOf = (source: PriceSource): string => (source === 'chainlink' ? 'oracle' : source);
 
 /**
  * Refresh 24h opens from PriceTick once a minute. Live sources use the earliest tick of the
@@ -29,8 +32,15 @@ export async function refreshOpen24h(ctx: WorkerContext, now: number): Promise<v
   );
 }
 
-/** One price tick: read prices, publish snapshots, store ticks, hand the tick to the candles job. */
+/**
+ * One price tick: read prices, publish snapshots, store ticks, hand the tick to the candles job.
+ * Runs at most once per half poll interval: a flood of price jobs (an extra scheduler, or jobs another
+ * client of a shared Redis adds, audit M-2) cannot hammer the upstream's rate limit.
+ */
 export async function runPriceRelay(ctx: WorkerContext, now = Date.now()): Promise<CandleJobData | null> {
+  const minGap = (ctx.env?.pricePollMs ?? 0) / 2;
+  if (ctx.lastRelayAt !== undefined && now >= ctx.lastRelayAt && now - ctx.lastRelayAt < minGap) return null;
+  ctx.lastRelayAt = now;
   const last = new Map([...ctx.snapshots].map(([k, v]) => [k, v.price]));
   const prices = await ctx.source.read(last, now);
   if (prices.size === 0) return null;
@@ -39,11 +49,13 @@ export async function runPriceRelay(ctx: WorkerContext, now = Date.now()): Promi
 
   const pipe = ctx.redis.pipeline();
   const ticks: Array<{ marketId: string; price: string; source: string; at: Date }> = [];
-  const tickSource = ctx.source.name === 'chainlink' ? 'oracle' : ctx.source.name;
+  const tickSource = tickSourceOf(ctx.source.name);
   for (const [symbol, price] of prices) {
     const prev = ctx.snapshots.get(symbol);
     const open = ctx.open24h.get(symbol) ?? prev?.open24h ?? price;
-    const snap = buildSnapshot(prev, symbol, price, open, ctx.source.name, now);
+    // Stamped with the quote time, not the poll time (audit M-1): a frozen quote keeps aging.
+    const quoteAt = quoteTime(prev, price, ctx.source.name, now, ctx.source.quoteTimes?.get(symbol));
+    const snap = buildSnapshot(prev, symbol, price, open, ctx.source.name, now, quoteAt);
     ctx.snapshots.set(symbol, snap);
     pipe.set(cacheKeys.price(symbol), JSON.stringify(snap));
     const marketId = ctx.marketIds.get(symbol);
@@ -53,6 +65,8 @@ export async function runPriceRelay(ctx: WorkerContext, now = Date.now()): Promi
   await pipe.exec();
   if (ticks.length) await ctx.prisma.priceTick.createMany({ data: ticks });
 
+  // The candles job reads these ticks back from Postgres (jobs/candles.ts): the prices here are for
+  // tests and logs only, a job's payload is never trusted (audit M-2).
   const data: CandleJobData = { at: now, prices: Object.fromEntries(prices) };
   await ctx.enqueueCandles(data);
   return data;

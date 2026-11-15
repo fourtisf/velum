@@ -1,0 +1,12 @@
+Copyright (c) 2026 Velum. All rights reserved.
+
+This repository and everything in it (source code, documentation, designs and other material) is
+proprietary. The source is publicly visible, but being able to view it does not grant any licence:
+you may not use, copy, modify, merge, publish, distribute, sublicense or sell any part of it, or build
+on it, without prior written permission from Velum.
+
+Third-party components keep their own licences. This includes the libraries vendored under
+contracts/lib (each directory carries its licence files) and the packages installed into
+node_modules, which are governed by the licences their authors chose.
+
+THE MATERIAL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.

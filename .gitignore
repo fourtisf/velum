@@ -21,3 +21,13 @@ dump.rdb
 /.current.new
 /.previous.new
 /.deploy.lock
+/web.env
+/backups/
+/.velum-users
+# Keys and deployer material must never be committed (audit SE-02)
+*.pem
+*.key
+keystore/
+*deployer*.json
+# Claude Code worktrees
+.claude/worktrees/

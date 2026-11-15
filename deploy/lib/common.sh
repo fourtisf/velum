@@ -747,6 +747,11 @@ scrub_env_backups() {
     b="${1%/*}/${b}"
     [ -f "${b}" ] && [ ! -L "${b}" ] || continue
     if [ -n "$(hot_keys_in "${b}")" ]; then
+      # Only a key the keys file already holds (same value) is removed from a backup; anything else stays and is
+      # reported, so no copy of a key is ever the last one deleted (final deploy audit S-1).
+      local k keep=0
+      for k in $(hot_keys_in "${b}"); do [ "$(env_get "${b}" "${k}")" = "$(env_get "${SIGNER_KEYS_FILE}" "${k}")" ] || keep=1; done
+      if [ "${keep}" = 1 ]; then warn "${b##*/} holds a hot key the keys file does not have (root-only file kept as it is). Check it by hand."; continue; fi
       # shellcheck disable=SC2086 # names only
       env_unset "${b}" ${SIGNER_HOT_KEYS}
     fi
@@ -957,9 +962,7 @@ restore_env_backup() {
   [ -f "${b}" ] && [ ! -L "${b}" ] || die "${b} is missing or not a regular file."
   if [ "$(id -u)" -eq 0 ]; then [ "$(stat -c %u "${b}")" = 0 ] || die "${b} is not owned by root."; fi
   install_file "${env_file}" 640 "root:${APP_GROUP}" <"${b}"
-  # The hot keys live in SIGNER_KEYS_FILE (on-chain audit M-2): a backup never brings one back into .env.
-  if [ -n "$(hot_keys_in "${env_file}")" ]; then
-    # shellcheck disable=SC2086 # names only
-    env_unset "${env_file}" ${SIGNER_HOT_KEYS}
-  fi
+  # The hot keys live in SIGNER_KEYS_FILE (on-chain audit M-2): a backup never brings one back into .env. A key the
+  # backup holds is moved into the keys file (refused on a conflict), never just dropped (final deploy audit S-1).
+  if [ -n "$(hot_keys_in "${env_file}")" ]; then migrate_signer_keys "${env_file}"; fi
 }

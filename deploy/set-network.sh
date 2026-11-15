@@ -26,6 +26,9 @@ ENV_FILE="${BASE}/.env"
 velum_mode "${BASE}"
 # The same lock as deploy.sh, held through the release below (deploy.sh inherits it).
 lock_deploy "${BASE}"
+# A hot key still in .env (on-chain audit M-2): server-setup.sh moves it first. Checked before .env is touched, so the
+# failure path below (restore_env_backup, which never brings a key back into .env) cannot drop it (final deploy audit S-1).
+[ -z "$(hot_keys_in "${ENV_FILE}")" ] || die "${ENV_FILE} still holds $(hot_keys_in "${ENV_FILE}" | tr '\n' ' ')(readable by ${APP_USER}). Run server-setup.sh once: it moves them into ${SIGNER_KEYS_FILE}. Nothing was changed."
 
 before="$(readlink "${BASE}/current" 2>/dev/null || true)"
 backup="$(env_backup "${ENV_FILE}")"

@@ -428,7 +428,7 @@ Notes:
 
 For a server already on the two-user layout (`velum` + `velum-web`, `/srv/velum`, optionally Velum's own Redis):
 the live server runs commit 191c2a7's layout. This version adds the third user and moves the hot keys out of
-`.env`. Until it is done, `deploy.sh` (and `set-network.sh`, `new-key.sh`, `redis-velum.sh`) stop with a message
+`.env`. Until it is done, `deploy.sh` (and `set-network.sh` and `new-key.sh`) stop with a message
 pointing here, after pulling but **before building or switching anything**: the site keeps running as it was.
 Run as root, in tmux:
 

@@ -1,11 +1,20 @@
 # Weekly dependency updates, grouped so they arrive as a few pull requests (audit SC-09). CI runs on each.
+# Major versions are never proposed (final audit CI-F4): a major bump of a stack package (Next.js, React,
+# wagmi, Prisma, Node types, TypeScript, ESLint…) changes the house stack in CLAUDE.md §1 and needs the
+# owner's sign-off, so it is done by hand and recorded in docs/06. Security updates are still raised by
+# GitHub separately. New releases wait a week before they are proposed (supply-chain cooldown, SC-F6).
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
     groups:
       production:
         dependency-type: production
@@ -17,6 +26,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: '*'
+        update-types: ['version-update:semver-major']
     groups:
       actions:
         patterns: ['*']

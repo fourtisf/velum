@@ -628,8 +628,9 @@ contract AuditOiCapPoC is VelumBase {
     }
 }
 
-/// @notice F-04 (deploy): the testnet deploy refuses a missing or deployer-owned price-relay key, and
-///         mainnet entirely.
+/// @notice F-04 (deploy): the testnet deploy refuses a missing or deployer-owned price-relay key. Mainnet was refused
+///         entirely; since the owner's guarded-beta decision it is refused unless guarded (and much more, see
+///         test/MainnetGuardedDeploy.t.sol), with the same relayer rule as testnet.
 contract AuditDeployPoC is Test {
     function test_F04_fixed_deployRefusesSharedRelayerKey() public {
         Deploy d = new Deploy();
@@ -643,7 +644,15 @@ contract AuditDeployPoC is Test {
         d.checkRelayer(46_630, true, deployer, deployer);
         d.checkRelayer(46_630, true, relay, deployer);
         d.checkRelayer(31_337, false, deployer, deployer); // anvil may use the deployer
-        vm.expectRevert(bytes("Velum: refusing Robinhood Chain mainnet (4663)"));
+        // Mainnet: the same rule (the rest of the mainnet gate is in test/MainnetGuardedDeploy.t.sol).
+        vm.expectRevert(
+            bytes(
+                "Velum: refusing Robinhood Chain mainnet (4663): set PRICE_RELAYER to the signer's PRICE_RELAY key address (deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY, before this deployment)"
+            )
+        );
+        d.checkRelayer(4663, false, deployer, deployer);
+        vm.expectRevert(bytes("Velum: refusing Robinhood Chain mainnet (4663): PRICE_RELAYER is the deployer key"));
+        d.checkRelayer(4663, true, deployer, deployer);
         d.checkRelayer(4663, true, relay, deployer);
     }
 
@@ -661,15 +670,16 @@ contract AuditDeployPoC is Test {
         assertTrue(vm.contains(set, "corporate-actions procedure available"));
     }
 
+    /// @notice Unguarded mainnet stays refused (run() itself on 4663 is exercised only in
+    ///         test/MainnetGuardedDeploy.t.sol: the environment it reads is shared by parallel tests).
     function test_F04_fixed_deployRefusesMainnet() public {
         Deploy d = new Deploy();
-        vm.chainId(4663);
         vm.expectRevert(
             bytes(
-                "Velum: refusing Robinhood Chain mainnet (4663). Mainnet needs the Phase 5 external audit of contracts and circuits."
+                "Velum: refusing Robinhood Chain mainnet (4663) without the launch guard. Before the Phase 5 external audit mainnet is allowed only as the guarded beta: set GUARD_ADMIN (the owner multisig) and every GUARD_ACCOUNT_CAP_<SYMBOL> / GUARD_GLOBAL_CAP_<SYMBOL> (docs/07-mainnet-guarded-beta.md)"
             )
         );
-        d.run();
+        d.checkMainnetRoles(true, makeAddr("relay"), makeAddr("deployer"), address(0), address(0));
     }
 }
 

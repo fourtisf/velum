@@ -639,8 +639,26 @@ signer_status_file() {
 # the same way).
 onchain_on() { [ "$(env_get "$1" ONCHAIN_WORKERS | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')" = true ]; }
 
+# deployments_dir ENV_FILE — DEPLOYMENTS_DIR from ENV_FILE (empty when unset: each app then reads contracts/deployments
+# of its own release). When set it must be a plain absolute path to a root-owned directory nobody else can write
+# (deploy/deploy-contracts.sh creates <base>/deployments root:root 755): the signer, the API, the workers and the web
+# build all trust the deployment file in it.
+deployments_dir() {
+  local d
+  d="$(env_get "$1" DEPLOYMENTS_DIR)"
+  [ -n "${d}" ] || return 0
+  plain_abs_path "${d}" || die "DEPLOYMENTS_DIR in $1 must be a plain absolute path (got ${d})."
+  if [ "$(id -u)" -eq 0 ]; then
+    [ -d "${d}" ] && [ ! -L "${d}" ] && [ "$(stat -c %u "${d}")" = 0 ] && [ -z "$(find "${d}" -maxdepth 0 -perm /0022)" ] ||
+      die "DEPLOYMENTS_DIR ${d} must be a real root-owned directory that only root can write (deploy/deploy-contracts.sh creates it)."
+  fi
+  printf '%s' "${d}"
+}
+
 # render_signer_env ENV_FILE — prints the signer's settings file (root renders it to <base>/signer.env,
-# root:<signer group> 640; the signer cannot read .env). Values double-quoted like web.env.
+# root:<signer group> 640; the signer cannot read .env). Values double-quoted like web.env. With DEPLOYMENTS_DIR in
+# .env (deploy/deploy-contracts.sh sets it to the root-owned <base>/deployments) the signer reads the deployment file
+# from there (SIGNER_DEPLOYMENTS_DIR), like the API, the workers and the web build; without it, from its own copy.
 render_signer_env() {
   local env_file="$1" k v
   printf '# Generated from .env by deploy/deploy.sh (and server-setup.sh) for the signer only. Do not edit. No secrets: the\n'
@@ -650,6 +668,8 @@ render_signer_env() {
     if [ -n "${v}" ]; then printf '%s="%s"\n' "${k}" "${v}"; fi
   done
   printf 'SIGNER_KEYS_FILE="%s"\nSIGNER_STATUS_FILE="%s"\n' "${SIGNER_KEYS_FILE}" "$(signer_status_file "${env_file}")"
+  v="$(deployments_dir "${env_file}")"
+  if [ -n "${v}" ]; then printf 'SIGNER_DEPLOYMENTS_DIR="%s"\n' "${v}"; fi
 }
 
 # env_unset FILE KEY… — removes every assignment of the KEYs from FILE, atomically (same owner and mode).
@@ -944,15 +964,24 @@ ROT
 
 # ── What a release was built with (audit R3-04) ──────────────────────────────
 # build_env_record ENV_FILE — sorted KEY=VALUE lines of the settings compiled into the web
-# (NEXT_PUBLIC_*) and the network the api and workers use (VELUM_NETWORK, CHAIN_ID). A release only runs
-# with an .env that has the same values; otherwise web, API and CSP would serve different networks.
+# (NEXT_PUBLIC_*), the network the api and workers use (VELUM_NETWORK, CHAIN_ID) and, with DEPLOYMENTS_DIR, that
+# directory and the SHA-256 of its deployment file for CHAIN_ID (DEPLOYMENT_SHA256: the web build compiles the
+# addresses in). A release only runs with an .env (and deployment file) that has the same values; otherwise web, API
+# and CSP would serve different networks or deployments.
 build_env_record() {
-  local k v
-  while IFS= read -r k; do
-    case "${k}" in VELUM_NETWORK | CHAIN_ID | NEXT_PUBLIC_*) ;; *) continue ;; esac
-    v="$(env_get "$1" "${k}")"
-    if [ -n "${v}" ]; then printf '%s=%s\n' "${k}" "${v}"; fi
-  done < <(env_keys "$1") | LC_ALL=C sort
+  local k v d c
+  {
+    while IFS= read -r k; do
+      case "${k}" in VELUM_NETWORK | CHAIN_ID | NEXT_PUBLIC_* | DEPLOYMENTS_DIR) ;; *) continue ;; esac
+      v="$(env_get "$1" "${k}")"
+      if [ -n "${v}" ]; then printf '%s=%s\n' "${k}" "${v}"; fi
+    done < <(env_keys "$1")
+    d="$(env_get "$1" DEPLOYMENTS_DIR)"
+    c="$(env_get "$1" CHAIN_ID)"
+    if [ -n "${d}" ] && [[ "${c}" =~ ^[0-9]{1,12}$ ]] && [ -f "${d}/${c}.json" ] && [ ! -L "${d}/${c}.json" ]; then
+      printf 'DEPLOYMENT_SHA256=%s\n' "$(sha256sum <"${d}/${c}.json" | cut -d' ' -f1)"
+    fi
+  } | LC_ALL=C sort
 }
 # restore_env_backup BACKUP — puts a root-owned backup of this base's .env back in place, atomically
 # (root:<app group> 640).

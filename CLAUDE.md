@@ -28,6 +28,11 @@ colors, copy and interactions. Do not redesign.
    Never leave `main` broken.
 4. **Testnet first.** Everything targets Robinhood Chain **testnet** until an external audit
    is done. Show "Testnet. Test tokens have no value." wherever money appears.
+   *Owner decision (November 2026):* the one exception is a **guarded mainnet beta** before the
+   external audit: launch guard on (allowlisted wallets, small deposit caps), deployed only through
+   `deploy/deploy-contracts.sh` with its typed confirmation, run per docs/07-mainnet-guarded-beta.md,
+   with an unaudited-beta risk notice in the app. Opening to the public (`liftCaps` + `openToPublic`)
+   still waits for the external audit.
 5. **Write original code.** Do not copy code from rooq.trade or any other protocol. Their
    contracts are BUSL-1.1 licensed (no commercial use). Use only public standards and
    your own implementation.

@@ -140,7 +140,11 @@ on the local anvil chain (31337) only and refused anywhere else.
 **Gate.** Off unless `ONCHAIN_WORKERS=true` (the literal `true`) **and** `contracts/deployments/<CHAIN_ID>.json`
 exists (the workers: `DEPLOYMENTS_DIR`, default `contracts/deployments` of the release; the signer:
 `SIGNER_DEPLOYMENTS_DIR`, default its own copy's; `Deploy.s.sol` writes it and it is committed after a deployment, so
-every release carries it). Without `ONCHAIN_WORKERS=true` `deploy.sh` does not run the signer at all. The relayer also
+every release carries it). On the guarded mainnet beta `deploy/deploy-contracts.sh` installs it instead in the
+root-owned `/srv/velum/deployments` and sets `DEPLOYMENTS_DIR` in `.env`: root renders it into `signer.env` as
+`SIGNER_DEPLOYMENTS_DIR` (a root-owned path the signer accepts), `release.sh` passes it to the web build (which compiles
+the addresses in), and each release records the file's SHA-256 with its build settings (R3-04), so a rollback never
+pairs a web bundle with another deployment. Without `ONCHAIN_WORKERS=true` `deploy.sh` does not run the signer at all. The relayer also
 needs `PRICE_RELAY_PRIVATE_KEY` (its address must be the oracle's `relayer`), the keeper `KEEPER_PRIVATE_KEY`, a
 separate key (refused if it is the relay key or the deployment's price relayer); without its key a component stays
 off (the signer's status says why) and the indexer still runs. On Robinhood Chain mainnet (4663) nothing is ever signed without `ONCHAIN_MAINNET_CONFIRMED=yes`: the

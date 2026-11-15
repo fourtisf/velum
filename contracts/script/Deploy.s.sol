@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {VelumVault} from "../src/VelumVault.sol";
 import {OracleAdapter} from "../src/OracleAdapter.sol";
 import {SpotPools} from "../src/SpotPools.sol";
@@ -17,8 +18,27 @@ interface IDecimals {
 }
 
 /// @title Deploy
-/// @notice Deploys, wires and locks the Phase 3 contracts on Robinhood Chain TESTNET (46630) or a
-///         local anvil (31337). Refuses mainnet: that needs the Phase 5 external audit.
+/// @notice Deploys, wires and locks the Phase 3 contracts on Robinhood Chain TESTNET (46630), a local anvil (31337),
+///         or Robinhood Chain MAINNET (4663) as the guarded beta only (owner decision, before the Phase 5 external
+///         audit: allowlisted wallets, capped deposits). Every other chain is refused.
+///
+/// Mainnet (4663), guarded beta only (docs/07-mainnet-guarded-beta.md; deploy/deploy-contracts.sh runs both steps):
+///   Allowed only when ALL of these hold, otherwise the script stops before anything is broadcast:
+///   - GUARD_ADMIN is set and every cap is given (USDG and every stock): the launch guard is on;
+///   - PRICE_RELAYER is set (the signer's PRICE_RELAY key, created with deploy/new-key.sh BEFORE this deployment: the
+///     oracle's relayer is fixed forever), and it is neither the deployer nor GUARD_ADMIN; GUARDIAN, if set, is neither
+///     the price relayer nor the deployer;
+///   - the tokens are exactly the verified mainnet list below: no USDG_ADDRESS / STOCK_ADDRESSES / STOCK_SYMBOLS
+///     overrides, packages/config/robinhood-mainnet.json must list the same addresses, and each token on chain has
+///     code, the expected decimals() and symbol();
+///   - MAINNET_REF_PRICE_<SYMBOL> (the token's current price in USDG, e.g. 391.65) is given for every stock and the
+///     oracle bounds (PRICE_MIN_USD / PRICE_MAX_USD) leave at least MAINNET_BOUND_FACTOR (5x) on both sides of it;
+///   - two steps: first a simulation (`forge script` WITHOUT --broadcast) prints the full summary and writes
+///     deployments/4663.plan.json (a hash of every input, the build and the deployer's nonce); then the broadcast
+///     (`--broadcast`) is accepted only with a matching plan at most MAINNET_PLAN_MAX_AGE (1 h) old, and with
+///     VELUM_MAINNET_GUARDED_CONFIRM equal to the exact phrase the simulation prints (`mainnetPhrase`), which names
+///     the chain id, the guard admin and the price relayer, so a phrase copied from the docs never matches.
+///   The plan is removed once the broadcast run has accepted it; the deployments file is written only by the broadcast.
 ///
 /// Testnet (tokens default to packages/config/robinhood-testnet.json):
 ///   PRICE_RELAYER=<dedicated relay key address> \
@@ -55,14 +75,48 @@ contract Deploy is Script {
     uint256 internal constant TESTNET = 46_630;
     uint256 internal constant ANVIL = 31_337;
     string internal constant CONFIG = "../packages/config/robinhood-testnet.json";
+    string internal constant MAINNET_CONFIG = "../packages/config/robinhood-mainnet.json";
     /// @dev The smallest USDG account cap accepted without GUARD_ALLOW_SMALL_USDG_CAP: the minimum position size
     ///      (`PerpsBase.minPositionSize`, 10 USDG), in whole USDG.
     uint256 internal constant MIN_USDG_ACCOUNT_CAP = 10;
+    /// @dev Mainnet: the oracle bounds must leave at least this factor on each side of every token's reference price
+    ///      (min <= ref / 5 and max >= ref x 5), so an 80% fall, a 5-for-1 split or a five-fold rise stays inside the
+    ///      immutable bounds (contracts/README.md, corporate actions; IA-06: a source outside them lags at the bound).
+    uint256 public constant MAINNET_BOUND_FACTOR = 5;
+    /// @dev Mainnet: how long the simulation's plan stays valid for the broadcast (seconds).
+    uint256 public constant MAINNET_PLAN_MAX_AGE = 1 hours;
+    /// @dev Mainnet: the simulation's plan (a hash of every input), required by the broadcast. Under deployments/,
+    ///      the only directory the script may write (foundry.toml fs_permissions).
+    string public constant MAINNET_PLAN = "deployments/4663.plan.json";
+    /// @dev The verified mainnet tokens (packages/config/robinhood-mainnet.json, "_verification": on-chain
+    ///      name/symbol/decimals and the issuers' published lists, 2026-11-14). The script refuses anything else on
+    ///      4663 and checks that the config file still says the same. Stock order = the config's.
+    address internal constant MAINNET_USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
 
     struct Tokens {
         address usdg;
         address[] stocks;
         string[] symbols;
+    }
+
+    /// @dev Settings read once from the environment (strictly, D-01): oracle bounds and open-interest cap, 1e18 units.
+    struct Params {
+        uint256 minPrice;
+        uint256 maxPrice;
+        uint256 oiCap;
+    }
+
+    /// @dev Mainnet only: what the gate checks and the summary prints. `refPrices` follow `t.stocks` (1e18 USDG per
+    ///      token, 0 = not given). `phrase` is VELUM_MAINNET_GUARDED_CONFIRM as given ("" = not given).
+    struct Mainnet {
+        address deployer;
+        uint256 deployerNonce;
+        bool relayerSet;
+        address relayer;
+        address guardian;
+        string phrase;
+        uint256[] refPrices;
+        bytes32 planHash;
     }
 
     /// @dev Launch guard. Symbols, decimals and caps follow the vault's token order: USDG, then the stocks.
@@ -88,37 +142,423 @@ contract Deploy is Script {
     }
 
     function run() external {
-        if (block.chainid == MAINNET) {
-            revert(
-                "Velum: refusing Robinhood Chain mainnet (4663). Mainnet needs the Phase 5 external audit of contracts and circuits."
-            );
-        }
         require(
-            block.chainid == TESTNET || block.chainid == ANVIL,
-            "Velum: deploy only to Robinhood Chain testnet (46630) or a local anvil (31337)"
+            block.chainid == TESTNET || block.chainid == ANVIL || block.chainid == MAINNET,
+            "Velum: deploy only to Robinhood Chain testnet (46630), a local anvil (31337) or, as the guarded beta, Robinhood Chain mainnet (4663)"
         );
+        bool mainnet = block.chainid == MAINNET;
+        // Mainnet: `forge script` without --broadcast is the simulation (step 1); anything else is held to the plan.
+        bool dryRun = vm.isContext(VmSafe.ForgeContext.ScriptDryRun);
 
         vm.startBroadcast();
-        (, address deployer,) = vm.readCallers();
-        (bool relayerSet, address relayer) = envAddressStrict("PRICE_RELAYER");
-        if (!relayerSet) relayer = deployer;
-        checkRelayer(block.chainid, relayerSet, relayer, deployer);
-        (, address guardian) = envAddressStrict("GUARDIAN");
-        console2.log(guardianNotice(guardian));
+        Mainnet memory m = _roles();
+        console2.log(guardianNotice(m.guardian));
         Tokens memory t = _tokens();
+        if (mainnet) checkMainnetTokenContracts(t);
         Guard memory g = _guard(t);
-        checkGuard(g, block.chainid, deployer, relayer);
+        checkGuard(g, block.chainid, m.deployer, m.relayer);
+        Params memory p = _params();
+        if (mainnet) _mainnetGate(m, t, g, p, dryRun);
         console2.log(guardNotice(g));
         uint256 startBlock = block.number;
         Deployed memory d = _deploy(t);
-        _wire(d, t, relayer, guardian, g);
-        if (block.chainid == ANVIL && relayer == deployer) _seedPrices(d.oracle, t.stocks);
+        _wire(d, t, m.relayer, m.guardian, g, p);
+        if (block.chainid == ANVIL && m.relayer == m.deployer) _seedPrices(d.oracle, t.stocks);
         vm.stopBroadcast();
 
-        _write(t, d, relayer, guardian, g.admin, startBlock);
+        if (mainnet && dryRun) {
+            _writePlan(m);
+        } else {
+            _write(t, d, m.relayer, m.guardian, g.admin, startBlock);
+        }
         console2.log(guardNotice(g));
+        if (mainnet) console2.log(_mainnetNextStep(m, dryRun));
         // Repeated after the addresses so it is the last thing the operator sees (internal audit F-07).
-        console2.log(guardianNotice(guardian));
+        console2.log(guardianNotice(m.guardian));
+    }
+
+    /// @dev The deployer (the broadcasting account), PRICE_RELAYER (default: the deployer, anvil only) and GUARDIAN,
+    ///      checked: on mainnet `checkMainnetRoles` first (before any token is read), then `checkRelayer`.
+    function _roles() internal view returns (Mainnet memory m) {
+        (, m.deployer,) = vm.readCallers();
+        (m.relayerSet, m.relayer) = envAddressStrict("PRICE_RELAYER");
+        if (!m.relayerSet) m.relayer = m.deployer;
+        (, m.guardian) = envAddressStrict("GUARDIAN");
+        if (block.chainid == MAINNET) {
+            (, address admin) = envAddressStrict("GUARD_ADMIN");
+            checkMainnetRoles(m.relayerSet, m.relayer, m.deployer, admin, m.guardian);
+        }
+        checkRelayer(block.chainid, m.relayerSet, m.relayer, m.deployer);
+    }
+
+    // ---------------------------------------------------------------- mainnet: guarded beta only
+
+    /// @dev The rest of the mainnet conditions (roles and token contracts are checked earlier in `run`): reference
+    ///      prices and bounds, then the summary; the confirmation phrase (required for the broadcast) and, in the
+    ///      broadcast run, the simulation's plan. Reverts with the reason on the first unmet condition.
+    function _mainnetGate(Mainnet memory m, Tokens memory t, Guard memory g, Params memory p, bool dryRun) internal {
+        m.deployerNonce = vm.getNonce(m.deployer);
+        (, m.phrase) = _envStringStrict("VELUM_MAINNET_GUARDED_CONFIRM");
+        // Repeated with the parsed guard (`_roles` checked the raw GUARD_ADMIN before any token was read).
+        checkMainnetRoles(m.relayerSet, m.relayer, m.deployer, g.admin, m.guardian);
+        m.refPrices = _refPrices(t);
+        checkMainnetBounds(t.symbols, m.refPrices, p.minPrice, p.maxPrice);
+        m.planHash = planHash(m, t, g, p);
+        console2.log(mainnetSummary(m, t, g, p));
+        string memory phrase = mainnetPhrase(block.chainid, g.admin, m.relayer);
+        // Step 1 may be given the phrase already, but it must then be right; step 2 needs it.
+        checkMainnetConfirm(m.phrase, phrase, !dryRun);
+        if (dryRun) return;
+        bool exists = vm.isFile(MAINNET_PLAN);
+        uint256 planChain;
+        bytes32 planned;
+        uint256 simulatedAt;
+        if (exists) {
+            // forge-lint: disable-next-line(unsafe-cheatcode)
+            string memory json = vm.readFile(MAINNET_PLAN);
+            planChain = vm.parseJsonUint(json, ".chainId");
+            planned = vm.parseJsonBytes32(json, ".configHash");
+            simulatedAt = vm.parseJsonUint(json, ".simulatedAt");
+        }
+        checkPlan(exists, planChain, planned, simulatedAt, m.planHash, vm.unixTime() / 1000);
+        // One plan, one broadcast: a second broadcast needs a new simulation (the nonce in the hash moves anyway).
+        // forge-lint: disable-next-line(unsafe-cheatcode)
+        vm.removeFile(MAINNET_PLAN);
+    }
+
+    /// @notice The exact text VELUM_MAINNET_GUARDED_CONFIRM must hold for a mainnet broadcast. It names the chain id,
+    ///         the guard admin and the price relayer (checksummed), so text copied from the docs never matches: only
+    ///         an operator who has the real values in front of them (the simulation prints it) can give it.
+    function mainnetPhrase(uint256 chainId, address guardAdmin, address relayer) public pure returns (string memory) {
+        return string.concat(
+            "deploy unaudited Velum guarded beta to chain ",
+            vm.toString(chainId),
+            " with guard admin ",
+            vm.toString(guardAdmin),
+            " and price relayer ",
+            vm.toString(relayer)
+        );
+    }
+
+    /// @notice The confirmation phrase: required for the broadcast, and when given (also in the simulation) it must be
+    ///         exactly `expected`.
+    function checkMainnetConfirm(string memory given, string memory expected, bool required) public pure {
+        if (bytes(given).length == 0) {
+            require(
+                !required,
+                string.concat(
+                    "Velum: refusing Robinhood Chain mainnet (4663): set VELUM_MAINNET_GUARDED_CONFIRM to the exact phrase the simulation printed: ",
+                    expected
+                )
+            );
+            return;
+        }
+        require(
+            keccak256(bytes(given)) == keccak256(bytes(expected)),
+            string.concat(
+                "Velum: refusing Robinhood Chain mainnet (4663): VELUM_MAINNET_GUARDED_CONFIRM does not match this deployment's chain id, guard admin and price relayer. Expected exactly: ",
+                expected
+            )
+        );
+    }
+
+    /// @notice Mainnet roles: the launch guard on, a dedicated price-relay key that is neither the deployer nor the guard
+    ///         admin, and a guardian (optional) that is neither the price relayer nor the deployer. Caps are checked by
+    ///         `_guard` (every one required with GUARD_ADMIN) and `checkGuard`.
+    function checkMainnetRoles(bool relayerSet, address relayer, address deployer, address guardAdmin, address guardian)
+        public
+        pure
+    {
+        require(
+            guardAdmin != address(0),
+            "Velum: refusing Robinhood Chain mainnet (4663) without the launch guard. Before the Phase 5 external audit mainnet is allowed only as the guarded beta: set GUARD_ADMIN (the owner multisig) and every GUARD_ACCOUNT_CAP_<SYMBOL> / GUARD_GLOBAL_CAP_<SYMBOL> (docs/07-mainnet-guarded-beta.md)"
+        );
+        _checkMainnetRelayer(relayerSet, relayer, deployer);
+        require(relayer != guardAdmin, "Velum: refusing Robinhood Chain mainnet (4663): PRICE_RELAYER is GUARD_ADMIN");
+        require(
+            guardAdmin != deployer, "Velum: refusing Robinhood Chain mainnet (4663): GUARD_ADMIN is the deployer key"
+        );
+        if (guardian != address(0)) {
+            require(
+                guardian != relayer && guardian != deployer,
+                "Velum: refusing Robinhood Chain mainnet (4663): GUARDIAN must be a cold owner key, not the price-relay or deployer key"
+            );
+        }
+    }
+
+    function _checkMainnetRelayer(bool relayerSet, address relayer, address deployer) internal pure {
+        require(
+            relayerSet && relayer != address(0),
+            "Velum: refusing Robinhood Chain mainnet (4663): set PRICE_RELAYER to the signer's PRICE_RELAY key address (deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY, before this deployment)"
+        );
+        require(
+            relayer != deployer, "Velum: refusing Robinhood Chain mainnet (4663): PRICE_RELAYER is the deployer key"
+        );
+    }
+
+    /// @notice The verified mainnet token list (see MAINNET_USDG). Nothing else is ever deployed against on 4663.
+    function mainnetTokens() public pure returns (Tokens memory t) {
+        t.usdg = MAINNET_USDG;
+        t.symbols = new string[](10);
+        t.stocks = new address[](10);
+        (t.symbols[0], t.stocks[0]) = ("TSLA", 0x322F0929c4625eD5bAd873c95208D54E1c003b2d);
+        (t.symbols[1], t.stocks[1]) = ("AMZN", 0x12f190a9F9d7D37a250758b26824B97CE941bF54);
+        (t.symbols[2], t.stocks[2]) = ("PLTR", 0x894E1EC2D74FFE5AEF8Dc8A9e84686acCB964F2A);
+        (t.symbols[3], t.stocks[3]) = ("NVDA", 0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC);
+        (t.symbols[4], t.stocks[4]) = ("NFLX", 0xE0444EF8BF4eD74f74FD73686e2ddF4C1c5591E8);
+        (t.symbols[5], t.stocks[5]) = ("AMD", 0x86923f96303D656E4aa86D9d42D1e57ad2023fdC);
+        (t.symbols[6], t.stocks[6]) = ("AAPL", 0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9);
+        (t.symbols[7], t.stocks[7]) = ("META", 0xc0D6457C16Cc70d6790Dd43521C899C87ce02f35);
+        (t.symbols[8], t.stocks[8]) = ("MSFT", 0xe93237C50D904957Cf27E7B1133b510C669c2e74);
+        (t.symbols[9], t.stocks[9]) = ("COIN", 0x6330D8C3178a418788dF01a47479c0ce7CCF450b);
+    }
+
+    /// @notice `fromConfig` (packages/config/robinhood-mainnet.json, as the API, workers and web read it) must be the
+    ///         verified list exactly: same USDG, same symbols in the same order, same addresses.
+    function checkMainnetTokenList(Tokens memory fromConfig) public pure {
+        Tokens memory v = mainnetTokens();
+        string memory differs =
+            "Velum: refusing Robinhood Chain mainnet (4663): packages/config/robinhood-mainnet.json does not list exactly the verified mainnet tokens of script/Deploy.s.sol (mainnetTokens)";
+        require(fromConfig.usdg == v.usdg && fromConfig.stocks.length == v.stocks.length, differs);
+        require(fromConfig.symbols.length == v.symbols.length, differs);
+        for (uint256 i; i < v.stocks.length; ++i) {
+            require(fromConfig.stocks[i] == v.stocks[i], differs);
+            require(keccak256(bytes(fromConfig.symbols[i])) == keccak256(bytes(v.symbols[i])), differs);
+        }
+    }
+
+    /// @notice Each listed token, on the chain being deployed to: has code, answers decimals() with 6 (USDG) or 18
+    ///         (stocks) and symbol() with its ticker.
+    function checkMainnetTokenContracts(Tokens memory t) public view {
+        _checkToken(t.usdg, "USDG", 6);
+        for (uint256 i; i < t.stocks.length; ++i) {
+            _checkToken(t.stocks[i], t.symbols[i], 18);
+        }
+    }
+
+    function _checkToken(address token, string memory symbol, uint8 decimals) internal view {
+        string memory where = string.concat(
+            "Velum: refusing Robinhood Chain mainnet (4663): the ", symbol, " token ", vm.toString(token), " "
+        );
+        require(token.code.length != 0, string.concat(where, "has no code on this chain"));
+        (bool ok, bytes memory ret) = token.staticcall(abi.encodeWithSignature("decimals()"));
+        require(
+            ok && ret.length == 32 && abi.decode(ret, (uint256)) == decimals,
+            string.concat(where, "has other decimals than expected")
+        );
+        (ok, ret) = token.staticcall(abi.encodeWithSignature("symbol()"));
+        require(ok && ret.length >= 64, string.concat(where, "has no readable symbol()"));
+        require(
+            keccak256(bytes(abi.decode(ret, (string)))) == keccak256(bytes(symbol)),
+            string.concat(where, "reports another symbol()")
+        );
+    }
+
+    /// @dev MAINNET_REF_PRICE_<SYMBOL> for every stock: the token's current price in USDG (a token amount with up to
+    ///      18 decimals, e.g. 391.65), converted to 1e18 units. deploy/deploy-contracts.sh fills them from Robinhood's
+    ///      quote API right before the simulation and passes the same values to the broadcast.
+    function _refPrices(Tokens memory t) internal view returns (uint256[] memory ref) {
+        ref = new uint256[](t.stocks.length);
+        for (uint256 i; i < t.stocks.length; ++i) {
+            string memory name = string.concat("MAINNET_REF_PRICE_", t.symbols[i]);
+            if (_envGiven(name)) ref[i] = parseUnits(name, vm.envString(name), 18);
+        }
+    }
+
+    /// @notice Mainnet bounds: every stock needs a reference price (non-zero) and the immutable oracle bounds must leave
+    ///         at least MAINNET_BOUND_FACTOR on both sides of it: min x 5 <= ref and ref x 5 <= max (1e18 units).
+    function checkMainnetBounds(string[] memory symbols, uint256[] memory refPrices, uint256 minPrice, uint256 maxPrice)
+        public
+        pure
+    {
+        require(symbols.length == refPrices.length, "Velum: reference prices differ in length");
+        for (uint256 i; i < symbols.length; ++i) {
+            string memory s = symbols[i];
+            require(
+                refPrices[i] != 0,
+                string.concat(
+                    "Velum: refusing Robinhood Chain mainnet (4663): set MAINNET_REF_PRICE_",
+                    s,
+                    " to the token's current price in USDG (deploy/deploy-contracts.sh reads it from Robinhood's quote API)"
+                )
+            );
+            require(
+                refPrices[i] < 1e27,
+                string.concat(
+                    "Velum: refusing Robinhood Chain mainnet (4663): MAINNET_REF_PRICE_", s, " is implausibly large"
+                )
+            );
+            require(
+                minPrice * MAINNET_BOUND_FACTOR <= refPrices[i] && refPrices[i] * MAINNET_BOUND_FACTOR <= maxPrice,
+                string.concat(
+                    "Velum: refusing Robinhood Chain mainnet (4663): the oracle bounds [",
+                    formatUnits(minPrice, 18),
+                    ", ",
+                    formatUnits(maxPrice, 18),
+                    "] leave less than 5x on a side of ",
+                    s,
+                    "'s reference price ",
+                    formatUnits(refPrices[i], 18),
+                    " (set PRICE_MIN_USD / PRICE_MAX_USD; the bounds are immutable)"
+                )
+            );
+        }
+    }
+
+    /// @notice The simulation's plan, for the broadcast: it must exist (the simulation ran), be for this chain, carry
+    ///         the same configuration hash (every input, the build and the deployer's nonce) and be at most
+    ///         MAINNET_PLAN_MAX_AGE old (and not from the future). `nowSec`: wall-clock seconds.
+    function checkPlan(
+        bool exists,
+        uint256 planChain,
+        bytes32 planned,
+        uint256 simulatedAt,
+        bytes32 expected,
+        uint256 nowSec
+    ) public pure {
+        require(
+            exists,
+            "Velum: refusing Robinhood Chain mainnet (4663): no simulation plan (deployments/4663.plan.json). Run the same command WITHOUT --broadcast first, check its summary, then broadcast within 1 hour"
+        );
+        require(planChain == MAINNET, "Velum: refusing Robinhood Chain mainnet (4663): the plan is for another chain");
+        require(
+            planned == expected,
+            "Velum: refusing Robinhood Chain mainnet (4663): the settings, the build or the deployer's nonce differ from the simulation. Simulate again (without --broadcast) and check the new summary"
+        );
+        require(
+            simulatedAt <= nowSec,
+            "Velum: refusing Robinhood Chain mainnet (4663): the simulation plan is dated in the future"
+        );
+        require(
+            nowSec - simulatedAt <= MAINNET_PLAN_MAX_AGE,
+            "Velum: refusing Robinhood Chain mainnet (4663): the simulation is more than 1 hour old. Simulate again (without --broadcast)"
+        );
+    }
+
+    /// @notice What the plan binds: chain, deployer and its nonce, every role, the guard, the tokens, bounds, open-interest
+    ///         cap, reference prices and the creation code of all five contracts (the build).
+    function planHash(Mainnet memory m, Tokens memory t, Guard memory g, Params memory p)
+        public
+        view
+        returns (bytes32)
+    {
+        bytes32 build = keccak256(
+            abi.encode(
+                keccak256(type(VelumVault).creationCode),
+                keccak256(type(OracleAdapter).creationCode),
+                keccak256(type(SpotPools).creationCode),
+                keccak256(type(MakerBook).creationCode),
+                keccak256(type(PerpsMarkets).creationCode)
+            )
+        );
+        bytes32 roles =
+            keccak256(abi.encode(block.chainid, m.deployer, m.deployerNonce, m.relayer, m.guardian, g.admin));
+        bytes32 tokens = keccak256(abi.encode(t.usdg, t.stocks, t.symbols, m.refPrices));
+        return keccak256(abi.encode(build, roles, tokens, g.accountCaps, g.globalCaps, p.minPrice, p.maxPrice, p.oiCap));
+    }
+
+    /// @notice Everything the operator must check before broadcasting to mainnet, in one place.
+    function mainnetSummary(Mainnet memory m, Tokens memory t, Guard memory g, Params memory p)
+        public
+        view
+        returns (string memory out)
+    {
+        out = string.concat(
+            "\n================ Velum GUARDED BETA on Robinhood Chain MAINNET (",
+            vm.toString(block.chainid),
+            ") ================\n",
+            "UNAUDITED contracts (the Phase 5 external audit has not happened). Allowlisted wallets only, capped deposits,\n",
+            "no pause, no upgrade: every contract locks itself in this script. Withdrawals are never blocked.\n",
+            "Deployer:      ",
+            vm.toString(m.deployer),
+            " (nonce ",
+            vm.toString(m.deployerNonce),
+            ", balance ",
+            formatUnits(m.deployer.balance, 18),
+            " ETH)\n"
+        );
+        out = string.concat(
+            out,
+            "Price relayer: ",
+            vm.toString(m.relayer),
+            " (balance ",
+            formatUnits(m.relayer.balance, 18),
+            " ETH). FIXED FOREVER: must be the signer's PRICE_RELAY key (new-key.sh); a new key means a new deployment\n",
+            "Guard admin:   ",
+            vm.toString(g.admin),
+            g.adminHasCode ? " (has code: a contract / multisig)\n" : " (NO CODE: a plain key, not a multisig)\n",
+            "Guardian:      ",
+            m.guardian == address(0)
+                ? "none (no close-only switch: the corporate-actions procedure is unavailable)\n"
+                : string.concat(vm.toString(m.guardian), " (close-only switch only)\n")
+        );
+        out = string.concat(
+            out,
+            "Oracle: relay-sourced (no Chainlink feed, no sequencer feed), bounds [",
+            formatUnits(p.minPrice, 18),
+            ", ",
+            formatUnits(p.maxPrice, 18),
+            "] USDG per token for every stock (immutable)\nOpen-interest cap per side and market: ",
+            formatUnits(p.oiCap, 18),
+            " tokens\nTokens (the verified mainnet list; on-chain code, decimals and symbol checked):\n  USDG ",
+            vm.toString(t.usdg),
+            " (6 decimals)\n"
+        );
+        for (uint256 i; i < t.stocks.length; ++i) {
+            out = string.concat(
+                out,
+                "  ",
+                t.symbols[i],
+                " ",
+                vm.toString(t.stocks[i]),
+                " (18 decimals) reference price ",
+                formatUnits(m.refPrices[i], 18),
+                ": bounds = ref / ",
+                vm.toString(p.minPrice == 0 ? 0 : m.refPrices[i] / p.minPrice),
+                " .. ref x ",
+                vm.toString(p.maxPrice / m.refPrices[i]),
+                "\n"
+            );
+        }
+        out = string.concat(
+            out,
+            "Plan (configuration) hash: ",
+            vm.toString(m.planHash),
+            "\nBroadcast confirmation phrase (VELUM_MAINNET_GUARDED_CONFIRM):\n  ",
+            mainnetPhrase(block.chainid, g.admin, m.relayer),
+            "\n========================================================================================="
+        );
+    }
+
+    function _writePlan(Mainnet memory m) internal {
+        string memory root = "plan";
+        vm.serializeUint(root, "chainId", block.chainid);
+        vm.serializeAddress(root, "deployer", m.deployer);
+        vm.serializeUint(root, "deployerNonce", m.deployerNonce);
+        vm.serializeUint(root, "simulatedAt", vm.unixTime() / 1000);
+        string memory out = vm.serializeBytes32(root, "configHash", m.planHash);
+        // forge-lint: disable-next-line(unsafe-cheatcode)
+        vm.writeJson(out, MAINNET_PLAN);
+    }
+
+    function _mainnetNextStep(Mainnet memory m, bool dryRun) internal pure returns (string memory) {
+        if (dryRun) {
+            return string.concat(
+                "\nVelum: mainnet SIMULATION done, nothing was broadcast. Plan ",
+                vm.toString(m.planHash),
+                " written to ",
+                MAINNET_PLAN,
+                ". Check the summary above; then, within 1 hour, run the same command with --broadcast and",
+                " VELUM_MAINNET_GUARDED_CONFIRM set to the phrase above (deploy/deploy-contracts.sh does both steps)."
+            );
+        }
+        return "\nVelum: mainnet broadcast run accepted (plan matched). Check every transaction succeeded, then install deployments/4663.json (deploy/deploy-contracts.sh does).";
+    }
+
+    /// @dev An optional string variable: `(false, "")` when unset or empty.
+    function _envStringStrict(string memory name) internal view returns (bool, string memory) {
+        if (!_envGiven(name)) return (false, "");
+        return (true, vm.envString(name));
     }
 
     /// @notice What the operator must know about the launch guard: who holds it, what it can and cannot do, whether
@@ -403,8 +843,9 @@ contract Deploy is Script {
 
     /// @notice Testnet needs a dedicated price-relay key: one key controlling both deployment and every
     ///         price is refused (internal audit F-04). Anvil may use the deployer.
+    ///         Mainnet (4663) has the same rule plus more in `checkMainnetRoles`, which `run` applies there.
     function checkRelayer(uint256 chainId, bool relayerSet, address relayer, address deployer) public pure {
-        if (chainId == MAINNET) revert("Velum: refusing Robinhood Chain mainnet (4663)");
+        if (chainId == MAINNET) return _checkMainnetRelayer(relayerSet, relayer, deployer);
         if (chainId != TESTNET) return;
         require(relayerSet && relayer != address(0), "Velum: set PRICE_RELAYER to the dedicated price-relay key");
         require(relayer != deployer, "Velum: PRICE_RELAYER must not be the deployer key");
@@ -425,23 +866,39 @@ contract Deploy is Script {
     }
 
     /// @dev One-time setup of every contract; each locks itself permanently afterwards.
-    function _wire(Deployed memory d, Tokens memory t, address relayer, address guardian, Guard memory g) internal {
+    /// @dev PRICE_MIN_USD / PRICE_MAX_USD (relay bounds in whole USDG, default 1 / 100000) and OI_CAP_TOKENS (per side,
+    ///      default 10000), read strictly, in 1e18 units.
+    function _params() internal view returns (Params memory p) {
+        uint256 minUsd = envUintStrict("PRICE_MIN_USD", 1);
+        uint256 maxUsd = envUintStrict("PRICE_MAX_USD", 100_000);
+        uint256 oiTokens = envUintStrict("OI_CAP_TOKENS", 10_000);
+        require(maxUsd <= type(uint128).max / 1e18, "Velum: PRICE_MAX_USD too large");
+        require(oiTokens <= type(uint128).max / 1e18, "Velum: OI_CAP_TOKENS too large");
+        p.minPrice = minUsd * 1e18;
+        p.maxPrice = maxUsd * 1e18;
+        p.oiCap = oiTokens * 1e18;
+    }
+
+    function _wire(
+        Deployed memory d,
+        Tokens memory t,
+        address relayer,
+        address guardian,
+        Guard memory g,
+        Params memory p
+    ) internal {
         _wireVault(d, t, g);
         uint256 n = t.stocks.length;
-        // Chainlink feeds for testnet are not verified yet, so every stock is relay-sourced.
+        // No verified Chainlink feeds on Robinhood Chain yet (packages/config), so every stock is relay-sourced.
         uint128[] memory mins = new uint128[](n);
         uint128[] memory maxs = new uint128[](n);
         uint256[] memory caps = new uint256[](n);
-        uint256 minP = envUintStrict("PRICE_MIN_USD", 1) * 1e18;
-        uint256 maxP = envUintStrict("PRICE_MAX_USD", 100_000) * 1e18;
-        uint256 oiCap = envUintStrict("OI_CAP_TOKENS", 10_000) * 1e18;
-        require(maxP <= type(uint128).max, "Velum: PRICE_MAX_USD too large");
         for (uint256 i; i < n; ++i) {
             // forge-lint: disable-next-line(unsafe-typecast)
-            mins[i] = uint128(minP);
+            mins[i] = uint128(p.minPrice);
             // forge-lint: disable-next-line(unsafe-typecast)
-            maxs[i] = uint128(maxP);
-            caps[i] = oiCap;
+            maxs[i] = uint128(p.maxPrice);
+            caps[i] = p.oiCap;
         }
         // No Chainlink feeds, so no sequencer-uptime feed either (zero = relay sources only).
         d.oracle.setup(t.stocks, new address[](n), mins, maxs, relayer, address(0));
@@ -477,6 +934,7 @@ contract Deploy is Script {
     }
 
     function _tokens() internal returns (Tokens memory t) {
+        if (block.chainid == MAINNET) return _mainnetTokensChecked();
         (bool usdgSet, address usdgAddr) = envAddressStrict("USDG_ADDRESS");
         if (usdgSet) {
             t.usdg = usdgAddr;
@@ -511,6 +969,31 @@ contract Deploy is Script {
             t.symbols[0] = "TSLA";
             t.symbols[1] = "AMZN";
         }
+    }
+
+    /// @dev Mainnet: the verified list, never an override; packages/config/robinhood-mainnet.json must agree with it.
+    function _mainnetTokensChecked() internal view returns (Tokens memory t) {
+        require(
+            !_envGiven("USDG_ADDRESS") && !_envGiven("STOCK_ADDRESSES") && !_envGiven("STOCK_SYMBOLS"),
+            "Velum: refusing Robinhood Chain mainnet (4663): USDG_ADDRESS, STOCK_ADDRESSES and STOCK_SYMBOLS are not accepted on mainnet; it deploys only against the verified token list"
+        );
+        t = mainnetTokens();
+        // forge-lint: disable-next-line(unsafe-cheatcode)
+        string memory json = vm.readFile(MAINNET_CONFIG);
+        Tokens memory c;
+        c.usdg = vm.parseJsonAddress(json, ".tokens.USDG.address");
+        c.stocks = new address[](t.stocks.length);
+        c.symbols = new string[](t.stocks.length);
+        for (uint256 i; i < t.stocks.length; ++i) {
+            c.symbols[i] = t.symbols[i];
+            c.stocks[i] = vm.parseJsonAddress(json, string.concat(".tokens.", t.symbols[i], ".address"));
+        }
+        // The config may not list more tokens than the verified ones either.
+        require(
+            vm.parseJsonKeys(json, ".tokens").length == t.stocks.length + 1,
+            "Velum: refusing Robinhood Chain mainnet (4663): packages/config/robinhood-mainnet.json lists other tokens than the verified mainnet list"
+        );
+        checkMainnetTokenList(c);
     }
 
     function _write(

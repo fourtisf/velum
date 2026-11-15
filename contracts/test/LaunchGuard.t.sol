@@ -1037,16 +1037,28 @@ contract LaunchGuardDeployTest is Test {
         assertFalse(vm.contains(on, "BLOCKED"));
     }
 
-    /// @notice A guard configuration does not get the script past the mainnet refusal (it is the first check).
+    /// @notice A guard configuration alone does not get the script onto mainnet: the guarded beta also needs a dedicated
+    ///         price relayer, the verified tokens, reference prices, the confirmation phrase and the simulation's plan
+    ///         (every refusal: test/MainnetGuardedDeploy.t.sol, which alone calls run() on 4663).
     function test_deployStillRefusesMainnetWithGuard() public {
         Deploy d = new Deploy();
-        vm.setEnv("GUARD_ADMIN", vm.toString(makeAddr("owner-multisig")));
-        vm.chainId(4663);
+        address admin = makeAddr("owner-multisig");
+        address relay = makeAddr("relay");
         vm.expectRevert(
             bytes(
-                "Velum: refusing Robinhood Chain mainnet (4663). Mainnet needs the Phase 5 external audit of contracts and circuits."
+                "Velum: refusing Robinhood Chain mainnet (4663): set PRICE_RELAYER to the signer's PRICE_RELAY key address (deploy/new-key.sh PRICE_RELAY_PRIVATE_KEY, before this deployment)"
             )
         );
-        d.run();
+        d.checkMainnetRoles(false, address(0), makeAddr("deployer"), admin, address(0));
+        string memory phrase = d.mainnetPhrase(4663, admin, relay);
+        vm.expectRevert(
+            bytes(
+                string.concat(
+                    "Velum: refusing Robinhood Chain mainnet (4663): set VELUM_MAINNET_GUARDED_CONFIRM to the exact phrase the simulation printed: ",
+                    phrase
+                )
+            )
+        );
+        d.checkMainnetConfirm("", phrase, true);
     }
 }

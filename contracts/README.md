@@ -6,10 +6,12 @@ code that is not open source). OpenZeppelin 5.4.0 (MIT) is used only for `IERC20
 `ReentrancyGuard`, and forge-std 1.17.0 (MIT/Apache-2.0) for tests only; both are vendored unmodified,
 with their licenses, in `lib/` (see `lib/VENDORED.md`: versions, upstream commits, byte-identity check).
 
-**Testnet only.** `script/Deploy.s.sol` refuses Robinhood Chain mainnet (4663): mainnet needs the
-Phase 5 external audit of contracts and circuits. The vault has an optional launch guard (allowlist and deposit caps,
-off by default) for a later guarded beta; see [Guarded launch](#guarded-launch). Enabling mainnet in the script is a
-separate step the owner must confirm.
+**Testnet, or mainnet as the guarded beta only.** Not externally audited. `script/Deploy.s.sol` deploys to Robinhood
+Chain testnet (46630) and anvil (31337), and to mainnet (4663) only as the guarded beta the owner decided on (November
+2026): the launch guard on with every cap, a dedicated price relayer, exactly the verified mainnet tokens, sane oracle
+bounds, and two steps (a simulation that writes a plan, then a broadcast that needs the plan and a confirmation phrase
+naming the chain, the guard admin and the relayer); see [Mainnet: the guarded beta](#mainnet-the-guarded-beta) and the
+runbook `docs/07-mainnet-guarded-beta.md`. Opening to everyone still waits for the Phase 5 external audit.
 
 The November 2026 internal audit (`docs/audit/2026-11-internal.md`) findings F-01 to F-08, F-10 to F-13
 and I-1 are fixed or mitigated here, and so are the second-round findings R2-01 to R2-07, the
@@ -103,7 +105,7 @@ Foundry 1.5.1 and solc 0.8.28 are required. Use `--offline` if `binaries.solidit
 ```bash
 cd contracts
 forge build
-forge test                      # 251 tests: unit, fuzz (512 runs), invariants (64 × 128)
+forge test                      # 267 tests: unit, fuzz (512 runs), invariants (64 × 128)
 FOUNDRY_PROFILE=ci forge test   # fuzz 4096 runs, invariants 256 × 256
 forge lint src script           # test/ is excluded in foundry.toml
 forge coverage --report summary --no-match-path "test/invariant/*"
@@ -149,6 +151,43 @@ close-only and the split/dividend procedure is therefore unavailable for that de
 guard configuration (off, or the admin and every cap) before deploying and after the addresses. Every contract
 locks itself during the script; apart from the optional guardian's close-only switch and the optional launch-guard
 admin (until it switches the guard off) there is nothing to administer afterwards.
+
+### Mainnet: the guarded beta
+
+Chain 4663 is accepted only when **all** of these hold (otherwise the script stops before anything is broadcast, each
+refusal tested in `test/MainnetGuardedDeploy.t.sol`):
+
+- `GUARD_ADMIN` is set and every cap is given (USDG and the ten stocks): the launch guard is on;
+- `PRICE_RELAYER` is set and is neither the deployer nor `GUARD_ADMIN`; `GUARD_ADMIN` is not the deployer; `GUARDIAN`,
+  if set, is neither the price relayer nor the deployer;
+- the tokens are exactly the verified mainnet list hard-coded in the script (`mainnetTokens`): no `USDG_ADDRESS` /
+  `STOCK_ADDRESSES` / `STOCK_SYMBOLS`, `packages/config/robinhood-mainnet.json` lists the same 11 addresses, and each
+  token on chain has code, the expected `decimals()` (6 / 18) and `symbol()`;
+- `MAINNET_REF_PRICE_<SYMBOL>` (the token's current price in USDG) is given for every stock and the oracle bounds
+  (`PRICE_MIN_USD` / `PRICE_MAX_USD`) leave at least 5x on both sides of it (`MAINNET_BOUND_FACTOR`);
+- **two steps.** The simulation (`forge script` *without* `--broadcast`, detected with `vm.isContext`) prints the full
+  summary (deployer, nonce and balance; relayer; guard admin and whether it has code; guardian; tokens; bounds per token;
+  open-interest cap; caps; the plan hash; the confirmation phrase) and writes `deployments/4663.plan.json`: a hash of
+  every input, the creation code of the five contracts and the deployer's nonce, with the simulation time. The
+  broadcast (`--broadcast`) is accepted only with a plan for 4663 whose hash matches and that is at most one hour old
+  (`MAINNET_PLAN_MAX_AGE`), and with `VELUM_MAINNET_GUARDED_CONFIRM` equal to `mainnetPhrase(chain, admin, relayer)`:
+  `deploy unaudited Velum guarded beta to chain 4663 with guard admin <admin> and price relayer <relayer>`
+  (checksummed), so a phrase copied from documentation never matches. The plan is removed once a broadcast run has
+  accepted it (and the nonce in it moves anyway), so a second broadcast needs a new simulation. The deployments file is
+  written only by the broadcast run.
+
+```bash
+# from contracts/, every setting exported (GUARD_ADMIN, all caps, PRICE_RELAYER, MAINNET_REF_PRICE_<SYMBOL>, ...)
+forge script script/Deploy.s.sol --rpc-url $RPC --account velum-deployer --sender $DEPLOYER            # 1. simulate
+VELUM_MAINNET_GUARDED_CONFIRM='<the phrase printed by step 1>' \
+forge script script/Deploy.s.sol --rpc-url $RPC --account velum-deployer --sender $DEPLOYER --broadcast --slow   # 2.
+```
+
+On the server `deploy/deploy-contracts.sh` runs both steps (pinned Foundry and solc, an encrypted keystore, the relay
+address derived from the signer's key, reference prices from Robinhood's quote API) and installs the deployment file;
+`docs/07-mainnet-guarded-beta.md` is the runbook. `forge script` writes `deployments/<chain>.json` during its local
+run, before the transactions are sent: check that every transaction succeeded before using the file
+(`deploy-contracts.sh` checks the receipts, the code at every address and the roles on chain first).
 
 ## Intentional simplifications vs docs/04 (Phase 3)
 
@@ -496,8 +535,8 @@ TSLA-like volatility, at most 1-2% of seconds lag, busy or not; pushes must stay
 
 An optional launch guard in `VelumVault` lets the owner run a beta limited to approved wallets and small amounts
 before the external audit opens the protocol to everyone. It is fixed at deploy and **off by default** (the testnet
-deployment is unguarded). It does not change the mainnet refusal in `script/Deploy.s.sol`: enabling mainnet is a
-separate step the owner must confirm.
+deployment is unguarded). On mainnet it is required: `script/Deploy.s.sol` refuses chain 4663 without it (see
+[Mainnet: the guarded beta](#mainnet-the-guarded-beta)).
 
 **Where it sits.** `VelumVault.deposit` is the only way tokens enter the protocol: the spot pools, the maker book and
 perps never transfer ERC-20s, they only move internal vault balances (`transferInternal`), and the forced-exit bond is

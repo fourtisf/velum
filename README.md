@@ -5,7 +5,8 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 > Status: **Phase 2**, a production frontend with demo trading. Wallet connect, public balances,
 > prices and candles are real; trades are simulated in the browser behind a visible "Demo mode" banner.
 > The site runs on testnet, or on mainnet in read-only mode (real wallet and balances, live prices,
-> simulated trades). Velum contracts exist on testnet only. Claude Code: start with `CLAUDE.md`.
+> simulated trades). Velum contracts are not deployed on mainnet; the guarded mainnet beta (allowlisted wallets, small
+> caps, unaudited contracts) is prepared: `docs/07-mainnet-guarded-beta.md`. Claude Code: start with `CLAUDE.md`.
 
 ## What's in this repo
 
@@ -19,7 +20,7 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 | `packages/config` | Verified chain constants, tokens, markets, protocol numbers, session calendar, Redis contract |
 | `packages/math` | 1e18 fixed-point money math and every formula in docs/01 §6 |
 | `packages/db` | Prisma schema, migrations, generated client |
-| `contracts/` | Foundry project: the Phase 3 contracts, tests and deploy script (testnet only, not audited) |
+| `contracts/` | Foundry project: the Phase 3 contracts, tests and deploy script (testnet, or mainnet as the guarded beta only; not audited) |
 | `deploy/` | Nginx, PM2, Phase 1 script, Phase 2 server setup, release scripts, dedicated Redis (`redis-velum.sh`) |
 | `docs/` | Product spec, architecture, API, contracts + privacy, deploy, roadmap (with the owner's decisions) |
 | `.github/` | CI (lint, typecheck, test, build, Foundry) and Dependabot |
@@ -210,10 +211,24 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   `onchain.signerAge`); `deploy.sh` checks it after every release that runs the signer. Upgrade a server on the
   two-user layout with docs/05, "Upgrading to the separate signer".
 
+- **Guarded mainnet beta (prepared, November 2026; owner decision, no testnet phase).** `contracts/script/Deploy.s.sol`
+  accepts Robinhood Chain mainnet only as the guarded beta: the launch guard with every cap, a dedicated price relayer
+  that is neither the deployer nor the guard admin, exactly the verified mainnet token list (checked against
+  `packages/config/robinhood-mainnet.json` and on chain), oracle bounds at least 5x around each token's current price,
+  and two steps: a simulation that prints the full summary and writes a plan (a hash of every input, the build and the
+  deployer's nonce), then a broadcast that needs that plan (at most an hour old) and a confirmation phrase naming the
+  chain, the guard admin and the relayer. `deploy/deploy-contracts.sh` runs it from the VPS as root (pinned Foundry and
+  solc, encrypted keystore, the relay address derived from the signer's key, every receipt and role checked), installs
+  the deployment file in `/srv/velum/deployments` and sets `DEPLOYMENTS_DIR`, which the API, the indexer, the web build
+  and the signer (through `signer.env`) now all honour; a release records the deployment file's hash. Rehearsal on a
+  mainnet fork: `apps/workers/e2e/fork/fork-e2e.sh` (every flow, real tokens, replayed quotes, the web) and
+  `fork-live.sh` (chain id 4663, the mainnet deploy path, live quotes, production processes). Runbook, ETH budget and
+  risk statement: `docs/07-mainnet-guarded-beta.md`.
+
 ## Stack
 
 Next.js 15 · React 19 · Node 22 LTS · Fastify · Prisma · PostgreSQL · Redis · BullMQ · wagmi/viem ·
-PM2 · Nginx · Foundry (`contracts/`, testnet only). Noir circuits arrive in Phase 4.
+PM2 · Nginx · Foundry (`contracts/`). Noir circuits arrive in Phase 4.
 
 ## Licence
 
@@ -224,5 +239,5 @@ vulnerabilities privately (see `SECURITY.md`).
 
 An independent project on Robinhood Chain, not affiliated with Robinhood. The site runs on Robinhood
 Chain mainnet in read-only mode (real wallet and balances, live prices, simulated trades) or on testnet.
-Velum contracts are deployed on testnet only and are not audited; none goes to mainnet before an
-external audit. Test tokens have no value.
+Velum contracts are not audited. Before an external audit they go to mainnet only as a guarded beta for
+allowlisted wallets with small deposit caps (docs/07-mainnet-guarded-beta.md). Test tokens have no value.

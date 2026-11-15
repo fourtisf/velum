@@ -600,7 +600,7 @@ CACHE_FROM=""
 if [ -n "${PREV_ID}" ] && release_ours "${PREV_ID}"; then CACHE_FROM="${RELEASES}/${PREV_ID}"; fi
 as_app ${CACHE_FROM:+"VELUM_PREVIOUS=${CACHE_FROM}"} bash "${REL}/deploy/release.sh" build
 [ -f "${REL}/.velum-release-ok" ] || die "The build did not finish."
-[ "$(build_env_record "${ENV_FILE}")" = "${BUILD_RECORD}" ] || die "VELUM_NETWORK, CHAIN_ID or a NEXT_PUBLIC_* value in .env changed during the build. Run deploy.sh again."
+[ "$(build_env_record "${ENV_FILE}")" = "${BUILD_RECORD}" ] || die "VELUM_NETWORK, CHAIN_ID, a NEXT_PUBLIC_* value, DEPLOYMENTS_DIR or its deployment file changed during the build. Run deploy.sh again."
 printf '%s\n' "${BUILD_RECORD}" | install_file "$(record_of "${ID}")" 600 root:root
 if [ "${ONCHAIN}" = 1 ]; then build_signer "${ID}" "${COMMIT}"; fi
 

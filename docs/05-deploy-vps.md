@@ -111,6 +111,9 @@ installs it. Hosts without IPv6 get the template without its `listen [::]` lines
 | `/srv/velum/signer.env` | `root:velum-signer 640` | the signer's only settings (chain, RPC endpoints, on-chain settings, its paths), rendered from `.env` by root on every release; no `DATABASE_URL`, `REDIS_URL`, `PROXY_SECRET` or key |
 | `/etc/velum/` | `root`, 755 | |
 | `/etc/velum/signer-keys.env` | `root:velum-signer 640` | the hot keys (`PRICE_RELAY_PRIVATE_KEY`, `KEEPER_PRIVATE_KEY`): root writes it (`new-key.sh`, the one-time move out of `.env`), only `velum-signer` reads it, and the signer reads it itself at start (the keys never sit in an environment or a PM2 dump). Backups `signer-keys.env.bak.*` root:root 600, newest 3 |
+| `/srv/velum/deployments/`, `/srv/velum/deployments/4663.json` | `root:root`, 755 / 644 | the deployment file `deploy/deploy-contracts.sh` installs (guarded mainnet beta) and points `DEPLOYMENTS_DIR` at: public addresses, readable by the app, web and signer users (the API, the indexer, the web build and the signer all read it), writable by root only |
+| `/etc/velum/keystore/` | `root`, 700, files 600 | the deployer's encrypted Foundry keystore (`deploy-contracts.sh`, `cast wallet import`); the deployer has no role after the deployment: delete it then |
+| `/opt/velum-tools/` | `root`, 755 | Foundry v1.5.1 (forge, cast) and solc 0.8.28 for `deploy-contracts.sh`, pinned by SHA-256, used by root only |
 | `/srv/velum/releases/` | `root`, 751 | |
 | `/srv/velum/releases/<time>-<commit>/` | `velum:velum-web`, 2750, files 644/755 | one fresh build per release by `velum`; the web user can read, not write |
 | `/srv/velum/releases/<time>-<commit>.build-env` | `root`, 600 | the settings the release was built with (`VELUM_NETWORK`, `CHAIN_ID`, `NEXT_PUBLIC_*`); a release only runs with an `.env` that matches (audit R3-04) |
@@ -313,8 +316,9 @@ rewrite (backs up `.env` first, under the deploy lock), then runs a release. If 
 nothing mixes networks (R3-04): when its health check fails, the previous `.env` is put back before
 switching back to the previous release (web.env and the CSP follow); when it fails before the switch,
 `.env` and `web.env` are put back and the running release is untouched. Mainnet is read-only in Phase 2:
-real wallet and balances, live Robinhood prices, simulated trades, and the copy says so. No Velum
-contract is deployed on mainnet before the Phase 5 audit. On mainnet a market with no price snapshot yet
+real wallet and balances, live Robinhood prices, simulated trades, and the copy says so. Velum contracts go to
+mainnet before the Phase 5 audit only as the guarded beta (allowlist and caps), with `deploy/deploy-contracts.sh`:
+docs/07-mainnet-guarded-beta.md is its runbook. On mainnet a market with no price snapshot yet
 is served with its seed price, `stale: true` and `source: null` (docs/03); the web shows dashes for it.
 The public mainnet RPC rate-limits; for real traffic put a provider URL in `RPC_URL` /
 `NEXT_PUBLIC_RPC_URL` (as root) and run a release (the CSP picks the new host up).
@@ -334,7 +338,9 @@ key is kept; any other existing value (or a duplicated line) is refused, never r
 
 Rotating: the keeper key can be replaced at any time (delete its line in the keys file as root, run `new-key.sh
 KEEPER_PRIVATE_KEY`, fund the new address, `deploy.sh`). The oracle's relayer address is fixed at deployment, so a new
-price-relay key needs a new deployment of the contracts (testnet), with `PRICE_RELAYER` set to its address.
+price-relay key needs a new deployment of the contracts, with `PRICE_RELAYER` set to its address. For the same reason
+the price-relay key must exist **before** the contracts are deployed: on mainnet `deploy/deploy-contracts.sh` derives
+the relayer address from it (docs/07-mainnet-guarded-beta.md, "Keys").
 
 ## Dedicated Redis for Velum (strongly recommended on a shared server)
 

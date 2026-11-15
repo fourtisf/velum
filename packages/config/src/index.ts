@@ -5,8 +5,8 @@
  *
  * The network is chosen by NEXT_PUBLIC_VELUM_NETWORK (web, inlined at build) or VELUM_NETWORK
  * (api/workers): "testnet" (default) or "mainnet". Mainnet is read-only in Phase 2: wallet
- * connect and public balances are real, trades are simulated, and no Velum contract may be
- * deployed there before the Phase 5 external audit.
+ * connect and public balances are real, trades are simulated. Before the Phase 5 external audit
+ * Velum contracts go there only as the guarded beta (docs/07-mainnet-guarded-beta.md).
  */
 import mainnetJson from '../robinhood-mainnet.json';
 import chain from '../robinhood-testnet.json';

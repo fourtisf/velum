@@ -12,6 +12,8 @@ coverage/
 *.tsbuildinfo
 contracts/out/
 contracts/cache/
+# Mainnet simulation plans (Deploy.s.sol step 1) stay local
+contracts/deployments/*.plan.json
 circuits/target/
 dump.rdb
 # Server-side deploy layout (deploy/deploy.sh)

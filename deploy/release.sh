@@ -84,9 +84,11 @@ build() {
     if cp -a "${prev_cache}" apps/web/.next/cache 2>/dev/null; then find apps/web/.next/cache -type l -delete; else rm -rf apps/web/.next/cache; fi
   fi
 
-  say "Building (the web build sees only NEXT_PUBLIC_* and PUBLIC_SITE_URL from .env)"
+  say "Building (the web build sees only NEXT_PUBLIC_*, PUBLIC_SITE_URL and DEPLOYMENTS_DIR from .env)"
   (
-    env_export "${ENV_FILE}" 'NEXT_PUBLIC_*' PUBLIC_SITE_URL
+    # DEPLOYMENTS_DIR (deploy/deploy-contracts.sh: the root-owned <base>/deployments): next.config.mjs compiles that
+    # directory's deployment file into the web; without it, the release's own contracts/deployments.
+    env_export "${ENV_FILE}" 'NEXT_PUBLIC_*' PUBLIC_SITE_URL DEPLOYMENTS_DIR
     export NODE_ENV=production
     pnpm_ -r build
   )

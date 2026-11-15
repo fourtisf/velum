@@ -12,8 +12,9 @@ within a few working days and will keep you updated until the issue is fixed.
 ## Scope
 
 - Velum runs on Robinhood Chain **testnet**; on mainnet it is read-only (real wallet connection and
-  public balances, live prices, simulated trades). No Velum contract is deployed on mainnet before an
-  external audit. Testnet tokens have no value.
+  public balances, live prices, simulated trades). Before an external audit Velum contracts go to mainnet only
+  as a guarded beta (allowlisted wallets, small deposit caps; docs/07-mainnet-guarded-beta.md). Testnet tokens have
+  no value.
 - In scope: this repository (web app, API, workers, contracts, deploy scripts).
 - Out of scope: Robinhood Chain itself, third-party wallets and services, and anything that needs
   access you were not given. Do not test against other people's funds or data, and do not run

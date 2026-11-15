@@ -1,5 +1,5 @@
 {
-  "_note": "Robinhood Chain mainnet. Phase 2 uses it read-only (wallet connect + public balances; trades simulated). No Velum contract may be deployed here before the Phase 5 external audit. Tickers are not unique on-chain: always match by exact address.",
+  "_note": "Robinhood Chain mainnet. Phase 2 uses it read-only (wallet connect + public balances; trades simulated). Before the Phase 5 external audit Velum contracts may be deployed here only as the guarded beta (contracts/script/Deploy.s.sol checks this token list against its own; docs/07-mainnet-guarded-beta.md). Tickers are not unique on-chain: always match by exact address.",
   "_verification": {
     "date": "2026-11-14",
     "chainId": "docs.robinhood.com/chain/connecting and /chain/add-network-to-wallet list 4663; RPC eth_chainId returned 4663.",

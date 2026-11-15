@@ -12,7 +12,10 @@ touching mainnet. The owner's approvals so far:
   deployed on Robinhood Chain testnet only.
 - **Standing rule: no contract on mainnet before an external audit.** Velum contracts are never
   deployed to mainnet before the Phase 5 external audit of contracts and circuits (the deploy script
-  refuses chain 4663).
+  refuses chain 4663). *Amended by the owner, November 2026:* the one exception is the **guarded mainnet
+  beta** (no testnet phase): allowlisted wallets only, small deposit caps, public opening (`liftCaps`, then
+  `openToPublic`) only after the external audit. The deploy script accepts chain 4663 only in that form
+  (docs/07-mainnet-guarded-beta.md).
 - **2026-11-15:**
   - Stack update to **Next.js 15, React 19 and Node 22 LTS** (CLAUDE.md §1 names Next.js 14 and Node 20).
   - Product wording **"Stock Tokens"** (Robinhood Chain brand guidelines; never "tokenized stocks").

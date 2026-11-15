@@ -19,7 +19,7 @@
     "@velum/db": "workspace:*",
     "@velum/math": "workspace:*",
     "fastify": "5.12.8",
-    "ioredis": "5.11.1",
+    "ioredis": "6.0.0",
     "viem": "2.57.19"
   },
   "devDependencies": {

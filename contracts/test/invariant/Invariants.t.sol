@@ -22,7 +22,8 @@ import {MockAggregator} from "../mocks/MockAggregator.sol";
 ///      deposits per account, holdings per token), no valid withdrawal or exit is ever blocked, and the guard admin
 ///      never moves funds. After the wind-down everyone withdraws everything.
 /// The oracle has an L2 sequencer-uptime feed that the handler moves between down, grace and up (final audit). The
-/// vault has a launch guard (actors 0-3 allowlisted) that the handler's guard admin raises, opens and lifts.
+/// vault has a launch guard (actors 0-3 allowlisted) that the handler's guard admin raises, lifts and opens;
+/// `InvariantsUnguardedTest` (below) runs the same suite unguarded (guard audit I-05).
 contract InvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
     MockAggregator internal seq;
@@ -33,9 +34,10 @@ contract InvariantsTest is StdInvariant, VelumBase {
         return address(seq);
     }
 
-    /// @dev Caps that bind now and then at the handler's deposit sizes (100-200,000 USDG, up to 500 tokens).
-    function _guardConfig() internal override returns (address, uint256[] memory, uint256[] memory) {
-        return _guardCaps(makeAddr("guard-admin"), 600_000e6, 2_000_000e6, 1500e18, 5000e18);
+    /// @dev Account caps that bind now and then at the handler's deposit sizes (100-200,000 USDG, up to 500 tokens);
+    ///      global caps cover five account caps, one per actor (G-01). `InvariantsUnguardedTest` runs unguarded.
+    function _guardConfig() internal virtual override returns (address, uint256[] memory, uint256[] memory) {
+        return _guardCaps(makeAddr("guard-admin"), 600_000e6, 3_000_000e6, 1500e18, 7500e18);
     }
 
     function setUp() public override {
@@ -303,5 +305,24 @@ contract InvariantsTest is StdInvariant, VelumBase {
             if (pools.sharesOf(st, handler.actors(j)) != 0) return true;
         }
         return false;
+    }
+}
+
+/// @notice Independent guard audit I-05: the same suite on an unguarded vault (guard admin zero), the testnet
+///         default, so the deployment most likely to go live keeps invariant coverage of its own. The handler's guard
+///         actions are no-ops there and every actor approves the modules from the start; invariant 6 reduces to "no
+///         guard, no admin, no refusal".
+contract InvariantsUnguardedTest is InvariantsTest {
+    function _guardConfig() internal pure override returns (address, uint256[] memory, uint256[] memory) {}
+
+    /// The vault stays unguarded: no admin, no allowlist, no caps, nothing tracked, no deposit refused.
+    function invariant_staysUnguarded() public view {
+        assertEq(vault.guardAdmin(), address(0), "guard admin");
+        assertFalse(vault.guarded(), "guarded");
+        assertEq(vault.allowlistedCount(), 0, "allowlisted");
+        assertEq(handler.guardRefusals(), 0, "a deposit was refused by a guard that is off");
+        for (uint256 j; j < handler.actorCount(); ++j) {
+            assertEq(vault.netDeposited(handler.actors(j), address(usdg)), 0, "net deposits tracked");
+        }
     }
 }

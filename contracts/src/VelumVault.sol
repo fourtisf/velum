@@ -20,17 +20,23 @@ import {IVelumVault} from "./interfaces/IVelumVault.sol";
 ///       allowlist: only allowlisted addresses may deposit, as payer and as credited account, or approve a
 ///         module. Without an approval no module can debit an account, so an address that is not allowlisted
 ///         cannot open, post offers, add liquidity, swap, add margin or fund insurance. `openToPublic()`
-///         turns it off for good. Addresses can be added, never removed.
+///         turns it off for good, and only once the caps are lifted. Addresses can be added, never removed.
 ///       caps: per token, a per-account cap on `netDeposited` (deposits credited minus withdrawals, never below
 ///         zero) and a global cap on `totalInternal` (the vault's holdings), both in token base units. Caps can
-///         only be raised; `liftCaps()` turns them off for good.
+///         only be raised; `liftCaps()` turns them off for good. The global cap always covers every allowlisted
+///         address's full account cap (`globalCap >= accountCap × allowlistedCount`, enforced when addresses are
+///         added and when caps are raised; independent audit G-01). The vault's holdings never exceed the sum of
+///         `netDeposited`, and only allowlisted accounts have any, so a deposit within the account cap is always
+///         within the global cap too: nobody, the admin included, can use up another account's room.
+///         Caps never apply without the allowlist (`openToPublic` needs `liftCaps` first): open to everyone, the
+///         global cap would again be room anyone could fill.
 ///   Withdrawals are never checked: a withdrawal only lowers `netDeposited` (saturating, it cannot revert), and
 ///   nothing a module does (closes, liquidations, forced exits, offer withdrawals, liquidity removal, cover
 ///   claims) goes through the guard. Once both switches are off the admin role is cleared and the guard is
 ///   inert: deposit then reads only the storage slot it already reads for `locked`.
-///   The guard admin can add allowlisted addresses, raise caps, call `openToPublic` / `liftCaps` and hand the
-///   role over in two steps. It cannot move, freeze or redirect funds, block a withdrawal, remove an address,
-///   lower a cap or change anything else.
+///   The guard admin can add allowlisted addresses, raise caps, call `liftCaps` and then `openToPublic` and hand
+///   the role over in two steps. It cannot move, freeze or redirect funds, block a withdrawal, remove an address,
+///   lower a cap, use up anyone's deposit room or change anything else.
 /// @dev No owner, no pause, no upgrade. The deployer calls `setup` exactly once to fix the token
 ///      list, the module set, the protocol addresses that may not receive deposits and the launch guard; after
 ///      that only the guard admin's powers above remain, and only until the guard is switched off.
@@ -58,6 +64,11 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     /// @notice Deposits credited to the account minus its withdrawals, never below zero, tracked while caps are
     ///         active. A withdrawal of more than this (profits, rewards) sets it to zero: it never becomes credit.
     mapping(address account => mapping(address token => uint256)) public netDeposited;
+    /// @notice Number of allowlisted addresses (G-01). While caps are active, every token's global cap is at least
+    ///         its account cap times this number.
+    uint256 public allowlistedCount;
+    /// @dev The listed tokens in setup order, for the G-01 check when addresses are added.
+    address[] internal _tokens;
 
     mapping(address token => bool) public isToken;
     mapping(address module => bool) public isModule;
@@ -110,6 +121,10 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     error NotAllowlisted(address account);
     error AccountCapExceeded(address account, address token, uint256 netDeposited, uint256 cap);
     error GlobalCapExceeded(address token, uint256 total, uint256 cap);
+    /// @notice G-01: `globalCap` would not cover `accountCap` for each of `allowlisted` addresses.
+    error Oversubscribed(address token, uint256 accountCap, uint256 globalCap, uint256 allowlisted);
+    /// @notice `openToPublic` while caps are active: lift them first.
+    error CapsStillActive();
 
     constructor() {
         deployer = msg.sender;
@@ -122,7 +137,8 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     ///        arrays must be empty. Otherwise the allowlist and the caps start active.
     /// @param accountCaps_ Per-account cap for each of `tokens`, same order, token base units (USDG 6 decimals,
     ///        stock tokens 18). Zero blocks deposits of that token until the cap is raised.
-    /// @param globalCaps_ Global cap for each of `tokens`, same order; each at least the account cap.
+    /// @param globalCaps_ Global cap for each of `tokens`, same order; each at least the account cap. The allowlist
+    ///        starts empty; each address added later needs one more account cap of global room (G-01).
     function setup(
         address[] calldata tokens,
         address[] calldata modules,
@@ -138,6 +154,7 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
             if (tokens[i] == address(0)) revert ZeroAddress();
             if (isToken[tokens[i]]) revert DuplicateToken(tokens[i]);
             isToken[tokens[i]] = true;
+            _tokens.push(tokens[i]);
         }
         for (uint256 i; i < modules.length; ++i) {
             if (modules[i] == address(0)) revert ZeroAddress();
@@ -261,13 +278,15 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
     // ---------------------------------------------------------------- launch guard: caps
 
     /// @dev `total` is the vault's holdings of `token` after the deposit. Both caps are checked before anything
-    ///      is written; `to`'s net deposits only grow here.
+    ///      is written; `to`'s net deposits only grow here. The account cap is checked first: since G-01 the global
+    ///      check cannot fail once it passes (total <= sum of netDeposited <= accountCap × allowlistedCount <=
+    ///      globalCap, and only allowlisted accounts have net deposits); it is kept as a backstop.
     function _useCaps(address token, address to, uint256 received, uint256 total) internal {
-        uint256 cap = globalCap[token];
-        if (total > cap) revert GlobalCapExceeded(token, total, cap);
         uint256 used = netDeposited[to][token] + received;
-        cap = accountCap[token];
+        uint256 cap = accountCap[token];
         if (used > cap) revert AccountCapExceeded(to, token, used, cap);
+        cap = globalCap[token];
+        if (total > cap) revert GlobalCapExceeded(token, total, cap);
         netDeposited[to][token] = used;
     }
 
@@ -283,42 +302,66 @@ contract VelumVault is IVelumVault, ReentrancyGuard {
 
     // ---------------------------------------------------------------- launch guard: admin
 
-    /// @notice Guard admin: allowlist `accounts` (already listed ones are skipped). There is no removal.
+    /// @notice Guard admin: allowlist `accounts` (already listed ones are skipped). There is no removal. While caps
+    ///         are active every token's global cap must cover the account cap of every allowlisted address,
+    ///         the new ones included (G-01): raise the global caps first.
     function addToAllowlist(address[] calldata accounts) external {
         _onlyGuardAdmin();
         if (!allowlistActive) revert AllowlistInactive();
+        uint256 count = allowlistedCount;
+        uint256 before = count;
         for (uint256 i; i < accounts.length; ++i) {
             address a = accounts[i];
             if (a == address(0)) revert ZeroAddress();
             if (isAllowlisted[a]) continue;
             isAllowlisted[a] = true;
+            ++count;
             emit Allowlisted(a);
+        }
+        if (count == before) return;
+        allowlistedCount = count;
+        if (capsActive) {
+            for (uint256 i; i < _tokens.length; ++i) {
+                address t = _tokens[i];
+                _checkRoom(t, accountCap[t], globalCap[t], count);
+            }
         }
     }
 
-    /// @notice Guard admin: raise `token`'s caps (base units). Neither cap may go down, and the account cap may
-    ///         not exceed the global cap.
+    /// @notice Guard admin: raise `token`'s caps (base units). Neither cap may go down, the account cap may not
+    ///         exceed the global cap, and the global cap must cover the account cap of every allowlisted address
+    ///         (G-01).
     function raiseCaps(address token, uint256 newAccountCap, uint256 newGlobalCap) external {
         _onlyGuardAdmin();
         if (!capsActive) revert CapsInactive();
         if (!isToken[token]) revert UnknownToken(token);
         if (newAccountCap < accountCap[token] || newGlobalCap < globalCap[token]) revert CapDecrease(token);
         if (newAccountCap > newGlobalCap) revert BadCaps(token, newAccountCap, newGlobalCap);
+        _checkRoom(token, newAccountCap, newGlobalCap, allowlistedCount);
         accountCap[token] = newAccountCap;
         globalCap[token] = newGlobalCap;
         emit CapsRaised(token, newAccountCap, newGlobalCap);
     }
 
-    /// @notice Guard admin: remove the allowlist forever. Caps, if still active, keep applying.
+    /// @dev G-01: `globalCap >= accountCap × count`, written without the multiplication so it cannot overflow.
+    ///      Caps are only active while the allowlist is (`openToPublic` needs the caps lifted), so `count` is the
+    ///      number of accounts that can hold net deposits.
+    function _checkRoom(address token, uint256 acc, uint256 glob, uint256 count) internal pure {
+        if (count != 0 && acc > glob / count) revert Oversubscribed(token, acc, glob, count);
+    }
+
+    /// @notice Guard admin: remove the allowlist forever. Only once the caps are lifted (`liftCaps`): caps without
+    ///         an allowlist would make the global cap room anyone could fill (G-01). This always retires the guard.
     function openToPublic() external {
         _onlyGuardAdmin();
         if (!allowlistActive) revert AllowlistInactive();
+        if (capsActive) revert CapsStillActive();
         allowlistActive = false;
         emit OpenedToPublic();
         _retireIfInert();
     }
 
-    /// @notice Guard admin: remove the caps forever. The allowlist, if still active, keeps applying.
+    /// @notice Guard admin: remove the caps forever. The allowlist keeps applying until `openToPublic`.
     function liftCaps() external {
         _onlyGuardAdmin();
         if (!capsActive) revert CapsInactive();

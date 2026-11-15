@@ -79,6 +79,12 @@ contract Handler is Test {
     bool public guardAdminMovedFunds;
     uint256 public guardRefusals;
     uint256 public guardAdminActions;
+    /// @dev G-01 (independent guard audit): a deposit was refused by the global cap, an allowlisting or cap raise
+    ///      that leaves some token's global cap below account cap x allowlisted went through, one that keeps it was
+    ///      refused, or `openToPublic` went through while caps were active.
+    bool public roomRuleBroken;
+    /// @dev Allowlistings and cap raises refused for lack of global room (expected, G-01).
+    uint256 public roomRefusals;
     /// @dev Independent copy of the vault's `netDeposited`, kept while caps are active.
     mapping(address account => mapping(address token => uint256)) public ghostNet;
 
@@ -107,7 +113,8 @@ contract Handler is Test {
         relayer = relayer_;
         guardian = guardian_;
         // With a launch guard, actors 0-3 start allowlisted and actor 4 does not (it can be added later, or the guard
-        // admin opens the vault to the public); only allowlisted actors can approve the modules.
+        // admin opens the vault to the public); only allowlisted actors can approve the modules. The suites' global
+        // caps cover five account caps (G-01), so all five actors can be allowlisted before any raise.
         address admin = vault_.guardAdmin();
         for (uint256 i; i < 5; ++i) {
             address a = makeAddr(string(abi.encodePacked("actor", vm.toString(i))));
@@ -243,6 +250,7 @@ contract Handler is Test {
         } catch (bytes memory err) {
             guardRefusals++;
             if (!refuse || !_isGuardError(err)) guardMisfired = true;
+            if (bytes4(err) == VelumVault.GlobalCapExceeded.selector) roomRuleBroken = true;
         }
     }
 
@@ -629,18 +637,58 @@ contract Handler is Test {
         else if (op == 5) approveModules(seed);
     }
 
-    /// @dev The guard admin allowlists an actor (which then approves the modules).
+    /// @dev G-01: every token's global cap covers `count` account caps (a zero account cap needs nothing).
+    function _roomFor(uint256 count) internal view returns (bool) {
+        for (uint256 k; k < 3; ++k) {
+            address t = address(_token(k));
+            if (vault.accountCap(t) * count > vault.globalCap(t)) return false;
+        }
+        return true;
+    }
+
+    /// @dev The guard admin raises each global cap that does not cover `count` account caps (the operating procedure
+    ///      before allowlisting more addresses).
+    function _makeRoom(uint256 count) internal {
+        for (uint256 k; k < 3; ++k) {
+            address t = address(_token(k));
+            uint256 a = vault.accountCap(t);
+            if (a * count <= vault.globalCap(t)) continue;
+            bytes32 before = fundsHash();
+            vm.prank(vault.guardAdmin());
+            vault.raiseCaps(t, a, a * count);
+            _afterAdmin(before);
+        }
+    }
+
+    /// @dev The guard admin allowlists an actor (which then approves the modules). While caps are active the global
+    ///      caps must cover one more account cap (G-01): half the time the admin raises them first, otherwise the
+    ///      allowlisting must be refused with `Oversubscribed` and change nothing.
     function guardAllowlist(uint256 actorSeed) public {
         if (!vault.allowlistActive()) return;
         address a = _actor(actorSeed);
+        uint256 count = vault.allowlistedCount();
+        bool fits = !vault.capsActive() || vault.isAllowlisted(a) || _roomFor(count + 1);
+        if (!fits && actorSeed % 2 == 0) {
+            _makeRoom(count + 1);
+            fits = true;
+        }
         bytes32 before = fundsHash();
         vm.prank(vault.guardAdmin());
-        vault.addToAllowlist(_one(a));
+        try vault.addToAllowlist(_one(a)) {
+            if (!fits) roomRuleBroken = true;
+        } catch (bytes memory err) {
+            roomRefusals++;
+            if (fits || bytes4(err) != VelumVault.Oversubscribed.selector || vault.isAllowlisted(a)) {
+                roomRuleBroken = true;
+            }
+        }
         _afterAdmin(before);
-        _approveModules(a);
+        if (vault.isAllowlisted(a)) _approveModules(a);
     }
 
     /// @dev The guard admin raises one token's caps by up to 50%, plus one minimum deposit (so a zero cap grows).
+    ///      G-01: when the new global cap does not cover the new account cap for every allowlisted address, half the
+    ///      time it is raised to exactly that, otherwise the raise must be refused with `Oversubscribed`.
     function guardRaiseCaps(uint256 tokenSeed, uint256 accountPct, uint256 globalPct) public {
         if (!vault.capsActive()) return;
         address t = address(_token(tokenSeed));
@@ -650,9 +698,16 @@ contract Handler is Test {
         a += (a * bound(accountPct, 0, 50)) / 100 + step;
         g += (g * bound(globalPct, 0, 50)) / 100 + step;
         if (g < a) g = a;
+        uint256 need = a * vault.allowlistedCount();
+        if (g < need && globalPct % 2 == 0) g = need;
         bytes32 before = fundsHash();
         vm.prank(vault.guardAdmin());
-        vault.raiseCaps(t, a, g);
+        try vault.raiseCaps(t, a, g) {
+            if (g < need) roomRuleBroken = true;
+        } catch (bytes memory err) {
+            roomRefusals++;
+            if (g >= need || bytes4(err) != VelumVault.Oversubscribed.selector) roomRuleBroken = true;
+        }
         _afterAdmin(before);
     }
 
@@ -666,12 +721,20 @@ contract Handler is Test {
         if (seed % 8 == 0) _liftCaps();
     }
 
-    /// @dev Every actor then approves the modules.
+    /// @dev Every actor then approves the modules. While caps are active it must be refused (G-01: caps never apply
+    ///      without the allowlist), changing nothing.
     function _openToPublic() internal {
         if (!vault.allowlistActive()) return;
         bytes32 before = fundsHash();
         vm.prank(vault.guardAdmin());
-        vault.openToPublic();
+        try vault.openToPublic() {
+            if (vault.capsActive()) roomRuleBroken = true;
+        } catch (bytes memory err) {
+            if (!vault.capsActive() || bytes4(err) != VelumVault.CapsStillActive.selector) roomRuleBroken = true;
+            if (!vault.allowlistActive()) roomRuleBroken = true;
+            _afterAdmin(before);
+            return;
+        }
         _afterAdmin(before);
         for (uint256 i; i < actors.length; ++i) {
             _approveModules(actors[i]);
@@ -749,16 +812,29 @@ contract Handler is Test {
         assertFalse(guardMisfired, "the guard misfired: wrong refusal, or admin role out of step with the guard");
         assertFalse(exitBlocked, "a withdrawal or exit was blocked");
         assertFalse(guardAdminMovedFunds, "a guard-admin action moved funds");
+        assertFalse(roomRuleBroken, "G-01: global room rule broken (refusal by the global cap, or room check wrong)");
         assertEq(vault.guardAdmin() != address(0), vault.guarded(), "admin iff guarded");
+        uint256 listed;
+        for (uint256 i; i <= actors.length; ++i) {
+            if (vault.isAllowlisted(i == actors.length ? liquidator : actors[i])) ++listed;
+        }
+        assertEq(vault.allowlistedCount(), listed, "allowlisted count");
         if (!vault.capsActive()) return;
+        assertTrue(vault.allowlistActive(), "G-01: caps never apply without the allowlist");
+        assertTrue(_roomFor(listed), "G-01: a global cap below account cap x allowlisted");
         for (uint256 k; k < 3; ++k) {
             address t = address(_token(k));
             assertLe(vault.totalInternal(t), vault.globalCap(t), "global cap exceeded");
+            uint256 sum;
             for (uint256 i; i <= actors.length; ++i) {
                 address a = i == actors.length ? liquidator : actors[i];
                 assertEq(vault.netDeposited(a, t), ghostNet[a][t], "net deposits");
                 assertLe(ghostNet[a][t], vault.accountCap(t), "account cap exceeded");
+                if (!vault.isAllowlisted(a)) assertEq(ghostNet[a][t], 0, "net deposits outside the allowlist");
+                sum += ghostNet[a][t];
             }
+            // G-01: holdings never exceed the sum of net deposits, so the global cap never binds first
+            assertLe(vault.totalInternal(t), sum, "holdings above the sum of net deposits");
         }
     }
 

@@ -150,9 +150,10 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
         return address(seq);
     }
 
-    /// @dev Launch guard (actors 0-3 allowlisted), as in the main suite: invariant 6 runs here too.
+    /// @dev Launch guard (actors 0-3 allowlisted), as in the main suite: invariant 6 runs here too. The global caps
+    ///      cover five account caps, one per actor (G-01).
     function _guardConfig() internal override returns (address, uint256[] memory, uint256[] memory) {
-        return _guardCaps(makeAddr("guard-admin"), 600_000e6, 2_000_000e6, 1500e18, 5000e18);
+        return _guardCaps(makeAddr("guard-admin"), 600_000e6, 3_000_000e6, 1500e18, 7500e18);
     }
 
     function setUp() public override {

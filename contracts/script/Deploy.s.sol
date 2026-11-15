@@ -28,24 +28,36 @@ interface IDecimals {
 ///   procedure in contracts/README.md is unavailable), OI_CAP_TOKENS (per side, default 10000),
 ///   PRICE_MIN_USD / PRICE_MAX_USD (relay bounds, default 1 / 100000),
 ///   USDG_ADDRESS + STOCK_ADDRESSES + STOCK_SYMBOLS (comma lists) to override the config file.
+/// Every variable is read strictly (independent guard audit D-01): unset or empty means "not given" (the
+///   default), and any other value must parse, or the script stops. An address must have 40 hex digits and,
+///   when written in mixed case, a correct EIP-55 checksum. `vm.envOr` would read a malformed value as unset.
 /// Anvil with no env: deploys mock USDG (6 dp), TSLA and AMZN (18 dp), uses the deployer as relayer and
 ///   pushes starting prices.
 ///
 /// Optional launch guard (contracts/README.md, Guarded launch). Off unless GUARD_ADMIN is set; off is the
-/// testnet default. With GUARD_ADMIN set, every listed token needs both caps, in WHOLE tokens (the script
-/// multiplies by the token's decimals(): USDG 6, stock tokens 18); 0 blocks that token until the admin raises
-/// it. Caps without GUARD_ADMIN are refused, so a deployment is never believed to be guarded when it is not.
-///   # GUARD_ADMIN=                  owner wallet or multisig: allowlists addresses, raises caps, calls
-///   #                               openToPublic() / liftCaps() (one-way), hands the role over in two steps.
-///   #                               Must not be PRICE_RELAYER.
-///   # GUARD_ACCOUNT_CAP_<SYMBOL>=   per-account cap on net deposits, whole tokens, for USDG and every stock symbol
-///   # GUARD_GLOBAL_CAP_<SYMBOL>=    cap on the vault's total holdings of the token, whole tokens (>= account cap)
+/// testnet default. With GUARD_ADMIN set, every listed token needs both caps, as token amounts: whole tokens or
+/// decimals up to the token's decimals() (USDG 6, stock tokens 18), e.g. 1000 or 250.5; the script converts them
+/// to base units. 0 blocks that token until the admin raises it (printed as BLOCKED). Caps without GUARD_ADMIN are
+/// refused, so a deployment is never believed to be guarded when it is not.
+///   # GUARD_ADMIN=                  owner multisig: allowlists addresses, raises caps, calls liftCaps() and then
+///   #                               openToPublic() (one-way), hands the role over in two steps. Must not be
+///   #                               PRICE_RELAYER, nor the deployer outside anvil; a warning is printed when it has
+///   #                               no code (a plain key, not a multisig).
+///   # GUARD_ACCOUNT_CAP_<SYMBOL>=   per-account cap on net deposits, token amount, for USDG and every stock symbol
+///   # GUARD_GLOBAL_CAP_<SYMBOL>=    cap on the vault's total holdings of the token, token amount (>= account cap).
+///   #                               Each allowlisted address needs one account cap of it (G-01): global / account
+///   #                               is how many addresses can be allowlisted before the global cap is raised.
+///   # GUARD_ALLOW_SMALL_USDG_CAP=   true to accept a USDG account cap below 10 USDG (the minimum position size; 0
+///   #                               blocks USDG, the margin and quote asset). Refused without it.
 ///   # e.g. GUARD_ACCOUNT_CAP_USDG=1000 GUARD_GLOBAL_CAP_USDG=50000 GUARD_ACCOUNT_CAP_TSLA=2 GUARD_GLOBAL_CAP_TSLA=100
 contract Deploy is Script {
     uint256 internal constant MAINNET = 4663;
     uint256 internal constant TESTNET = 46_630;
     uint256 internal constant ANVIL = 31_337;
     string internal constant CONFIG = "../packages/config/robinhood-testnet.json";
+    /// @dev The smallest USDG account cap accepted without GUARD_ALLOW_SMALL_USDG_CAP: the minimum position size
+    ///      (`PerpsBase.minPositionSize`, 10 USDG), in whole USDG.
+    uint256 internal constant MIN_USDG_ACCOUNT_CAP = 10;
 
     struct Tokens {
         address usdg;
@@ -54,9 +66,13 @@ contract Deploy is Script {
     }
 
     /// @dev Launch guard. Symbols, decimals and caps follow the vault's token order: USDG, then the stocks.
-    ///      Caps are in base units; both arrays are empty when `admin` is zero (unguarded).
+    ///      Caps are in base units; both arrays are empty when `admin` is zero (unguarded). `adminHasCode`: the
+    ///      admin address has contract code (a multisig) on the target chain. `allowSmallUsdgCap`:
+    ///      GUARD_ALLOW_SMALL_USDG_CAP=true.
     struct Guard {
         address admin;
+        bool adminHasCode;
+        bool allowSmallUsdgCap;
         string[] symbols;
         uint8[] decimals;
         uint256[] accountCaps;
@@ -84,15 +100,15 @@ contract Deploy is Script {
 
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
-        bool relayerSet = vm.envExists("PRICE_RELAYER");
-        address relayer = relayerSet ? vm.envAddress("PRICE_RELAYER") : deployer;
+        (bool relayerSet, address relayer) = envAddressStrict("PRICE_RELAYER");
+        if (!relayerSet) relayer = deployer;
         checkRelayer(block.chainid, relayerSet, relayer, deployer);
-        address guardian = vm.envOr("GUARDIAN", address(0));
+        (, address guardian) = envAddressStrict("GUARDIAN");
         console2.log(guardianNotice(guardian));
         Tokens memory t = _tokens();
         Guard memory g = _guard(t);
-        checkGuard(g.admin, relayer, g.accountCaps, g.globalCaps);
-        console2.log(guardNotice(g.admin, g.symbols, g.decimals, g.accountCaps, g.globalCaps));
+        checkGuard(g, block.chainid, deployer, relayer);
+        console2.log(guardNotice(g));
         uint256 startBlock = block.number;
         Deployed memory d = _deploy(t);
         _wire(d, t, relayer, guardian, g);
@@ -100,21 +116,16 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         _write(t, d, relayer, guardian, g.admin, startBlock);
-        console2.log(guardNotice(g.admin, g.symbols, g.decimals, g.accountCaps, g.globalCaps));
+        console2.log(guardNotice(g));
         // Repeated after the addresses so it is the last thing the operator sees (internal audit F-07).
         console2.log(guardianNotice(guardian));
     }
 
-    /// @notice What the operator must know about the launch guard: who holds it, what it can and cannot do, and
-    ///         the caps per token (whole tokens and base units).
-    function guardNotice(
-        address admin,
-        string[] memory symbols,
-        uint8[] memory decimals,
-        uint256[] memory accountCaps,
-        uint256[] memory globalCaps
-    ) public pure returns (string memory out) {
-        if (admin == address(0)) {
+    /// @notice What the operator must know about the launch guard: who holds it, what it can and cannot do, whether
+    ///         it is a plain key, the caps per token (token amounts and base units, BLOCKED for a zero account cap)
+    ///         and how many addresses the caps leave room for (G-01).
+    function guardNotice(Guard memory g) public pure returns (string memory out) {
+        if (g.admin == address(0)) {
             return string.concat(
                 "Velum: launch guard OFF (GUARD_ADMIN not set): anyone can deposit, with no caps, from the start. ",
                 "That is the testnet default; a guarded beta needs GUARD_ADMIN and caps (contracts/README.md, Guarded launch)."
@@ -122,54 +133,95 @@ contract Deploy is Script {
         }
         out = string.concat(
             "\nVelum: launch guard ON. Guard admin ",
-            vm.toString(admin),
-            " can only allowlist addresses, raise caps, call openToPublic() / liftCaps() (one-way) and hand the role",
-            " over in two steps. It cannot move, freeze or redirect funds, block withdrawals, remove an address or",
-            " lower a cap. Until openToPublic() only allowlisted addresses can deposit or approve modules;",
-            " withdrawals, closes, liquidations and forced exits are never blocked.\nCaps until liftCaps()",
-            " (per account on net deposits / global on the vault's holdings):"
+            vm.toString(g.admin),
+            " can only allowlist addresses, raise caps, call liftCaps() and then openToPublic() (one-way) and hand",
+            " the role over in two steps. It cannot move, freeze or redirect funds, block withdrawals, remove an",
+            " address, lower a cap or use up anyone's deposit room. Until openToPublic() only allowlisted addresses",
+            " can deposit or approve modules; withdrawals, closes, liquidations and forced exits are never blocked."
         );
-        for (uint256 i; i < symbols.length; ++i) {
-            uint256 one = 10 ** uint256(decimals[i]);
+        if (!g.adminHasCode) {
             out = string.concat(
                 out,
-                "\n  ",
-                symbols[i],
-                ": ",
-                vm.toString(accountCaps[i] / one),
-                " / ",
-                vm.toString(globalCaps[i] / one),
-                " tokens (base units ",
-                vm.toString(accountCaps[i]),
-                " / ",
-                vm.toString(globalCaps[i]),
-                ")"
+                "\n!!! WARNING Velum: GUARD_ADMIN ",
+                vm.toString(g.admin),
+                " has no code on this chain: it is a plain key, not a multisig. One stolen key then controls the",
+                " allowlist and the caps. Use the owner multisig for a real beta (contracts/README.md, Guarded launch). !!!"
             );
         }
-        out = string.concat(out, "\n");
+        out = string.concat(
+            out, "\nCaps until liftCaps() (per account on net deposits / global on the vault's holdings):"
+        );
+        for (uint256 i; i < g.symbols.length; ++i) {
+            out = string.concat(out, "\n  ", g.symbols[i], ": ", _capLine(g, i));
+        }
+        out = string.concat(out, _roomLine(g), "\n");
     }
 
-    /// @notice The launch-guard admin is a cold owner key, never the hot price-relay key. Caps must be consistent
-    ///         (the vault refuses them too, with a less helpful error), and none may be given without an admin.
-    function checkGuard(address admin, address relayer, uint256[] memory accountCaps, uint256[] memory globalCaps)
-        public
-        pure
-    {
-        require(accountCaps.length == globalCaps.length, "Velum: guard caps differ in length");
-        if (admin == address(0)) {
-            require(accountCaps.length == 0, "Velum: guard caps given but GUARD_ADMIN is not set");
+    /// @dev "1000 / 50000 tokens (base units ...)", or BLOCKED when the account cap is zero.
+    function _capLine(Guard memory g, uint256 i) internal pure returns (string memory) {
+        string memory units =
+            string.concat("(base units ", vm.toString(g.accountCaps[i]), " / ", vm.toString(g.globalCaps[i]), ")");
+        string memory amounts = string.concat(
+            formatUnits(g.accountCaps[i], g.decimals[i]), " / ", formatUnits(g.globalCaps[i], g.decimals[i]), " tokens "
+        );
+        if (g.accountCaps[i] != 0) return string.concat(amounts, units);
+        return string.concat("BLOCKED: no deposits until the admin raises the account cap; ", amounts, units);
+    }
+
+    /// @dev G-01: each allowlisted address needs a whole account cap of every token's global cap, so the allowlist can
+    ///      hold at most min(global / account) addresses (tokens with a zero account cap set no limit).
+    function _roomLine(Guard memory g) internal pure returns (string memory) {
+        uint256 room = type(uint256).max;
+        string memory by;
+        for (uint256 i; i < g.symbols.length; ++i) {
+            if (g.accountCaps[i] == 0) continue;
+            uint256 r = g.globalCaps[i] / g.accountCaps[i];
+            if (r < room) (room, by) = (r, g.symbols[i]);
+        }
+        if (room == type(uint256).max) {
+            return "\nAllowlist room: no limit while every account cap is zero (each raise needs global >= account x allowlisted).";
+        }
+        return string.concat(
+            "\nAllowlist room: at most ",
+            vm.toString(room),
+            " addresses at these caps (global / account cap, lowest for ",
+            by,
+            "). Every allowlisted address keeps its full account cap; to add more, raise the global caps first (G-01)."
+        );
+    }
+
+    /// @notice The launch-guard admin is a cold owner key: never the hot price-relay key, and outside anvil never the
+    ///         deployer key (independent guard audit I-01). Caps must be consistent (the vault refuses them too, with a
+    ///         less helpful error), none may be given without an admin, and a USDG account cap below the minimum
+    ///         position size (10 USDG; 0 blocks the margin and quote asset) needs GUARD_ALLOW_SMALL_USDG_CAP=true (I-02).
+    ///         `g.accountCaps[0]` is USDG's, as in the vault's token order.
+    function checkGuard(Guard memory g, uint256 chainId, address deployer, address relayer) public pure {
+        require(g.accountCaps.length == g.globalCaps.length, "Velum: guard caps differ in length");
+        if (g.admin == address(0)) {
+            require(g.accountCaps.length == 0, "Velum: guard caps given but GUARD_ADMIN is not set");
             return;
         }
-        require(admin != relayer, "Velum: GUARD_ADMIN must not be the price-relay key");
-        for (uint256 i; i < accountCaps.length; ++i) {
-            require(accountCaps[i] <= globalCaps[i], "Velum: a GUARD_ACCOUNT_CAP is above its GUARD_GLOBAL_CAP");
+        require(g.admin != relayer, "Velum: GUARD_ADMIN must not be the price-relay key");
+        require(
+            chainId == ANVIL || g.admin != deployer,
+            "Velum: GUARD_ADMIN must not be the deployer key outside anvil; use the owner multisig"
+        );
+        for (uint256 i; i < g.accountCaps.length; ++i) {
+            require(g.accountCaps[i] <= g.globalCaps[i], "Velum: a GUARD_ACCOUNT_CAP is above its GUARD_GLOBAL_CAP");
         }
+        require(g.accountCaps.length != 0 && g.decimals.length != 0, "Velum: guard caps missing for USDG");
+        require(
+            g.allowSmallUsdgCap || g.accountCaps[0] >= MIN_USDG_ACCOUNT_CAP * 10 ** uint256(g.decimals[0]),
+            "Velum: GUARD_ACCOUNT_CAP_USDG is below 10 USDG (the minimum position size; 0 blocks USDG, the margin and quote asset), so nobody could trade. Set GUARD_ALLOW_SMALL_USDG_CAP=true if that is intended"
+        );
     }
 
-    /// @dev Reads GUARD_ADMIN and, when it is set, GUARD_ACCOUNT_CAP_<SYMBOL> / GUARD_GLOBAL_CAP_<SYMBOL> (whole
-    ///      tokens) for USDG and every stock. Without GUARD_ADMIN any of those variables is refused.
+    /// @dev Reads GUARD_ADMIN and, when it is set, GUARD_ACCOUNT_CAP_<SYMBOL> / GUARD_GLOBAL_CAP_<SYMBOL> (token
+    ///      amounts) for USDG and every stock. Without GUARD_ADMIN any of those variables is refused.
     function _guard(Tokens memory t) internal view returns (Guard memory g) {
-        g.admin = vm.envOr("GUARD_ADMIN", address(0));
+        (, g.admin) = envAddressStrict("GUARD_ADMIN");
+        g.adminHasCode = g.admin.code.length != 0;
+        g.allowSmallUsdgCap = envBoolStrict("GUARD_ALLOW_SMALL_USDG_CAP");
         uint256 n = t.stocks.length + 1;
         g.symbols = new string[](n);
         g.decimals = new uint8[](n);
@@ -182,8 +234,8 @@ contract Deploy is Script {
         if (g.admin == address(0)) {
             for (uint256 i; i < n; ++i) {
                 require(
-                    !vm.envExists(string.concat("GUARD_ACCOUNT_CAP_", g.symbols[i]))
-                        && !vm.envExists(string.concat("GUARD_GLOBAL_CAP_", g.symbols[i])),
+                    !_envGiven(string.concat("GUARD_ACCOUNT_CAP_", g.symbols[i]))
+                        && !_envGiven(string.concat("GUARD_GLOBAL_CAP_", g.symbols[i])),
                     "Velum: a GUARD_*_CAP_* variable is set but GUARD_ADMIN is not; set GUARD_ADMIN or unset the caps"
                 );
             }
@@ -192,17 +244,143 @@ contract Deploy is Script {
         g.accountCaps = new uint256[](n);
         g.globalCaps = new uint256[](n);
         for (uint256 i; i < n; ++i) {
-            uint256 one = 10 ** uint256(g.decimals[i]);
-            g.accountCaps[i] = _wholeTokens(string.concat("GUARD_ACCOUNT_CAP_", g.symbols[i])) * one;
-            g.globalCaps[i] = _wholeTokens(string.concat("GUARD_GLOBAL_CAP_", g.symbols[i])) * one;
+            g.accountCaps[i] = _cap(string.concat("GUARD_ACCOUNT_CAP_", g.symbols[i]), g.decimals[i]);
+            g.globalCaps[i] = _cap(string.concat("GUARD_GLOBAL_CAP_", g.symbols[i]), g.decimals[i]);
         }
     }
 
-    function _wholeTokens(string memory name) internal view returns (uint256) {
+    /// @dev A required cap, as a token amount converted to base units.
+    function _cap(string memory name, uint8 decimals) internal view returns (uint256) {
         require(
-            vm.envExists(name), string.concat("Velum: GUARD_ADMIN is set, so ", name, " (whole tokens) is required")
+            _envGiven(name),
+            string.concat("Velum: GUARD_ADMIN is set, so ", name, " (a token amount, e.g. 1000 or 250.5) is required")
         );
-        return vm.envUint(name);
+        return parseUnits(name, vm.envString(name), decimals);
+    }
+
+    // ---------------------------------------------------------------- strict environment reads (D-01)
+
+    /// @dev Set to a non-empty value. Unset and empty both mean "not given" (.env.example: empty = unguarded).
+    function _envGiven(string memory name) internal view returns (bool) {
+        return vm.envExists(name) && bytes(vm.envString(name)).length != 0;
+    }
+
+    /// @notice An optional address variable: `(false, 0)` when unset or empty; otherwise it must be an address (40 hex
+    ///         digits, with a correct EIP-55 checksum when written in mixed case) or the script stops. Independent
+    ///         guard audit D-01: `vm.envOr` read a malformed GUARD_ADMIN as unset and deployed without the guard.
+    function envAddressStrict(string memory name) public view returns (bool set, address value) {
+        if (!_envGiven(name)) return (false, address(0));
+        string memory raw = vm.envString(name);
+        try vm.envAddress(name) returns (address a) {
+            value = a;
+        } catch {
+            revert(string.concat("Velum: ", name, "=", raw, " is not an address (40 hex digits)"));
+        }
+        require(
+            checksumOk(raw, value),
+            string.concat("Velum: ", name, "=", raw, " has a wrong EIP-55 checksum (expected ", vm.toString(value), ")")
+        );
+        return (true, value);
+    }
+
+    /// @notice An optional whole-number variable: `dflt` when unset or empty, otherwise it must parse (D-01).
+    function envUintStrict(string memory name, uint256 dflt) public view returns (uint256) {
+        if (!_envGiven(name)) return dflt;
+        try vm.envUint(name) returns (uint256 v) {
+            return v;
+        } catch {
+            revert(string.concat("Velum: ", name, "=", vm.envString(name), " is not a whole number"));
+        }
+    }
+
+    /// @notice An optional flag: false when unset or empty, otherwise it must be true or false (D-01).
+    function envBoolStrict(string memory name) public view returns (bool) {
+        if (!_envGiven(name)) return false;
+        try vm.envBool(name) returns (bool v) {
+            return v;
+        } catch {
+            revert(string.concat("Velum: ", name, "=", vm.envString(name), " is not true or false"));
+        }
+    }
+
+    /// @notice True unless `raw` mixes upper- and lower-case hex letters without matching `a`'s EIP-55 checksum
+    ///         (all-lower or all-upper carries no checksum). `raw` is `a` as parsed: its last 40 characters (after
+    ///         trailing spaces) are the hex digits, preceded by an optional 0x prefix.
+    function checksumOk(string memory raw, address a) public pure returns (bool) {
+        bytes memory r = bytes(raw);
+        bytes memory c = bytes(vm.toString(a)); // "0x" + checksummed hex
+        uint256 end = r.length;
+        while (end != 0 && r[end - 1] == " ") --end;
+        if (end < 40) return false;
+        uint256 off = end - 40;
+        bool upper;
+        bool lower;
+        for (uint256 i; i < 40; ++i) {
+            bytes1 ch = r[off + i];
+            if (ch >= "A" && ch <= "F") upper = true;
+            else if (ch >= "a" && ch <= "f") lower = true;
+        }
+        if (!(upper && lower)) return true;
+        for (uint256 i; i < 40; ++i) {
+            if (r[off + i] != c[2 + i]) return false;
+        }
+        return true;
+    }
+
+    /// @notice "250.5" with `decimals` 6 is 250_500_000: digits with at most one decimal point and at most `decimals`
+    ///         digits after it. Anything else (empty, signs, exponents, separators, spaces, hex) stops the script
+    ///         naming `name` (independent guard audit I-02: caps were whole tokens only).
+    function parseUnits(string memory name, string memory s, uint8 decimals) public pure returns (uint256 v) {
+        bytes memory b = bytes(s);
+        string memory bad = string.concat(
+            "Velum: ",
+            name,
+            "=",
+            s,
+            " is not a token amount (digits, optionally a decimal point and at most ",
+            vm.toString(uint256(decimals)),
+            " decimals)"
+        );
+        uint256 dot = b.length;
+        for (uint256 i; i < b.length; ++i) {
+            if (b[i] == ".") {
+                require(dot == b.length && i != 0 && i + 1 < b.length, bad);
+                dot = i;
+            } else {
+                require(b[i] >= "0" && b[i] <= "9", bad);
+            }
+        }
+        require(b.length != 0, bad);
+        uint256 fraction = dot == b.length ? 0 : b.length - dot - 1;
+        require(fraction <= decimals, bad);
+        for (uint256 i; i < b.length; ++i) {
+            if (i == dot) continue;
+            uint256 d = uint8(b[i]) - 48;
+            require(v <= (type(uint256).max - d) / 10, bad);
+            v = v * 10 + d;
+        }
+        uint256 scale = 10 ** (decimals - fraction);
+        require(v <= type(uint256).max / scale, bad);
+        v *= scale;
+    }
+
+    /// @notice `units` base units as a token amount: 250_500_000 with 6 decimals is "250.5".
+    function formatUnits(uint256 units, uint8 decimals) public pure returns (string memory) {
+        uint256 one = 10 ** uint256(decimals);
+        string memory whole = vm.toString(units / one);
+        uint256 frac = units % one;
+        if (frac == 0) return whole;
+        uint256 digits = decimals;
+        while (frac % 10 == 0) {
+            frac /= 10;
+            --digits;
+        }
+        bytes memory f = bytes(vm.toString(frac));
+        bytes memory pad = new bytes(digits - f.length);
+        for (uint256 i; i < pad.length; ++i) {
+            pad[i] = "0";
+        }
+        return string.concat(whole, ".", string(pad), string(f));
     }
 
     /// @notice What the operator must know about the guardian (internal audit F-07). The guardian stays
@@ -254,15 +432,16 @@ contract Deploy is Script {
         uint128[] memory mins = new uint128[](n);
         uint128[] memory maxs = new uint128[](n);
         uint256[] memory caps = new uint256[](n);
-        uint256 minP = vm.envOr("PRICE_MIN_USD", uint256(1)) * 1e18;
-        uint256 maxP = vm.envOr("PRICE_MAX_USD", uint256(100_000)) * 1e18;
+        uint256 minP = envUintStrict("PRICE_MIN_USD", 1) * 1e18;
+        uint256 maxP = envUintStrict("PRICE_MAX_USD", 100_000) * 1e18;
+        uint256 oiCap = envUintStrict("OI_CAP_TOKENS", 10_000) * 1e18;
         require(maxP <= type(uint128).max, "Velum: PRICE_MAX_USD too large");
         for (uint256 i; i < n; ++i) {
             // forge-lint: disable-next-line(unsafe-typecast)
             mins[i] = uint128(minP);
             // forge-lint: disable-next-line(unsafe-typecast)
             maxs[i] = uint128(maxP);
-            caps[i] = vm.envOr("OI_CAP_TOKENS", uint256(10_000)) * 1e18;
+            caps[i] = oiCap;
         }
         // No Chainlink feeds, so no sequencer-uptime feed either (zero = relay sources only).
         d.oracle.setup(t.stocks, new address[](n), mins, maxs, relayer, address(0));
@@ -298,11 +477,18 @@ contract Deploy is Script {
     }
 
     function _tokens() internal returns (Tokens memory t) {
-        if (vm.envExists("USDG_ADDRESS")) {
-            t.usdg = vm.envAddress("USDG_ADDRESS");
+        (bool usdgSet, address usdgAddr) = envAddressStrict("USDG_ADDRESS");
+        if (usdgSet) {
+            t.usdg = usdgAddr;
             t.stocks = vm.envAddress("STOCK_ADDRESSES", ",");
             t.symbols = vm.envString("STOCK_SYMBOLS", ",");
             require(t.stocks.length == t.symbols.length, "Velum: STOCK_ADDRESSES and STOCK_SYMBOLS differ in length");
+            string[] memory raw = vm.envString("STOCK_ADDRESSES", ",");
+            for (uint256 i; i < raw.length; ++i) {
+                require(
+                    checksumOk(raw[i], t.stocks[i]), "Velum: an address in STOCK_ADDRESSES has a wrong EIP-55 checksum"
+                );
+            }
         } else if (block.chainid == TESTNET) {
             // Reads the verified token list (read-only permission in foundry.toml).
             // forge-lint: disable-next-line(unsafe-cheatcode)

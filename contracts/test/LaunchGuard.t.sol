@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
+import {stdStorage, StdStorage} from "forge-std/StdStorage.sol";
 import {VelumBase} from "./Base.t.sol";
 import {VelumVault} from "../src/VelumVault.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
@@ -10,13 +11,15 @@ import {Deploy} from "../script/Deploy.s.sol";
 
 /// @notice Launch guard (contracts/README.md, Guarded launch): allowlist and caps on the vault's deposit path, a guard
 ///         admin limited to adding addresses, raising caps, the two one-way switches and a two-step handover.
-///         USDG caps 1,000 per account / 2,500 global, TSLA 2 / 5 tokens, AMZN 0 / 0 (no deposits until raised).
-///         alice, bob and carol are allowlisted; dave and keeper never are.
+///         USDG caps 1,000 per account / 4,000 global, TSLA 2 / 8 tokens (room for four allowlisted addresses, G-01),
+///         AMZN 0 / 0 (no deposits until raised). alice, bob and carol are allowlisted; dave and keeper are not.
 contract LaunchGuardTest is VelumBase {
+    using stdStorage for StdStorage;
+
     uint256 internal constant USDG_ACCOUNT = 1000 * USD;
-    uint256 internal constant USDG_GLOBAL = 2500 * USD;
+    uint256 internal constant USDG_GLOBAL = 4000 * USD;
     uint256 internal constant TSLA_ACCOUNT = 2e18;
-    uint256 internal constant TSLA_GLOBAL = 5e18;
+    uint256 internal constant TSLA_GLOBAL = 8e18;
 
     address internal admin = makeAddr("guard-admin");
     address internal dave = makeAddr("dave");
@@ -107,6 +110,7 @@ contract LaunchGuardTest is VelumBase {
         assertEq(vault.globalCap(address(amzn)), 0);
         assertTrue(vault.isAllowlisted(alice));
         assertFalse(vault.isAllowlisted(dave));
+        assertEq(vault.allowlistedCount(), 3);
     }
 
     function test_setup_emitsGuardSetup() public {
@@ -196,11 +200,17 @@ contract LaunchGuardTest is VelumBase {
         vm.expectRevert(VelumVault.NotGuardAdmin.selector);
         vault.addToAllowlist(list);
 
+        // five addresses need five account caps of global room (G-01)
+        vm.startPrank(admin);
+        vault.raiseCaps(address(usdg), USDG_ACCOUNT, 5 * USDG_ACCOUNT);
+        vault.raiseCaps(address(tsla), TSLA_ACCOUNT, 5 * TSLA_ACCOUNT);
+        vm.stopPrank();
         vm.recordLogs();
         vm.prank(admin);
         vault.addToAllowlist(list);
         Vm.Log[] memory logs = vm.getRecordedLogs();
         assertEq(logs.length, 2, "one event per new address");
+        assertEq(vault.allowlistedCount(), 5, "a duplicate counts once");
         assertEq(logs[0].topics[0], VelumVault.Allowlisted.selector);
         assertEq(logs[0].topics[1], bytes32(uint256(uint160(dave))));
         assertEq(logs[1].topics[1], bytes32(uint256(uint160(keeper))));
@@ -210,6 +220,7 @@ contract LaunchGuardTest is VelumBase {
         vm.prank(admin);
         vault.addToAllowlist(_list(alice)); // already listed: skipped
         assertEq(vm.getRecordedLogs().length, 0);
+        assertEq(vault.allowlistedCount(), 5);
 
         address[] memory bad = new address[](2);
         bad[0] = makeAddr("erin");
@@ -217,6 +228,41 @@ contract LaunchGuardTest is VelumBase {
         vm.expectRevert(VelumVault.ZeroAddress.selector);
         vault.addToAllowlist(bad);
         assertFalse(vault.isAllowlisted(bad[0]), "the whole batch reverted");
+    }
+
+    /// @notice G-01: while caps are active every token's global cap must cover the account cap of every allowlisted
+    ///         address, the new ones included. A zero account cap (AMZN) needs no room. The whole batch reverts.
+    function test_addToAllowlist_needsGlobalRoomForEveryAccount_G01() public {
+        address erin = makeAddr("erin");
+        address[] memory two = new address[](2);
+        (two[0], two[1]) = (dave, erin);
+        vm.startPrank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(VelumVault.Oversubscribed.selector, address(usdg), USDG_ACCOUNT, USDG_GLOBAL, 5)
+        );
+        vault.addToAllowlist(two);
+        assertFalse(vault.isAllowlisted(dave));
+        assertEq(vault.allowlistedCount(), 3);
+        vault.addToAllowlist(_list(dave)); // the fourth fits exactly
+        vm.expectRevert(
+            abi.encodeWithSelector(VelumVault.Oversubscribed.selector, address(usdg), USDG_ACCOUNT, USDG_GLOBAL, 5)
+        );
+        vault.addToAllowlist(_list(erin));
+        // USDG raised, TSLA not yet: TSLA refuses now
+        vault.raiseCaps(address(usdg), USDG_ACCOUNT, 5 * USDG_ACCOUNT);
+        vm.expectRevert(
+            abi.encodeWithSelector(VelumVault.Oversubscribed.selector, address(tsla), TSLA_ACCOUNT, TSLA_GLOBAL, 5)
+        );
+        vault.addToAllowlist(_list(erin));
+        vault.raiseCaps(address(tsla), TSLA_ACCOUNT, 5 * TSLA_ACCOUNT);
+        vault.addToAllowlist(_list(erin));
+        assertEq(vault.allowlistedCount(), 5);
+
+        // once caps are lifted there is nothing to cover
+        vault.liftCaps();
+        vault.addToAllowlist(_list(keeper));
+        vm.stopPrank();
+        assertEq(vault.allowlistedCount(), 6);
     }
 
     function test_setApproval_needsAllowlistWhileGuarded() public {
@@ -229,6 +275,7 @@ contract LaunchGuardTest is VelumBase {
         vault.setApproval(address(perps), true);
         assertTrue(vault.approved(alice, address(perps)));
 
+        _liftCaps();
         _openToPublic();
         vm.prank(dave);
         vault.setApproval(address(perps), true);
@@ -274,25 +321,47 @@ contract LaunchGuardTest is VelumBase {
         vault.deposit(address(usdg), 1, alice);
     }
 
-    function test_caps_global() public {
+    /// @notice G-01: the global cap covers every allowlisted account's full cap, so it never refuses a deposit within
+    ///         the account cap. With every account at its cap the vault holds exactly the global cap, and each further
+    ///         deposit is refused by the depositor's own account cap. Room is per account: another account's
+    ///         withdrawal frees nothing for erin, alice's own withdrawal frees exactly what alice can bring back.
+    function test_caps_globalCoversEveryAccount_G01() public {
         address erin = makeAddr("erin");
         vm.prank(admin);
         vault.addToAllowlist(_list(erin));
-        _deposit(alice, usdg, USDG_ACCOUNT);
-        _deposit(bob, usdg, USDG_ACCOUNT);
-        _deposit(carol, usdg, USDG_GLOBAL - 2 * USDG_ACCOUNT);
+        address[4] memory four = [alice, bob, carol, erin];
+        for (uint256 i; i < 4; ++i) {
+            assertEq(vault.depositLimit(four[i], address(usdg)), USDG_ACCOUNT, "full account room");
+            _deposit(four[i], usdg, USDG_ACCOUNT);
+        }
         assertEq(vault.totalInternal(address(usdg)), USDG_GLOBAL);
         _mintApprove(erin, usdg, 1);
         vm.prank(erin);
         vm.expectRevert(
-            abi.encodeWithSelector(VelumVault.GlobalCapExceeded.selector, address(usdg), USDG_GLOBAL + 1, USDG_GLOBAL)
+            abi.encodeWithSelector(
+                VelumVault.AccountCapExceeded.selector, erin, address(usdg), USDG_ACCOUNT + 1, USDG_ACCOUNT
+            )
         );
         vault.deposit(address(usdg), 1, erin);
-        // a withdrawal frees global room at once
         vm.prank(alice);
         vault.withdraw(address(usdg), 10 * USD, alice);
-        _deposit(erin, usdg, 10 * USD);
+        assertEq(vault.depositLimit(erin, address(usdg)), 0, "alice's withdrawal is not erin's room");
+        assertEq(vault.depositLimit(alice, address(usdg)), 10 * USD);
+        _deposit(alice, usdg, 10 * USD);
         assertEq(vault.totalInternal(address(usdg)), USDG_GLOBAL);
+    }
+
+    /// @notice The global check stays as a backstop: if holdings plus a deposit ever exceeded the global cap (only
+    ///         reachable here by writing storage directly), the deposit is refused.
+    function test_caps_globalBackstop() public {
+        _deposit(alice, usdg, 600 * USD);
+        stdstore.target(address(vault)).sig("globalCap(address)").with_key(address(usdg)).checked_write(700 * USD);
+        _mintApprove(bob, usdg, 200 * USD);
+        vm.prank(bob);
+        vm.expectRevert(
+            abi.encodeWithSelector(VelumVault.GlobalCapExceeded.selector, address(usdg), 800 * USD, 700 * USD)
+        );
+        vault.deposit(address(usdg), 200 * USD, bob);
     }
 
     /// @notice Net of withdrawals: cycling deposits and withdrawals never takes an account above its cap.
@@ -369,7 +438,7 @@ contract LaunchGuardTest is VelumBase {
     function test_caps_zeroCapBlocksTokenUntilRaised() public {
         _mintApprove(alice, amzn, 1e18);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(VelumVault.GlobalCapExceeded.selector, address(amzn), 1e18, 0));
+        vm.expectRevert(abi.encodeWithSelector(VelumVault.AccountCapExceeded.selector, alice, address(amzn), 1e18, 0));
         vault.deposit(address(amzn), 1e18, alice);
         vm.prank(admin);
         vault.raiseCaps(address(amzn), 1e18, 3e18);
@@ -381,7 +450,7 @@ contract LaunchGuardTest is VelumBase {
     function test_withdraw_neverBlockedByCaps() public {
         _deposit(alice, usdg, USDG_ACCOUNT);
         _deposit(bob, usdg, USDG_ACCOUNT);
-        _deposit(carol, usdg, USDG_GLOBAL - 2 * USDG_ACCOUNT); // global cap full
+        _deposit(carol, usdg, USDG_ACCOUNT); // every account at its cap
         vm.prank(alice);
         vault.withdraw(address(usdg), 1, alice);
         vm.prank(bob);
@@ -411,10 +480,21 @@ contract LaunchGuardTest is VelumBase {
             abi.encodeWithSelector(VelumVault.BadCaps.selector, address(usdg), USDG_GLOBAL + 1, USDG_GLOBAL)
         );
         vault.raiseCaps(address(usdg), USDG_GLOBAL + 1, USDG_GLOBAL);
+        // G-01: 3 allowlisted addresses at 1,400 need 4,200 of global room
+        vm.expectRevert(
+            abi.encodeWithSelector(VelumVault.Oversubscribed.selector, address(usdg), 1400 * USD, USDG_GLOBAL, 3)
+        );
+        vault.raiseCaps(address(usdg), 1400 * USD, USDG_GLOBAL);
+        vault.raiseCaps(address(usdg), 1333 * USD, USDG_GLOBAL); // 3,999 fits
         vm.expectEmit(address(vault));
         emit VelumVault.CapsRaised(address(usdg), 2 * USDG_ACCOUNT, 3 * USDG_GLOBAL);
         vault.raiseCaps(address(usdg), 2 * USDG_ACCOUNT, 3 * USDG_GLOBAL);
         vault.raiseCaps(address(usdg), 2 * USDG_ACCOUNT, 3 * USDG_GLOBAL); // unchanged is allowed
+        // the room check cannot overflow
+        uint256 max = type(uint256).max;
+        vm.expectRevert(abi.encodeWithSelector(VelumVault.Oversubscribed.selector, address(usdg), max, max, 3));
+        vault.raiseCaps(address(usdg), max, max);
+        vault.raiseCaps(address(tsla), max / 3, max);
         vm.stopPrank();
         assertEq(vault.accountCap(address(usdg)), 2 * USDG_ACCOUNT);
         assertEq(vault.globalCap(address(usdg)), 3 * USDG_GLOBAL);
@@ -430,28 +510,35 @@ contract LaunchGuardTest is VelumBase {
 
     // ------------------------------------------------------------ one-way switches
 
+    /// @notice G-01: caps never apply without the allowlist. `openToPublic` is refused while caps are active (open to
+    ///         everyone, the global cap would be room anyone could fill); after `liftCaps` it opens the vault and,
+    ///         both switches being off, retires the guard.
     function test_openToPublic() public {
         vm.prank(alice);
         vm.expectRevert(VelumVault.NotGuardAdmin.selector);
         vault.openToPublic();
+        vm.prank(admin);
+        vm.expectRevert(VelumVault.CapsStillActive.selector);
+        vault.openToPublic();
+        assertTrue(vault.allowlistActive(), "refused: nothing changed");
+        assertFalse(vault.isAllowed(dave));
+
+        _liftCaps();
         vm.expectEmit(address(vault));
         emit VelumVault.OpenedToPublic();
+        vm.expectEmit(address(vault));
+        emit VelumVault.GuardAdminTransferred(admin, address(0));
         _openToPublic();
         assertFalse(vault.allowlistActive());
-        assertTrue(vault.guarded(), "caps still active");
-        assertEq(vault.guardAdmin(), admin, "admin keeps the caps");
+        assertFalse(vault.guarded());
+        assertEq(vault.guardAdmin(), address(0), "the role retires with the last switch");
         assertTrue(vault.isAllowed(dave));
-
-        _deposit(dave, usdg, USDG_ACCOUNT); // anyone, caps still apply
-        _mintApprove(dave, usdg, 1);
-        vm.prank(dave);
-        vm.expectPartialRevert(VelumVault.AccountCapExceeded.selector);
-        vault.deposit(address(usdg), 1, dave);
+        _deposit(dave, usdg, 10 * USDG_GLOBAL); // anyone, any amount
 
         vm.startPrank(admin);
-        vm.expectRevert(VelumVault.AllowlistInactive.selector);
+        vm.expectRevert(VelumVault.NotGuardAdmin.selector);
         vault.openToPublic();
-        vm.expectRevert(VelumVault.AllowlistInactive.selector);
+        vm.expectRevert(VelumVault.NotGuardAdmin.selector);
         vault.addToAllowlist(_list(keeper));
         vm.stopPrank();
     }
@@ -481,26 +568,20 @@ contract LaunchGuardTest is VelumBase {
         vault.liftCaps();
     }
 
-    /// @notice Both switches off (either order): the admin role is cleared, any pending handover too, and the vault
-    ///         behaves exactly like an unguarded deployment.
+    /// @notice Both switches off (caps first, then the allowlist; the other order is refused): the admin role is
+    ///         cleared, any pending handover too, and the vault behaves exactly like an unguarded deployment.
     function test_bothOff_retiresAdmin() public {
-        _retireCheck(true);
-    }
-
-    function test_bothOff_retiresAdmin_otherOrder() public {
-        _retireCheck(false);
-    }
-
-    function _retireCheck(bool publicFirst) internal {
         address next = makeAddr("next-admin");
         vm.prank(admin);
         vault.transferGuardAdmin(next);
-        if (publicFirst) _openToPublic();
-        else _liftCaps();
+        vm.prank(admin);
+        vm.expectRevert(VelumVault.CapsStillActive.selector);
+        vault.openToPublic();
+        _liftCaps();
+        assertEq(vault.guardAdmin(), admin, "the allowlist is still on");
         vm.expectEmit(address(vault));
         emit VelumVault.GuardAdminTransferred(admin, address(0));
-        if (publicFirst) _liftCaps();
-        else _openToPublic();
+        _openToPublic();
         assertEq(vault.guardAdmin(), address(0));
         assertEq(vault.pendingGuardAdmin(), address(0));
         assertFalse(vault.guarded());
@@ -591,24 +672,28 @@ contract LaunchGuardTest is VelumBase {
         assertEq(vault.depositLimit(alice, address(usdg)), 400 * USD);
         _deposit(bob, usdg, USDG_ACCOUNT);
         _deposit(carol, usdg, 800 * USD);
-        assertEq(vault.depositLimit(alice, address(usdg)), 100 * USD, "global room is smaller");
-        assertEq(vault.depositLimit(carol, address(usdg)), 100 * USD);
+        // G-01: other accounts' deposits never shrink alice's room
+        assertEq(vault.depositLimit(alice, address(usdg)), 400 * USD, "account room, never less");
+        assertEq(vault.depositLimit(carol, address(usdg)), 200 * USD);
+        assertEq(vault.depositLimit(bob, address(usdg)), 0);
         vm.prank(carol);
         vault.withdraw(address(usdg), 800 * USD, carol);
-        assertEq(vault.depositLimit(carol, address(usdg)), 900 * USD, "global room again");
+        assertEq(vault.depositLimit(carol, address(usdg)), USDG_ACCOUNT);
         assertEq(vault.depositLimit(alice, address(usdg)), 400 * USD);
-
-        _openToPublic();
-        assertTrue(vault.isAllowed(dave));
-        assertEq(vault.depositLimit(dave, address(usdg)), 900 * USD);
         // addresses that can never receive a deposit
         assertEq(vault.depositLimit(address(perps), address(usdg)), 0);
         assertEq(vault.depositLimit(address(oracle), address(usdg)), 0);
         assertEq(vault.depositLimit(address(vault), address(usdg)), 0);
         assertEq(vault.depositLimit(address(tsla), address(usdg)), 0);
         assertEq(vault.depositLimit(address(0), address(usdg)), 0);
+
         _liftCaps();
+        assertEq(vault.depositLimit(alice, address(amzn)), type(uint256).max);
+        assertEq(vault.depositLimit(dave, address(usdg)), 0, "uncapped, still not allowlisted");
+        _openToPublic();
+        assertTrue(vault.isAllowed(dave));
         assertEq(vault.depositLimit(dave, address(amzn)), type(uint256).max);
+        assertEq(vault.depositLimit(address(perps), address(usdg)), 0);
         assertEq(new VelumVault().depositLimit(dave, address(usdg)), 0, "not set up");
     }
 
@@ -620,7 +705,7 @@ contract LaunchGuardTest is VelumBase {
     function test_exitsNeverBlocked() public {
         _fund(alice, usdg, USDG_ACCOUNT);
         _fund(bob, usdg, USDG_ACCOUNT);
-        _fund(carol, usdg, USDG_GLOBAL - 2 * USDG_ACCOUNT);
+        _fund(carol, usdg, USDG_ACCOUNT);
         _fund(carol, tsla, TSLA_ACCOUNT);
         assertEq(vault.depositLimit(carol, address(usdg)), 0);
         vm.prank(bob);
@@ -704,32 +789,62 @@ contract LaunchGuardTest is VelumBase {
                 _ghostNet[a][address(t)] = g > amount ? g - amount : 0;
             }
         } else if (op == 12 && vault.capsActive()) {
+            // G-01: half the time the global cap is raised enough for every allowlisted address
             uint256 accountNext = vault.accountCap(address(t)) + amount;
             uint256 globalNext = vault.globalCap(address(t)) + 2 * amount;
+            uint256 count = vault.allowlistedCount();
+            uint256 need = accountNext * count;
+            if (globalNext < need && (seed >> 56) % 2 == 0) globalNext = need;
+            bytes memory err =
+                abi.encodeWithSelector(VelumVault.Oversubscribed.selector, address(t), accountNext, globalNext, count);
             vm.prank(admin);
+            if (globalNext < need) vm.expectRevert(err);
             vault.raiseCaps(address(t), accountNext, globalNext);
         } else if (op == 13 && vault.allowlistActive() && (seed >> 48) % 4 == 0) {
-            _openToPublic();
+            if (vault.capsActive()) {
+                vm.prank(admin);
+                vm.expectRevert(VelumVault.CapsStillActive.selector);
+                vault.openToPublic();
+            } else {
+                _openToPublic();
+            }
         } else if (op == 14 && vault.capsActive() && (seed >> 48) % 4 == 0) {
             _liftCaps();
         } else if (op == 15 && vault.allowlistActive()) {
+            bool fits = !vault.capsActive() || vault.isAllowlisted(a) || _roomFor(vault.allowlistedCount() + 1);
             vm.prank(admin);
+            if (!fits) vm.expectPartialRevert(VelumVault.Oversubscribed.selector);
             vault.addToAllowlist(_list(a));
         }
+    }
+
+    /// @dev Every token's global cap covers `count` account caps.
+    function _roomFor(uint256 count) internal view returns (bool) {
+        address[3] memory tok = [address(usdg), address(tsla), address(amzn)];
+        for (uint256 j; j < 3; ++j) {
+            if (vault.accountCap(tok[j]) * count > vault.globalCap(tok[j])) return false;
+        }
+        return true;
     }
 
     function _checkCaps() internal view {
         assertEq(vault.guardAdmin() != address(0), vault.guarded(), "admin exists iff guarded");
         if (!vault.capsActive()) return;
+        assertTrue(vault.allowlistActive(), "caps never apply without the allowlist");
+        assertTrue(_roomFor(vault.allowlistedCount()), "G-01: global cap below account cap x allowlisted");
         address[5] memory who = _fuzzActors();
         address[2] memory tok = [address(usdg), address(tsla)];
         for (uint256 j; j < 2; ++j) {
             assertLe(vault.totalInternal(tok[j]), vault.globalCap(tok[j]), "global cap");
+            uint256 sum;
             for (uint256 i; i < 5; ++i) {
                 uint256 net = vault.netDeposited(who[i], tok[j]);
                 assertEq(net, _ghostNet[who[i]][tok[j]], "net deposits");
                 assertLe(net, vault.accountCap(tok[j]), "account cap");
+                if (!vault.isAllowlisted(who[i])) assertEq(net, 0, "net deposits outside the allowlist");
+                sum += net;
             }
+            assertLe(vault.totalInternal(tok[j]), sum, "holdings above the sum of net deposits");
         }
     }
 
@@ -747,10 +862,10 @@ contract LaunchGuardTest is VelumBase {
         } catch (bytes memory err) {
             assertFalse(listed && !capped, "deposit refused for no guard reason");
             bytes4 sel = bytes4(err);
+            // G-01: the global cap never refuses a deposit the account cap allows
             assertTrue(
-                sel == VelumVault.NotAllowlisted.selector || sel == VelumVault.AccountCapExceeded.selector
-                    || sel == VelumVault.GlobalCapExceeded.selector,
-                "refused with a guard error"
+                sel == VelumVault.NotAllowlisted.selector || sel == VelumVault.AccountCapExceeded.selector,
+                "refused with an allowlist or account-cap error"
             );
             assertEq(vault.totalInternal(address(t)), before);
         }
@@ -762,8 +877,8 @@ contract LaunchGuardTest is VelumBase {
         _fund(bob, tsla, 1e18);
         uint256 offer = _postOffer(600 * USD, 600 * USD, 5, 5);
         _open(alice, offer, true, 500 * USD, 6);
+        if (liftFirst || openFirst) _liftCaps(); // openToPublic needs the caps lifted first
         if (openFirst) _openToPublic();
-        if (liftFirst && vault.capsActive()) _liftCaps();
         bytes32 before = _snapshot();
         amount = bound(amount, 0, 1e30);
         vm.startPrank(admin);
@@ -868,44 +983,58 @@ contract LaunchGuardDeployTest is Test {
         (a[0], g[0], a[1], g[1]) = (a0, g0, a1, g1);
     }
 
+    uint256 internal constant TESTNET = 46_630;
+    uint256 internal constant ANVIL = 31_337;
+
+    /// @dev A guard config for USDG (6 decimals) and TSLA (18), caps in base units.
+    function _g(address admin, uint256[] memory a, uint256[] memory g) internal pure returns (Deploy.Guard memory c) {
+        c.admin = admin;
+        c.adminHasCode = true;
+        c.symbols = new string[](2);
+        (c.symbols[0], c.symbols[1]) = ("USDG", "TSLA");
+        c.decimals = new uint8[](2);
+        (c.decimals[0], c.decimals[1]) = (6, 18);
+        c.accountCaps = a;
+        c.globalCaps = g;
+    }
+
     function test_checkGuard() public {
         Deploy d = new Deploy();
         address admin = makeAddr("owner-multisig");
         address relay = makeAddr("relay");
+        address deployer = makeAddr("deployer");
         (uint256[] memory a, uint256[] memory g) = _caps(1000e6, 50_000e6, 2e18, 100e18);
-        d.checkGuard(admin, relay, a, g);
-        d.checkGuard(address(0), relay, new uint256[](0), new uint256[](0)); // unguarded
+        d.checkGuard(_g(admin, a, g), TESTNET, deployer, relay);
+        d.checkGuard(_g(address(0), new uint256[](0), new uint256[](0)), TESTNET, deployer, relay); // unguarded
         vm.expectRevert(bytes("Velum: guard caps given but GUARD_ADMIN is not set"));
-        d.checkGuard(address(0), relay, a, g);
+        d.checkGuard(_g(address(0), a, g), TESTNET, deployer, relay);
         vm.expectRevert(bytes("Velum: GUARD_ADMIN must not be the price-relay key"));
-        d.checkGuard(relay, relay, a, g);
+        d.checkGuard(_g(relay, a, g), TESTNET, deployer, relay);
         vm.expectRevert(bytes("Velum: guard caps differ in length"));
-        d.checkGuard(admin, relay, a, new uint256[](1));
+        d.checkGuard(_g(admin, a, new uint256[](1)), TESTNET, deployer, relay);
         (a, g) = _caps(1000e6, 50_000e6, 101e18, 100e18);
         vm.expectRevert(bytes("Velum: a GUARD_ACCOUNT_CAP is above its GUARD_GLOBAL_CAP"));
-        d.checkGuard(admin, relay, a, g);
+        d.checkGuard(_g(admin, a, g), TESTNET, deployer, relay);
     }
 
     function test_guardNotice() public {
         Deploy d = new Deploy();
-        string[] memory symbols = new string[](2);
-        symbols[0] = "USDG";
-        symbols[1] = "TSLA";
-        uint8[] memory decimals = new uint8[](2);
-        decimals[0] = 6;
-        decimals[1] = 18;
-        string memory off = d.guardNotice(address(0), symbols, decimals, new uint256[](0), new uint256[](0));
+        string memory off = d.guardNotice(_g(address(0), new uint256[](0), new uint256[](0)));
         assertTrue(vm.contains(off, "launch guard OFF"));
         assertTrue(vm.contains(off, "testnet default"));
 
         address admin = makeAddr("owner-multisig");
         (uint256[] memory a, uint256[] memory g) = _caps(1000e6, 50_000e6, 2e18, 100e18);
-        string memory on = d.guardNotice(admin, symbols, decimals, a, g);
+        string memory on = d.guardNotice(_g(admin, a, g));
         assertTrue(vm.contains(on, "launch guard ON"));
         assertTrue(vm.contains(on, vm.toString(admin)));
         assertTrue(vm.contains(on, "cannot move, freeze or redirect funds, block withdrawals"));
+        assertTrue(vm.contains(on, "liftCaps() and then openToPublic()"));
         assertTrue(vm.contains(on, "USDG: 1000 / 50000 tokens (base units 1000000000 / 50000000000)"));
         assertTrue(vm.contains(on, "TSLA: 2 / 100 tokens (base units 2000000000000000000 / 100000000000000000000)"));
+        assertTrue(vm.contains(on, "Allowlist room: at most 50 addresses"), "G-01 room printed");
+        assertFalse(vm.contains(on, "WARNING"), "a multisig admin: no warning");
+        assertFalse(vm.contains(on, "BLOCKED"));
     }
 
     /// @notice A guard configuration does not get the script past the mainnet refusal (it is the first check).

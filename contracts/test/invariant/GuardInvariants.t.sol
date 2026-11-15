@@ -10,17 +10,23 @@ import {MockAggregator} from "../mocks/MockAggregator.sol";
 /// @notice Launch guard under random sequences (contracts/README.md, Guarded launch). The shared handler runs
 ///         deposits (to self and to others, including the keeper), withdrawals, offers, opens, closes, liquidity,
 ///         liquidations and forced exits by allowlisted actors (0-3) and others (actor 4, the keeper), mixed with
-///         every guard-admin action: allowlisting, cap raises, two-step handovers, approvals, `openToPublic` and
-///         `liftCaps`. The caps are tight, so they bind often (deposits are up to 200,000 USDG / 500 tokens).
+///         every guard-admin action: allowlisting, cap raises, two-step handovers, approvals, `liftCaps` and
+///         `openToPublic` (refused while caps are active). The account caps are tight, so they bind often (deposits
+///         are up to 200,000 USDG / 500 tokens).
 ///         Invariants: nobody outside an active allowlist ever adds funds or approves a module; active caps are
-///         never exceeded (net deposits per account against a ghost copy, holdings per token); no withdrawal or exit
-///         is blocked; the guard admin never changes a balance; vault accounting holds; and at the end every account
-///         withdraws everything, whatever the guard's state.
+///         never exceeded (net deposits per account against a ghost copy, holdings per token); G-01: every global cap
+///         covers account cap x allowlisted, holdings never exceed the sum of net deposits, the global cap never
+///         refuses a deposit and room-breaking allowlistings or raises are refused; no withdrawal or exit is blocked;
+///         the guard admin never changes a balance; vault accounting holds; and at the end every account withdraws
+///         everything, whatever the guard's state.
 contract GuardInvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
 
+    /// @dev Tight account caps; the global caps cover exactly five account caps, one per actor (G-01), so every cap
+    ///      raise that grows the account cap needs the global cap raised too, and allowlisting a sixth address (none
+    ///      exists here) would need room first.
     function _guardConfig() internal override returns (address, uint256[] memory, uint256[] memory) {
-        return _guardCaps(makeAddr("guard-admin"), 150_000e6, 400_000e6, 300e18, 800e18);
+        return _guardCaps(makeAddr("guard-admin"), 150_000e6, 750_000e6, 300e18, 1500e18);
     }
 
     function setUp() public override {
@@ -107,6 +113,8 @@ contract GuardInvariantsTest is StdInvariant, VelumBase {
             vm.toString(handler.guardRefusals()),
             " guardAdminActions=",
             vm.toString(handler.guardAdminActions()),
+            " roomRefusals=",
+            vm.toString(handler.roomRefusals()),
             " allowlist=",
             vault.allowlistActive() ? "on" : "off",
             " caps=",

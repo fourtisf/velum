@@ -386,7 +386,7 @@ contract Round3IndependentPoC is VelumBase, PerpsRef {
         vm.warp(block.timestamp + 1);
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), 0));
-        oracle.pushPrices(t, v); // zero is still malformed
+        oracle.pushPrices(t, v, block.timestamp); // zero is still malformed
     }
 
     // ------------------------------------------------------------------ IA-10

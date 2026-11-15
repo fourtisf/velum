@@ -55,7 +55,7 @@ whatever `DEMO_MODE` says. Rate limited per client (`RATE_LIMIT_HEALTH_PER_MIN`,
 deployment file for the chain; the status they write expires after two minutes), otherwise a summary of the
 status the workers write every 5 s (authenticated like every value the API trusts):
 ```json
-{ "ok": true, "age": 3, "chainId": 46630,
+{ "ok": true, "reasons": [], "age": 3, "chainId": 46630,
   "indexer": { "block": 153118477, "head": 153118480, "lag": 3, "reorgs": 0, "lastRun": 1, "error": null },
   "relayer": { "enabled": true, "address": "0x…", "sending": true, "lastPush": 4, "balanceLow": false,
                "stuck": false, "gasCapped": false, "sequencerUp": true,
@@ -68,10 +68,23 @@ workers only read there) or when `RPC_URL` serves another chain. `balanceLow`: t
 than `RELAYER_MIN_BALANCE_ETH` / `KEEPER_MIN_BALANCE_ETH`. `markets` gives each market's last relay state:
 `pushed`, `lagging` (the adapter's rate limit clamped the push), `converging`, `deferred`, `waiting`, or why it
 is not pushed (`demo`, `stale`, `unconfirmed`, `frozen`, `closed`, `bounds`, `token-mismatch`,
-`not-relay-sourced`, `sequencer-down`, `no-snapshot`, `bad-price`). `ok` is false when the status is older than
-60 s, the indexer reports an error, or an enabled hot wallet is low, stuck or failing; it never makes the
-check answer 503 (a low relay balance must not fail a release). No key, and nothing derived from one, is
-ever included.
+`not-relay-sourced`, `sequencer-down`, `no-snapshot`, `bad-price`); `bounds` means the quote is outside the
+adapter's bounds and is pushed as it is (the adapter clamps it; an alert is raised). `ok` is false, with one short
+sentence per cause in `reasons` (at most 10), when:
+- the status is older than 60 s;
+- the on-chain workers are disabled although `ONCHAIN_WORKERS=true`: an invalid on-chain setting (named, never its
+  value), or `REDIS_URL` is not a unix socket (they only run on Velum's own Redis, `deploy/redis-velum.sh`);
+- the indexer reports an error;
+- an enabled hot wallet is low, stuck or failing, or raised an alert: a nonce still unused after its replacements
+  ran out (it is being cancelled at up to the fee ceiling), a nonce-gap fill the node rejected, reverted pushes,
+  a quote outside the oracle bounds;
+- a role (relayer, keeper, indexer) runs here but this process does not hold its Redis lock, or its last
+  successful tick is more than a minute (and five of its intervals) old;
+- during an open US-equity session, the relayer (enabled, sending, sequencer not down) has confirmed no push for
+  more than two push intervals.
+
+It never makes the check answer 503 (a low relay balance must not fail a release). No key, and nothing derived from
+one, is ever included.
 
 ### `GET /v1/deployment` *(Phase 3)*
 The contracts of the configured chain, from `contracts/deployments/<CHAIN_ID>.json` (written by
@@ -123,6 +136,8 @@ The account's perps positions, as taker or maker, in the current deployment: ope
 - `exitPrice`: the spread-adjusted exit of a close or a taker-requested forced exit, the oracle price of a
   liquidation; `fee`: the close fee, or the liquidation penalty. `forcedExit`: `{ "requester", "requestedAt",
   "settleAfter", "atEntry" }` once requested.
+- Open positions are selected first, then the newest closed ones up to `limit`, so an open position is never left out
+  however many closed ones the account has.
 - From the indexer, which stays `CONFIRMATIONS` blocks behind the head: a position appears a few blocks after its
   transaction.
 
@@ -135,7 +150,7 @@ Everything the account did or received in the current deployment, newest first.
   "next": "153118295-2" }
 ```
 - Pass `next` as `before` for the next (older) page; it is null on the last page. `limit` 1-200. Pages never repeat
-  or skip an item.
+  or skip an item. A malformed `before`, or one whose block or log index is out of range, is a 400 `BAD_REQUEST`.
 - `kind`: `deposit`, `withdraw`, `approval`, `position_open`, `position_close`, `position_add_margin`,
   `position_remove_margin`, `position_liquidate`, `position_forced_exit`, `position_settled`,
   `liquidation_reward`, `forced_exit_requested`, `offer_posted`, `offer_filled`, `offer_withdrawn`, `swap`,

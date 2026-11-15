@@ -7,22 +7,24 @@
 #
 #   bash apps/workers/e2e/onchain-e2e.sh        (from anywhere; pnpm install must have run)
 #
-# Steps: start Postgres, Redis and anvil; copy contracts/ to the scratch directory and deploy it there with
-# `forge script script/Deploy.s.sol` (the repository's contracts/deployments is never written); migrate the
-# scratch database and check the schema has no drift; run apps/workers/src/onchain/e2e.test.ts (relayer,
+# Steps: start Postgres, Redis (on a unix socket only, like Velum's own Redis from deploy/redis-velum.sh: the
+# on-chain workers refuse any other, audit M-3) and anvil; copy contracts/ to the scratch directory and deploy it
+# there with `forge script script/Deploy.s.sol` (the repository's contracts/deployments is never written); migrate
+# the scratch database and check the schema has no drift; run apps/workers/src/onchain/e2e.test.ts (relayer,
 # keeper, indexer, reorg, stuck transaction, forced exit), then apps/api/src/onchain-e2e.test.ts (the API
-# endpoints over the same index). Everything started is stopped and the scratch directory removed on exit.
+# endpoints over the same index), then apps/workers/src/onchain/audit-e2e.test.ts (the on-chain workers audit:
+# a withheld push landed late, squatted role locks, a block over the provider's log cap, keeper throughput with
+# hundreds of liquidatable positions). Everything started is stopped and the scratch directories removed on exit.
 #
 # Settings: FOUNDRY_BIN (~/.foundry/bin), PG_BIN (/usr/lib/postgresql/16/bin), E2E_PG_PORT (5441),
-# E2E_REDIS_PORT (6401), E2E_ANVIL_PORT (8645), E2E_SCRATCH (a new temporary directory), E2E_KEEP=1 to keep
-# the scratch directory. As root, Postgres runs in a user namespace (it refuses to run as root).
+# E2E_ANVIL_PORT (8645), E2E_SCRATCH (a new temporary directory), E2E_KEEP=1 to keep the scratch directory. As
+# root, Postgres runs in a user namespace (it refuses to run as root).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 FOUNDRY_BIN="${FOUNDRY_BIN:-${HOME}/.foundry/bin}"
 PG_BIN="${PG_BIN:-/usr/lib/postgresql/16/bin}"
 PG_PORT="${E2E_PG_PORT:-5441}"
-REDIS_PORT="${E2E_REDIS_PORT:-6401}"
 ANVIL_PORT="${E2E_ANVIL_PORT:-8645}"
 SCRATCH="${E2E_SCRATCH:-$(mktemp -d "${TMPDIR:-/tmp}/velum-e2e.XXXXXX")}"
 REDIS_PASSWORD="e2e-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
@@ -34,21 +36,27 @@ say() { printf '\n== %s\n' "$*"; }
 die() { printf 'onchain-e2e: %s\n' "$*" >&2; exit 1; }
 as_pg() { if [ "$(id -u)" = 0 ]; then unshare --user --map-user=1000 --map-group=1000 "$@"; else "$@"; fi; }
 
-for port in "${PG_PORT}" "${REDIS_PORT}" "${ANVIL_PORT}"; do
-  if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then die "port ${port} is in use; choose others with E2E_PG_PORT, E2E_REDIS_PORT, E2E_ANVIL_PORT"; fi
+for port in "${PG_PORT}" "${ANVIL_PORT}"; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then die "port ${port} is in use; choose others with E2E_PG_PORT, E2E_ANVIL_PORT"; fi
 done
 [ -x "${FOUNDRY_BIN}/forge" ] && [ -x "${FOUNDRY_BIN}/anvil" ] || die "forge and anvil not found in ${FOUNDRY_BIN}"
 [ -x "${PG_BIN}/initdb" ] || die "PostgreSQL server binaries not found in ${PG_BIN}"
 command -v redis-server >/dev/null || die "redis-server not found"
 mkdir -p "${SCRATCH}"/{pg,redis,tree/packages}
+# The Redis socket path must stay short (sun_path: 107 bytes; REDIS_URL allows 100 characters): a deep scratch
+# directory gets its socket in a short directory of its own.
+REDIS_DIR="${SCRATCH}/redis"
+if [ "${#REDIS_DIR}" -gt 80 ]; then REDIS_DIR="$(mktemp -d /tmp/velum-e2e-redis.XXXXXX)"; fi
+REDIS_SOCK="${REDIS_DIR}/redis.sock"
 
 ANVIL_PID=""
 cleanup() {
   set +e
   [ -n "${ANVIL_PID}" ] && kill "${ANVIL_PID}" 2>/dev/null
   if [ -f "${SCRATCH}/pg/data/postmaster.pid" ]; then kill -INT "$(head -1 "${SCRATCH}/pg/data/postmaster.pid")" 2>/dev/null; fi
-  redis-cli -p "${REDIS_PORT}" -a "${REDIS_PASSWORD}" --no-auth-warning shutdown nosave >/dev/null 2>&1
+  redis-cli -s "${REDIS_SOCK}" -a "${REDIS_PASSWORD}" --no-auth-warning shutdown nosave >/dev/null 2>&1
   sleep 1
+  [ "${REDIS_DIR}" != "${SCRATCH}/redis" ] && rm -rf "${REDIS_DIR}"
   if [ "${E2E_KEEP:-0}" = 1 ]; then echo "kept ${SCRATCH}"; else rm -rf "${SCRATCH}"; fi
 }
 trap cleanup EXIT
@@ -60,10 +68,12 @@ as_pg "${PG_BIN}/pg_ctl" -D "${SCRATCH}/pg/data" -l "${SCRATCH}/pg/pg.log" -o "-
   || { tail -5 "${SCRATCH}/pg/pg.log"; die "PostgreSQL did not start"; }
 DATABASE_URL="postgresql://velum@127.0.0.1:${PG_PORT}/postgres?schema=public"
 
-say "Redis on 127.0.0.1:${REDIS_PORT}"
-redis-server --port "${REDIS_PORT}" --bind 127.0.0.1 --dir "${SCRATCH}/redis" --save "" --appendonly no \
-  --requirepass "${REDIS_PASSWORD}" --daemonize yes --logfile "${SCRATCH}/redis/redis.log"
-REDIS_URL="redis://:${REDIS_PASSWORD}@127.0.0.1:${REDIS_PORT}/0"
+say "Redis on the unix socket ${REDIS_SOCK} (no TCP)"
+redis-server --port 0 --unixsocket "${REDIS_SOCK}" --unixsocketperm 700 --dir "${REDIS_DIR}" --save "" --appendonly no \
+  --requirepass "${REDIS_PASSWORD}" --daemonize yes --logfile "${REDIS_DIR}/redis.log"
+for _ in $(seq 1 50); do [ -S "${REDIS_SOCK}" ] && break; sleep 0.1; done
+[ -S "${REDIS_SOCK}" ] || die "Redis did not start"
+REDIS_URL="unix://:${REDIS_PASSWORD}@${REDIS_SOCK}"
 
 say "anvil on 127.0.0.1:${ANVIL_PORT} (chain 31337)"
 "${FOUNDRY_BIN}/anvil" --port "${ANVIL_PORT}" --chain-id 31337 --silent >"${SCRATCH}/anvil.log" 2>&1 &
@@ -110,5 +120,8 @@ say "Workers end to end (relayer, keeper, indexer)"
 
 say "API end to end (Phase 3 reads over the same index)"
 (cd "${ROOT}/apps/api" && npx vitest run src/onchain-e2e.test.ts)
+
+say "On-chain workers audit end to end (M-1, M-3, L-2, L-3)"
+(cd "${ROOT}/apps/workers" && npx vitest run src/onchain/audit-e2e.test.ts)
 
 say "on-chain end-to-end test passed"

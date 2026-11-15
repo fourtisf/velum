@@ -8,7 +8,9 @@
  *
  * Redis is not trusted (docs/02): a co-tenant could delete the lock. The worst case is two instances sending
  * with one key, which the chain resolves (one transaction per nonce; the loser sees "nonce too low" and
- * resyncs) and the keeper's on-chain checks make harmless (a closed position is not liquidatable).
+ * resyncs) and the keeper's on-chain checks make harmless (a closed position is not liquidatable). A co-tenant
+ * could also hold the lock and stop every role: so the on-chain workers only start on Velum's own Redis (a unix
+ * socket, deploy/redis-velum.sh), and /v1/health reports a role whose lock this process does not hold (audit M-3).
  */
 import { randomBytes } from 'node:crypto';
 import type { Redis } from 'ioredis';
@@ -21,10 +23,12 @@ export const lockKey = (role: string): string => `velum:onchain:lock:${role}`;
 export interface RoleLock {
   /** True when this instance holds the lock now (taking or renewing it). */
   hold(): Promise<boolean>;
+  /** True when the lock in Redis carries this instance's token (read only; for the health status). */
+  owned(): Promise<boolean>;
   release(): Promise<void>;
 }
 
-export function roleLock(redis: Pick<Redis, 'set' | 'eval'>, role: string, ttlMs = 30_000): RoleLock {
+export function roleLock(redis: Pick<Redis, 'set' | 'eval' | 'get'>, role: string, ttlMs = 30_000): RoleLock {
   const key = lockKey(role);
   const token = randomBytes(16).toString('hex');
   let held = false;
@@ -38,6 +42,9 @@ export function roleLock(redis: Pick<Redis, 'set' | 'eval'>, role: string, ttlMs
       const ok = await redis.set(key, token, 'PX', ttlMs, 'NX');
       held = ok === 'OK';
       return held;
+    },
+    async owned() {
+      return (await redis.get(key)) === token;
     },
     async release() {
       if (!held) return;

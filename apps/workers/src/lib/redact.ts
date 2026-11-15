@@ -18,7 +18,8 @@ import { urlSecrets } from '@velum/config';
  * the URL early and the rest of it is printed, and a key may appear outside any URL. redact() therefore
  * first removes the actual secret values this process was given (audit L-6): PROXY_SECRET, every
  * *_PRIVATE_KEY and *SECRET* variable, ALERT_WEBHOOK_URL, the passwords inside DATABASE_URL and
- * REDIS_URL (as written and decoded) and the path and query parts of RPC_URL, as plain substrings.
+ * REDIS_URL (as written and decoded) and the path and query parts of RPC_URL and RPC_URL_SEND, as plain
+ * substrings.
  */
 const URL_RE = /\b([a-z][a-z0-9+.-]*):\/\/([^\s"<>`]*)/gi;
 const HOST_RE = /^(?:\[[0-9a-f:.]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)(?::\d{1,5})?/i;
@@ -46,9 +47,11 @@ export function secretValues(env: NodeJS.ProcessEnv): string[] {
     out.add(v.trim());
   }
   for (const k of ['DATABASE_URL', 'REDIS_URL']) for (const s of urlSecrets(env[k])) out.add(s);
-  // A provider RPC URL carries its key in the path or query: every segment of them is secret.
-  const rpc = /^https?:\/\/[^/?#]+([^#]*)/i.exec(env.RPC_URL ?? '')?.[1] ?? '';
-  for (const part of rpc.split(/[/?&=]/)) out.add(part);
+  // A provider RPC URL carries its key in the path or query: every segment of them is secret (RPC_URL_SEND too).
+  for (const k of ['RPC_URL', 'RPC_URL_SEND']) {
+    const rpc = /^https?:\/\/[^/?#]+([^#]*)/i.exec(env[k] ?? '')?.[1] ?? '';
+    for (const part of rpc.split(/[/?&=]/)) out.add(part);
+  }
   return [...out].filter((s) => s.length >= MIN_SECRET).sort((a, b) => b.length - a.length);
 }
 

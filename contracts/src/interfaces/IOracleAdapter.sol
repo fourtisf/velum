@@ -4,7 +4,9 @@ pragma solidity ^0.8.28;
 /// @notice Prices are USDG per whole token, scaled by 1e18. Every price is the adapter's rate-limited
 ///         ("effective") price: the source price clamped to the token's fixed bounds, then moved from the last
 ///         recorded price by at most 5% x dt / 5 minutes, dt = time since that recording capped at 5 minutes
-///         (1% per minute, at most 5% per recording).
+///         (1% per minute, at most 5% per recording). A price's age counts from its source timestamp: the feed's
+///         round time, or for a relay-sourced token the observation time its push carried, which the adapter only
+///         accepts up to MAX_PUSH_DELAY (10 s) before the push's block (on-chain workers audit M-1).
 interface IOracleAdapter {
     /// @notice Fresh price (at most MAX_AGE seconds old). Reverts if stale or missing; a source price outside
     ///         the bounds is clamped to the nearest bound (and reads as lagging).

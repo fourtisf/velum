@@ -294,7 +294,7 @@ contract Deploy is Script {
         for (uint256 i; i < stocks.length; ++i) {
             prices[i] = i == 0 ? 391.65e18 : 233.4e18;
         }
-        oracle.pushPrices(stocks, prices);
+        oracle.pushPrices(stocks, prices, block.timestamp);
     }
 
     function _tokens() internal returns (Tokens memory t) {

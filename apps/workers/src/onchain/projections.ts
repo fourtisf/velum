@@ -443,6 +443,21 @@ class Folder {
 }
 
 /**
+ * One funding point per market and block, the block's last (audit L-2): advanceFunding is permissionless, so a
+ * block can hold hundreds of FundingAdvanced events of one market, and the chart only needs the index the block
+ * ended at. A range never splits a block, so this is the same on every replay. Every event stays in ChainEvent.
+ */
+export function lastPerBlock(points: Prisma.FundingPointCreateManyInput[]): Prisma.FundingPointCreateManyInput[] {
+  const last = new Map<string, Prisma.FundingPointCreateManyInput>();
+  for (const p of points) {
+    const key = `${p.perps}:${p.market}:${String(p.block)}`;
+    const prev = last.get(key);
+    if (!prev || p.logIndex > prev.logIndex) last.set(key, p);
+  }
+  return [...last.values()];
+}
+
+/**
  * Folds `events` (one indexed range, or the remaining events of rebuilt rows, in chain order) into the
  * tables. `storeRaw` also writes the ChainEvent rows (false when refolding rows that are already stored).
  */
@@ -453,7 +468,8 @@ export async function applyEvents(tx: Tx, ctx: ProjectionContext, events: ChainL
   const folder = new Folder(tx, ctx, events, b);
   for (const ev of events) if (ev.known) await folder.apply(ev);
   if (b.trades.length) await tx.perpTrade.createMany({ data: b.trades, skipDuplicates: true });
-  if (b.funding.length) await tx.fundingPoint.createMany({ data: b.funding, skipDuplicates: true });
+  const funding = lastPerBlock(b.funding);
+  if (funding.length) await tx.fundingPoint.createMany({ data: funding, skipDuplicates: true });
   if (b.swaps.length) await tx.spotSwap.createMany({ data: b.swaps, skipDuplicates: true });
   if (b.liquidity.length) await tx.spotLiquidity.createMany({ data: b.liquidity, skipDuplicates: true });
   if (b.transfers.length) await tx.vaultTransfer.createMany({ data: b.transfers, skipDuplicates: true });
@@ -480,44 +496,51 @@ export function eventFromRow(row: { kind: string; address: string | null; txHash
 const POSITION_EVENTS = ['PositionChanged', 'PositionSettled', 'Liquidated', 'ForcedExitRequested', 'ForcedExitSettled'];
 const OFFER_EVENTS = ['OfferPosted', 'OfferFilled', 'OfferWithdrawn'];
 
+type EventRow = Parameters<typeof eventFromRow>[0];
+
+/** The stored events of `kinds` from `address` whose `id` argument is one of `ids`, filtered in SQL (audit L-8). */
+async function eventsById(tx: Tx, chainId: number, address: string, kinds: string[], ids: string[]): Promise<EventRow[]> {
+  if (!ids.length) return [];
+  return tx.$queryRaw<EventRow[]>(Prisma.sql`
+    SELECT "kind", "address", "txHash", "logIndex", "block", "at", "data" FROM "ChainEvent"
+    WHERE "chainId" = ${chainId} AND "address" = ${address} AND "kind" IN (${Prisma.join(kinds)})
+      AND "data"->>'id' IN (${Prisma.join(ids)})`);
+}
+
 /**
  * After a rewind to `ancestor` (rows above it already deleted): rebuild the positions, offers and pool
- * reserves that events above the ancestor had touched, by refolding the ChainEvent rows that remain.
+ * reserves of this deployment that events above the ancestor had touched, by refolding the ChainEvent rows that
+ * remain. Only the touched ids are read back, selected in SQL; another deployment's rows are never touched (L-8).
  */
 export async function rebuildState(tx: Tx, ctx: ProjectionContext, ancestor: bigint, names: Map<LowerAddress, string>): Promise<{ positions: number; offers: number; pools: number }> {
   const chainId = ctx.chainId;
+  const { perpsMarkets: perpsAddr, makerBook: bookAddr, spotPools: poolsAddr } = ctx.deployment.contracts;
   const above = { chainId, lastBlock: { gt: ancestor } };
   const [positions, offers, pools] = await Promise.all([
-    tx.perpPosition.findMany({ where: above, select: { perps: true, positionId: true } }),
-    tx.makerOffer.findMany({ where: above, select: { book: true, offerId: true } }),
-    tx.spotPoolState.findMany({ where: above, select: { pools: true, stock: true } }),
+    tx.perpPosition.findMany({ where: { ...above, perps: perpsAddr }, select: { positionId: true } }),
+    tx.makerOffer.findMany({ where: { ...above, book: bookAddr }, select: { offerId: true } }),
+    tx.spotPoolState.findMany({ where: { ...above, pools: poolsAddr }, select: { stock: true } }),
   ]);
-  await tx.perpPosition.deleteMany({ where: above });
-  await tx.makerOffer.deleteMany({ where: above });
-  await tx.spotPoolState.deleteMany({ where: above });
+  await tx.perpPosition.deleteMany({ where: { ...above, perps: perpsAddr } });
+  await tx.makerOffer.deleteMany({ where: { ...above, book: bookAddr } });
+  await tx.spotPoolState.deleteMany({ where: { ...above, pools: poolsAddr } });
 
-  const rows: Array<Parameters<typeof eventFromRow>[0]> = [];
+  const rows: EventRow[] = [];
   const select = { kind: true, address: true, txHash: true, logIndex: true, block: true, at: true, data: true } as const;
   if (positions.length) {
-    const ids = positions.map((p) => p.positionId.toString());
-    const perps = [...new Set(positions.map((p) => p.perps))];
-    const found = await tx.chainEvent.findMany({ where: { chainId, address: { in: perps }, kind: { in: POSITION_EVENTS } }, select });
-    const mine = found.filter((r) => ids.includes(String((r.data as JsonArgs).id)));
+    const mine = await eventsById(tx, chainId, perpsAddr, POSITION_EVENTS, positions.map((p) => p.positionId.toString()));
     rows.push(...mine);
     // The offer fills of the opens (same transaction), for the position's size and offer id.
     const txs = [...new Set(mine.filter((r) => r.kind === 'PositionChanged').map((r) => r.txHash))];
-    if (txs.length) rows.push(...(await tx.chainEvent.findMany({ where: { chainId, kind: 'OfferFilled', txHash: { in: txs } }, select })));
+    if (txs.length) rows.push(...(await tx.chainEvent.findMany({ where: { chainId, address: bookAddr, kind: 'OfferFilled', txHash: { in: txs } }, select })));
   }
   if (offers.length) {
-    const ids = offers.map((o) => o.offerId.toString());
-    const books = [...new Set(offers.map((o) => o.book))];
-    const found = await tx.chainEvent.findMany({ where: { chainId, address: { in: books }, kind: { in: OFFER_EVENTS } }, select });
-    for (const r of found) if (ids.includes(String((r.data as JsonArgs).id)) && !rows.some((x) => x.txHash === r.txHash && x.logIndex === r.logIndex)) rows.push(r);
+    const found = await eventsById(tx, chainId, bookAddr, OFFER_EVENTS, offers.map((o) => o.offerId.toString()));
+    const seen = new Set(rows.map((x) => `${x.txHash}:${x.logIndex}`));
+    for (const r of found) if (!seen.has(`${r.txHash}:${r.logIndex}`)) rows.push(r);
   }
   if (pools.length) {
-    const stocks = pools.map((p) => p.stock);
-    const addrs = [...new Set(pools.map((p) => p.pools))];
-    const found = await tx.chainEvent.findMany({ where: { chainId, address: { in: addrs }, kind: 'PoolChanged', market: { in: stocks } }, select });
+    const found = await tx.chainEvent.findMany({ where: { chainId, address: poolsAddr, kind: 'PoolChanged', market: { in: pools.map((p) => p.stock) } }, select });
     rows.push(...found);
   }
   rows.sort((x, y) => (x.block === y.block ? x.logIndex - y.logIndex : x.block < y.block ? -1 : 1));

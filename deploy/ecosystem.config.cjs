@@ -78,6 +78,8 @@ const ALLOW = {
       'ONCHAIN_WORKERS', 'ONCHAIN_MAINNET_CONFIRMED', 'DEPLOYMENTS_DIR', 'PRICE_PUSH_INTERVAL_MS',
       'RELAYER_MAX_GWEI', 'KEEPER_MAX_GWEI', 'RELAYER_MIN_BALANCE_ETH', 'KEEPER_MIN_BALANCE_ETH', 'KEEPER_ETH_PRICE_USD',
       'INDEXER_START_BLOCK', 'CONFIRMATIONS', 'INDEXER_CHUNK_BLOCKS', 'INDEXER_POLL_MS', 'KEEPER_INTERVAL_MS', 'FUNDING_EPOCH_SECONDS',
+      // Optional trusted endpoint for broadcasts, nonces and receipts (audit M-1); may carry a provider key.
+      'RPC_URL_SEND',
     ],
     prefixes: [],
     // The price-relay and keeper hot keys (deploy/new-key.sh), two separate keys.

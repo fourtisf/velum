@@ -4,6 +4,7 @@
  * without VELUM_E2E_OUT.
  */
 import { readFileSync } from 'node:fs';
+import { parseRedisUrl } from '@velum/config';
 import { createCacheMac } from '@velum/config/src/cache-mac';
 import { PrismaClient } from '@velum/db';
 import type { FastifyInstance } from 'fastify';
@@ -41,13 +42,16 @@ describe.skipIf(!OUT)('Phase 3 API over the end-to-end index', () => {
   beforeAll(async () => {
     r = JSON.parse(readFileSync(OUT!, 'utf8')) as E2EResult;
     prisma = new PrismaClient({ datasources: { db: { url: DB } } });
-    redis = new Redis(REDIS, { maxRetriesPerRequest: 1 });
+    // TEST_REDIS_URL is a unix socket URL: the on-chain workers only run on one (audit M-3).
+    const parsed = parseRedisUrl(REDIS);
+    if (!parsed.ok) throw new Error(parsed.error);
+    redis = new Redis({ ...parsed.options, maxRetriesPerRequest: 1 });
     const env: ApiEnv = {
       host: '127.0.0.1',
       port: 0,
       databaseUrl: DB,
       redisUrl: REDIS,
-      redis: { db: 0 },
+      redis: parsed.options,
       corsOrigins: false,
       rateReadPerMin: 1000,
       rateQuotePerMin: 30,

@@ -277,6 +277,10 @@ the workers get it.
 
 ## Dedicated Redis for Velum (strongly recommended on a shared server)
 
+**Required for the Phase 3 on-chain workers:** with `ONCHAIN_WORKERS=true` the price relayer, keeper and
+indexer refuse to start unless `REDIS_URL` is this unix-socket Redis (on-chain audit M-3: on a shared Redis a
+co-tenant could hold their locks or delete their schedulers and stop them silently).
+
 By default Velum shares the server's Redis (`REDIS_DB`, default 5) and its `requirepass`. Every other
 program that knows that password can select Velum's database and read or write its keys: queue jobs,
 price snapshots, candle caches, heartbeats, rate-limit counters (backend audit M-2, F-2).

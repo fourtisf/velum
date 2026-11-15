@@ -35,11 +35,14 @@ export const VAULT_ABI = [
 
 export const ORACLE_ABI = [
   'event Setup(address[] tokens, address[] feeds, address relayer, address sequencerFeed)',
-  'event PriceRelayed(address indexed token, uint256 price, uint256 effectivePrice, uint256 timestamp)',
-  'function pushPrices(address[] tokens, uint256[] prices)',
+  'event PriceRelayed(address indexed token, uint256 price, uint256 effectivePrice, uint256 observedAt, uint256 timestamp)',
+  // observedAt: when the relay observed the prices (chain time); the push must land within MAX_PUSH_DELAY (M-1).
+  'function pushPrices(address[] tokens, uint256[] prices, uint256 observedAt)',
+  'function MAX_PUSH_DELAY() view returns (uint256)',
   'function relayer() view returns (address)',
   'function sources(address token) view returns (address feed, uint8 feedDecimals, uint128 minPrice, uint128 maxPrice, bool configured)',
-  'function relayed(address token) view returns (uint128 price, uint64 updatedAt)',
+  // updatedAt: the newest push's observation time (the source timestamp); pushedAt: its block time.
+  'function relayed(address token) view returns (uint128 price, uint64 updatedAt, uint64 pushedAt)',
   'function bands(address token) view returns (uint128 last, uint64 lastAt, uint64 lastValidAt)',
   'function sequencerStatus() view returns (bool up, bool ready)',
   'function price(address token) view returns (uint256)',
@@ -52,6 +55,9 @@ export const ORACLE_ABI = [
   'error StalePrice(address token, uint256 updatedAt)',
   'error PriceOutOfBounds(address token, uint256 price)',
   'error TooSoon(address token)',
+  'error ObservedInFuture(uint256 observedAt)',
+  'error PushExpired(uint256 observedAt)',
+  'error StaleObservation(address token, uint256 observedAt)',
   'error LengthMismatch()',
 ] as const;
 

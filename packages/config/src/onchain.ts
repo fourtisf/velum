@@ -36,6 +36,11 @@ export const ORACLE_LIMITS = {
   maxAgeSeconds: 60,
   /** OPEN_MAX_AGE: opens, margin removal and forced-exit settlement need a price at most 10 s old. */
   openMaxAgeSeconds: 10,
+  /**
+   * MAX_PUSH_DELAY: a relay push must land at most 10 s after the observation time it carries, and that time is the
+   * prices' source timestamp (on-chain workers audit M-1).
+   */
+  maxPushDelaySeconds: 10,
 } as const;
 
 /** contracts/src/perps/PerpsBase.sol. */
@@ -56,13 +61,21 @@ export const PERPS_LIMITS = {
  */
 export const RELAY_INTERVAL_MS = { min: 8000, max: 10_000, default: 9000 } as const;
 /**
- * While deferring a push the rate limit would clamp, the relay never lets its last push on chain get older
- * than this (seconds). Past it, it pushes the true price anyway so the on-chain price converges (lagging).
- * Bounds the extra exit option a deferral can give a closing taker to 15 s x 1/6000 = 0.25% of price.
+ * While deferring a push the rate limit would clamp, the relay never lets the observation of its last push on
+ * chain get older than this (seconds). Past it, it pushes the true price anyway so the on-chain price converges
+ * (lagging). A deferral only waits for a move that fits the allowance by then, so the on-chain price trails the
+ * market by at most 12 s x 1/6000 = 0.2% of price meanwhile: the residual extra exit option a closing taker
+ * (60 s prices) can have, about 2.5x the minimum close cost (2 bps spread + 6 bps fee). Opens and margin removal
+ * need a price at most 10 s old, so for them a deferral costs at most 2 s without a fresh price and no option
+ * (on-chain workers audit L-5; it was 15 s, 0.25%).
  */
-export const RELAY_MAX_PUSH_GAP_S = 15;
-/** A price snapshot the price-relay job confirmed with its source longer ago than this is never pushed. */
-export const RELAY_SNAPSHOT_MAX_AGE_MS = 10_000;
+export const RELAY_MAX_PUSH_GAP_S = 12;
+/**
+ * A price snapshot the price-relay job confirmed with its source longer ago than this is never pushed. Its age is
+ * subtracted from the push's observation time, which must be at most MAX_PUSH_DELAY (10 s) old when the push lands,
+ * so this leaves 4 s for the clock estimate and inclusion (M-1). price-relay confirms every PRICE_POLL_MS (2 s).
+ */
+export const RELAY_SNAPSHOT_MAX_AGE_MS = 6_000;
 
 /** Contracts every Phase 3 deployment file names (contracts/script/Deploy.s.sol `_write`). */
 export const REQUIRED_CONTRACTS = ['vault', 'oracle', 'spotPools', 'makerBook', 'perpsMarkets'] as const;
@@ -169,6 +182,24 @@ export interface SenderStatus {
   /** Unix ms of the last confirmed transaction. */
   lastConfirmedAt: number | null;
   error: string | null;
+  /**
+   * Conditions an operator must act on, each a short redacted sentence (on-chain workers audit M-1, L-4, L-7): a nonce
+   * that stays unused after the replacements stopped, a failed nonce-gap fill, reverted pushes, a price outside the
+   * oracle bounds. Any alert makes /v1/health `onchain.ok` false. Absent in a status written by an older release.
+   */
+  alerts?: string[];
+}
+
+/** How one on-chain role (relayer, keeper, indexer) is doing in this process (audit M-3). */
+export interface RoleHealth {
+  /** The role runs in this process (its key is set, or the indexer). */
+  enabled: boolean;
+  /** This process holds the role's Redis lock now (null: role off, or not checked yet). */
+  lockHeld: boolean | null;
+  /** Unix ms of the last tick that held the lock and ran to the end without an error. */
+  lastOkAt: number | null;
+  /** How often the role ticks (ms). */
+  everyMs: number;
 }
 
 export interface RelayerStatus extends SenderStatus {
@@ -204,19 +235,36 @@ export interface OnchainStatus {
   /** Unix ms when the workers wrote this. */
   at: number;
   chainId: number;
+  /** The deployment's perps address; empty while the on-chain workers are disabled (`error`). */
   deployment: string;
   indexer: IndexerStatus;
   relayer: RelayerStatus;
   keeper: KeeperStatus;
+  // Added by the on-chain workers audit (M-3, I-2); absent in a status written by an older release.
+  /** Unix ms when the on-chain workers started. */
+  startedAt?: number;
+  /** Why the on-chain workers are disabled although ONCHAIN_WORKERS=true (invalid settings, Redis not a socket). */
+  error?: string | null;
+  /** PRICE_PUSH_INTERVAL_MS. */
+  pushIntervalMs?: number;
+  roles?: { relayer: RoleHealth; keeper: RoleHealth; indexer: RoleHealth };
 }
 
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 const numOrNull = (v: unknown) => v === null || isNum(v);
 const strOrNull = (v: unknown, max = 200) => v === null || (typeof v === 'string' && v.length <= max);
 
+const MAX_ALERTS = 16;
+const alertsOk = (v: unknown) => v === undefined || (Array.isArray(v) && v.length <= MAX_ALERTS && v.every((a) => typeof a === 'string' && a.length <= 300));
+
+function roleOk(v: unknown): boolean {
+  return isRecord(v) && typeof v.enabled === 'boolean' && (v.lockHeld === null || typeof v.lockHeld === 'boolean') && numOrNull(v.lastOkAt) && isNum(v.everyMs);
+}
+
 function senderOk(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
+    alertsOk(v.alerts) &&
     typeof v.enabled === 'boolean' &&
     strOrNull(v.address, 42) &&
     typeof v.sending === 'boolean' &&
@@ -251,5 +299,13 @@ export function parseOnchainStatus(raw: unknown, now: number): OnchainStatus | n
   if (Object.keys(r.markets).length > MAX_ENTRIES || !Object.values(r.markets).every((s) => typeof s === 'string' && s.length <= 40)) return null;
   const k = v.keeper;
   if (!senderOk(k) || !isRecord(k) || !numOrNull(k.lastRunAt) || !isNum(k.liquidations) || !isNum(k.forcedExits) || !isNum(k.fundingAdvances) || !isNum(k.coverPayouts)) return null;
+  // Fields added by the on-chain workers audit: optional (an older release's status lacks them), checked when present.
+  if (v.startedAt !== undefined && !isNum(v.startedAt)) return null;
+  if (v.error !== undefined && !strOrNull(v.error, 500)) return null;
+  if (v.pushIntervalMs !== undefined && !isNum(v.pushIntervalMs)) return null;
+  if (v.roles !== undefined) {
+    const roles = v.roles;
+    if (!isRecord(roles) || !roleOk(roles.relayer) || !roleOk(roles.keeper) || !roleOk(roles.indexer)) return null;
+  }
   return v as unknown as OnchainStatus;
 }

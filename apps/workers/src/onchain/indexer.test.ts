@@ -5,7 +5,7 @@
  */
 import { parseDeployment, type Deployment } from '@velum/config/src/onchain';
 import { PrismaClient } from '@velum/db';
-import { encodeAbiParameters, encodeEventTopics, keccak256, toHex, type Hex } from 'viem';
+import { encodeAbiParameters, encodeEventTopics, keccak256, toEventSelector, toHex, type AbiEvent, type Hex } from 'viem';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
@@ -41,7 +41,14 @@ function mkLog(e: EventSpec, b: Block, logIndex: number, tx: Hex): RawLog {
 class FakeChain implements IndexerClient {
   blocks: Block[] = [];
   maxRange = 1000n;
+  /** Most logs one eth_getLogs answer may hold (a provider's response cap). */
+  maxLogs = Infinity;
+  /** Whether eth_getBlockReceipts is served. */
+  receipts = true;
+  /** Heads to answer before the real one (a load-balanced RPC answering from a node that lags). */
+  laggingHeads: bigint[] = [];
   getLogsCalls: Array<[bigint, bigint]> = [];
+  requests: string[] = [];
   constructor(n: number) {
     for (let i = 0; i < n; i++) this.append([]);
   }
@@ -56,18 +63,32 @@ class FakeChain implements IndexerClient {
     this.blocks = this.blocks.slice(0, from);
     for (const logs of branch) this.append(logs, salt);
   }
-  getBlockNumber = (async () => BigInt(this.blocks.length - 1)) as IndexerClient['getBlockNumber'];
+  getBlockNumber = (async () => this.laggingHeads.shift() ?? BigInt(this.blocks.length - 1)) as IndexerClient['getBlockNumber'];
+  private logsOf(fromBlock: bigint, toBlock: bigint): RawLog[] {
+    const out: RawLog[] = [];
+    // One transaction per block (so an offer fill and the open it backs share a transaction, as on chain).
+    for (const b of this.blocks.slice(Number(fromBlock), Number(toBlock) + 1)) b.logs.forEach((e, i) => out.push(mkLog(e, b, i, keccak256(toHex(`tx:${b.hash}`)))));
+    return out;
+  }
+  request = (async ({ method, params }: { method: string; params: [Hex] }) => {
+    this.requests.push(method);
+    if (method !== 'eth_getBlockReceipts' || !this.receipts) throw new Error(`the method ${method} does not exist/is not available`);
+    const n = BigInt(params[0]);
+    const logs = this.logsOf(n, n).map((l) => ({ ...l, blockNumber: toHex(l.blockNumber), logIndex: toHex(l.logIndex) }));
+    return logs.length ? [{ logs }] : [];
+  }) as unknown as NonNullable<IndexerClient['request']>;
   getBlock = (async ({ blockNumber }: { blockNumber: bigint }) => {
     const b = this.blocks[Number(blockNumber)];
     if (!b) throw new Error('block not found');
     return { number: b.number, hash: b.hash, parentHash: b.parentHash, timestamp: b.timestamp };
   }) as unknown as IndexerClient['getBlock'];
-  getLogs = (async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+  getLogs = (async ({ fromBlock, toBlock, address, event }: { fromBlock: bigint; toBlock: bigint; address?: Hex | Hex[]; event?: AbiEvent }) => {
     this.getLogsCalls.push([fromBlock, toBlock]);
     if (toBlock - fromBlock + 1n > this.maxRange) throw new Error('query exceeds max block range 1000');
-    const out: RawLog[] = [];
-    // One transaction per block (so an offer fill and the open it backs share a transaction, as on chain).
-    for (const b of this.blocks.slice(Number(fromBlock), Number(toBlock) + 1)) b.logs.forEach((e, i) => out.push(mkLog(e, b, i, keccak256(toHex(`tx:${b.hash}`)))));
+    const addrs = address === undefined ? null : new Set((Array.isArray(address) ? address : [address]).map((a) => a.toLowerCase()));
+    const topic = event ? toEventSelector(event) : null;
+    const out = this.logsOf(fromBlock, toBlock).filter((l) => (!addrs || addrs.has(l.address.toLowerCase())) && (!topic || l.topics[0] === topic));
+    if (out.length > this.maxLogs) throw new Error(`Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range and no limit on the response size, or you can request any block range with a cap of ${this.maxLogs} logs in the response.`);
     return out;
   }) as unknown as IndexerClient['getLogs'];
   readContract = (async ({ address }: { address: Hex }) => (address === T.USDG ? 6 : 18)) as unknown as IndexerClient['readContract'];
@@ -211,10 +232,98 @@ describe.skipIf(!DB)('indexer on Postgres', () => {
     const cp = await prisma.indexerCheckpoint.findUniqueOrThrow({ where: { chainId_deployment: { chainId: CHAIN, deployment: C.perpsMarkets } } });
     expect(cp.blockHash).toBe(chain.blocks[Number(cp.block)]!.hash);
 
-    // A reorg to a shorter chain (ending before the new deposit) is caught while idle too.
+    // A reorg to a shorter chain (ending before the new deposit) is caught while idle too, once a second poll
+    // confirms it (L-8).
     chain.fork(5, 'c', []);
+    await run(ix);
+    expect(ix.status().reorgs).toBe(1);
     await run(ix);
     expect(ix.status().reorgs).toBe(2);
     expect(await prisma.vaultTransfer.count({ where: { chainId: CHAIN } })).toBe(0);
+  });
+
+  it('a head below the checkpoint seen once (a lagging node) rewinds nothing; seen twice in a row it does (L-8)', async () => {
+    const chain = new FakeChain(2);
+    chain.append([deposit(TAKER, 7n)]); // 2
+    chain.append([]); // 3
+    const ix = new Indexer({ client: chain, prisma, deployment: d, chainId: CHAIN, confirmations: 0, chunkBlocks: 100, startBlock: null, log: silent });
+    await ix.init();
+    await run(ix);
+    chain.laggingHeads = [1n];
+    expect(await ix.step()).toBe('idle'); // the lagging answer
+    expect(await ix.step()).toBe('idle'); // the real head again: nothing happened
+    expect(ix.status().reorgs).toBe(0);
+    expect(await prisma.vaultTransfer.count({ where: { chainId: CHAIN } })).toBe(1);
+    chain.laggingHeads = [1n, 1n];
+    await ix.step();
+    expect(await ix.step()).toBe('rewound');
+    expect(ix.status().reorgs).toBe(1);
+  });
+
+  it('a rewind deletes and rebuilds only this deployment\'s rows, never another deployment\'s on the same chain (L-8)', async () => {
+    const chain = new FakeChain(2);
+    chain.append([offerPosted(1n)]); // 2
+    chain.append([offerFilled(1n, 1_000n * E6, 9_800n * E6), positionChanged(1n, 0, 200n * E6, 400n * E18)]); // 3
+    chain.append([positionChanged(1n, 2, 260n * E6, 0n), deposit(TAKER, 7n)]); // 4 (orphaned below)
+    chain.append([]); // 5
+    const ix = new Indexer({ client: chain, prisma, deployment: d, chainId: CHAIN, confirmations: 0, chunkBlocks: 100, startBlock: null, log: silent });
+    await ix.init();
+    await run(ix);
+    // Rows an earlier deployment on this chain indexed, above the coming ancestor.
+    const OLD = { perps: A(905), vault: A(901) };
+    await prisma.chainEvent.create({ data: { chainId: CHAIN, kind: 'Deposited', address: OLD.vault, txHash: '0xold1', logIndex: 0, block: 4n, data: {} } });
+    await prisma.vaultTransfer.create({ data: { chainId: CHAIN, txHash: '0xold1', logIndex: 0, vault: OLD.vault, kind: 'deposit', from: TAKER, to: TAKER, token: T.USDG, amount: '1', block: 4n, at: new Date(0) } });
+    await prisma.accountActivity.create({ data: { chainId: CHAIN, txHash: '0xold1', logIndex: 0, account: TAKER, contract: OLD.vault, kind: 'deposit', data: {}, block: 4n, at: new Date(0) } });
+    const old = await prisma.perpPosition.findFirstOrThrow({ where: { chainId: CHAIN, perps: C.perpsMarkets } });
+    await prisma.perpPosition.create({ data: { ...old, perps: OLD.perps, lastBlock: 5n } });
+    chain.fork(4, 'b', [[], [], []]);
+    await run(ix);
+    expect(ix.status().reorgs).toBe(1);
+    expect((await position())!.takerMargin.toFixed()).toBe((200n * E6).toString());
+    expect(await prisma.chainEvent.count({ where: { chainId: CHAIN, address: OLD.vault } })).toBe(1);
+    expect(await prisma.vaultTransfer.count({ where: { chainId: CHAIN, vault: OLD.vault } })).toBe(1);
+    expect(await prisma.vaultTransfer.count({ where: { chainId: CHAIN, vault: C.vault } })).toBe(0);
+    expect(await prisma.accountActivity.count({ where: { chainId: CHAIN, contract: OLD.vault } })).toBe(1);
+    expect((await prisma.perpPosition.findFirstOrThrow({ where: { chainId: CHAIN, perps: OLD.perps } })).takerMargin.toFixed()).toBe(old.takerMargin.toFixed());
+  });
+
+  it('a single block over the provider log cap is read with eth_getBlockReceipts; its funding points collapse to one (L-2, R5)', async () => {
+    const chain = new FakeChain(2);
+    chain.maxLogs = 1000;
+    chain.append([deposit(TAKER, 1n)]); // 2
+    // 3: anyone can call advanceFunding in a loop: 1,200 FundingAdvanced events in one block.
+    chain.append(Array.from({ length: 1200 }, (_, i) => funding(BigInt(i + 1))));
+    chain.append([deposit(TAKER, 2n)]); // 4
+    const lines: string[] = [];
+    const log: Logger = { ...silent, info: (m) => void lines.push(m), warn: (m) => void lines.push(m) };
+    const ix = new Indexer({ client: chain, prisma, deployment: d, chainId: CHAIN, confirmations: 0, chunkBlocks: 100, startBlock: null, log });
+    await ix.init();
+    await ix.tick();
+    expect(ix.status()).toMatchObject({ block: 4, error: null });
+    expect(chain.requests).toContain('eth_getBlockReceipts');
+    expect(lines.some((m) => /halving the range/.test(m))).toBe(true);
+    expect(await prisma.chainEvent.count({ where: { chainId: CHAIN, kind: 'FundingAdvanced' } })).toBe(1200);
+    const points = await prisma.fundingPoint.findMany({ where: { chainId: CHAIN } });
+    expect(points.map((p) => [p.block, p.index.toFixed()])).toEqual([[3n, '1200']]);
+    expect(await prisma.vaultTransfer.count({ where: { chainId: CHAIN } })).toBe(2);
+  });
+
+  it('without eth_getBlockReceipts, reads the block contract by contract, then event by event', async () => {
+    const chain = new FakeChain(2);
+    chain.maxLogs = 1000;
+    chain.receipts = false;
+    // perpsMarkets alone is over the cap in this block; each of its events is under it.
+    const closeOnly = (on: boolean): EventSpec => ({ address: C.perpsMarkets, abi: abis.perpsMarkets, eventName: 'CloseOnlySet', args: { market: T.TSLA }, data: [{ type: 'bool' }], values: [on] });
+    chain.append([deposit(TAKER, 1n), ...Array.from({ length: 600 }, (_, i) => funding(BigInt(i + 1))), ...Array.from({ length: 401 }, (_, i) => closeOnly(i % 2 === 0)), offerPosted(1n)]); // 2
+    const ix = new Indexer({ client: chain, prisma, deployment: d, chainId: CHAIN, confirmations: 0, chunkBlocks: 100, startBlock: null, log: silent });
+    await ix.init();
+    await ix.tick();
+    expect(ix.status()).toMatchObject({ block: 2, error: null });
+    expect(await prisma.chainEvent.count({ where: { chainId: CHAIN } })).toBe(1003);
+    expect(await prisma.fundingPoint.count({ where: { chainId: CHAIN } })).toBe(1);
+    expect(await prisma.makerOffer.count({ where: { chainId: CHAIN } })).toBe(1);
+    // logIndex order is kept across the per-contract reads.
+    const ev = await prisma.chainEvent.findMany({ where: { chainId: CHAIN }, orderBy: { logIndex: 'asc' }, select: { kind: true } });
+    expect([ev[0]!.kind, ev.at(-1)!.kind]).toEqual(['Deposited', 'OfferPosted']);
   });
 });

@@ -209,7 +209,7 @@ contract Handler is Test {
         v[0] = price[0];
         v[1] = price[1];
         vm.prank(relayer);
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
     }
 
     // ------------------------------------------------------------ vault

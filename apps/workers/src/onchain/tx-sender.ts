@@ -3,11 +3,24 @@
  * nonce taken from the chain, replacement with bumped fees (and a freshly rebuilt payload) when a
  * transaction does not mine, a hard ceiling on the fee per gas, a balance monitor, and the network guard:
  * nothing is ever signed for Robinhood Chain mainnet (4663) without ONCHAIN_MAINNET_CONFIRMED=yes, nor when
- * RPC_URL serves another chain than the one configured.
+ * RPC_URL (or RPC_URL_SEND) serves another chain than the one configured. The guard is checked in every path
+ * that signs (submit, replacement, cancellation, nonce-gap fill), and a refused sender adopts nothing at start
+ * (on-chain workers audit L-1).
  *
  * One in flight makes the nonce simple and reorg-proof: with nothing pending, the next nonce is the chain's
  * transaction count; a replacement reuses the in-flight nonce. Pending transactions this process does not
  * know (a previous run, another instance) are adopted and cancelled after the stuck timeout.
+ *
+ * A nonce is never left unused (audit M-1): when the payload replacements run out (maxReplacements) the sender
+ * cancels the nonce with 0-value transfers to itself, bumping the fee up to the ceiling, and once no higher fee
+ * is allowed it re-broadcasts the newest version, until the nonce is used; meanwhile `stuck` is set and an alert
+ * names the nonce. A nonce-gap fill that the node rejects is retried and alerts too. Old signed versions an RPC
+ * may hold back can still land later, which is why every price push also expires on chain (OracleAdapter
+ * MAX_PUSH_DELAY).
+ *
+ * Optional second endpoint (RPC_URL_SEND, audit M-1): when given, transactions are broadcast through it and the
+ * nonce and receipts are read from it, so an RPC_URL that withholds transactions or answers wrong receipts cannot
+ * stall the key; every other read uses RPC_URL.
  *
  * The private key never reaches this module: it gets a viem account (which keeps the key in a closure).
  */
@@ -56,6 +69,9 @@ export interface SenderChain {
   getTransactionReceipt(args: { hash: Hex }): Promise<MinedReceipt>;
 }
 
+/** What the send endpoint (RPC_URL_SEND) is used for: broadcast, nonce and receipts. */
+export type SendChain = Pick<SenderChain, 'getChainId' | 'getTransactionCount' | 'sendRawTransaction' | 'getTransactionReceipt'>;
+
 export interface SenderOptions {
   role: 'relayer' | 'keeper';
   chainId: number;
@@ -70,6 +86,8 @@ export interface SenderOptions {
   balanceEveryMs?: number;
   log: Logger;
   now?: () => number;
+  /** RPC_URL_SEND: broadcast, nonce and receipts through this endpoint (default: the read chain). */
+  send?: SendChain;
 }
 
 export type SubmitResult =
@@ -95,11 +113,14 @@ interface Inflight {
   maxFee: bigint;
   prio: bigint;
   hashes: Hex[];
+  /** The signed versions the node accepted (newest last): the newest is re-broadcast once no bump is allowed. */
+  raws: Hex[];
   lastSentAt: number;
   replacements: number;
   /** Polls that saw the chain's nonce below this one (a reorg dropped earlier transactions of this key). */
   gapSeen: number;
-  gapFilled: boolean;
+  /** When the nonce gap was last filled (null: not yet); refilled after stuckAfterMs while it persists. */
+  gapFilledAt: number | null;
 }
 
 const unknownInflight = (nonce: number, now: number): Inflight => ({
@@ -110,23 +131,28 @@ const unknownInflight = (nonce: number, now: number): Inflight => ({
   maxFee: 0n,
   prio: 0n,
   hashes: [],
+  raws: [],
   lastSentAt: now,
   replacements: 0,
   gapSeen: 0,
-  gapFilled: false,
+  gapFilledAt: null,
 });
 
 const CANCEL_GAS = 21_000n;
 const LOW_BALANCE_LOG_EVERY_MS = 10 * 60_000;
+const NOT_VERIFIED = 'RPC chain id not verified yet';
 
 /** +12.5% and one wei: above the 10% both geth and Nitro require of a replacement's fee and tip. */
 export const bump = (x: bigint): bigint => x + x / 8n + 1n;
 
 export class TxSender {
   readonly address: Address;
-  private readonly o: Required<Omit<SenderOptions, 'now'>> & { now: () => number };
+  private readonly o: Required<Omit<SenderOptions, 'now' | 'send'>> & { now: () => number };
+  private readonly send: SendChain;
+  private readonly separateSend: boolean;
   private inflight: Inflight | null = null;
   private rpcChainId: number | null = null;
+  private sendChainId: number | null = null;
   private balance: bigint | null = null;
   private balanceAt = 0;
   private lowLoggedAt = 0;
@@ -135,6 +161,10 @@ export class TxSender {
   private lastTx: Hex | null = null;
   private lastConfirmedAt: number | null = null;
   private lastError: string | null = null;
+  /** The in-flight nonce stays unused after the payload replacements ran out, or at the fee ceiling (M-1). */
+  private nonceAlert: string | null = null;
+  /** A nonce-gap fill the node rejected (M-1). */
+  private gapAlert: string | null = null;
 
   constructor(
     private readonly chain: SenderChain,
@@ -142,15 +172,23 @@ export class TxSender {
     opts: SenderOptions,
   ) {
     this.address = account.address;
-    this.o = { maxReplacements: 6, balanceEveryMs: 60_000, ...opts, now: opts.now ?? Date.now };
+    const { send, ...rest } = opts;
+    this.o = { maxReplacements: 6, balanceEveryMs: 60_000, ...rest, now: opts.now ?? Date.now };
+    this.send = send ?? chain;
+    this.separateSend = send !== undefined && send !== chain;
   }
 
-  /** Why this sender may not send, or null. Mainnet needs ONCHAIN_MAINNET_CONFIRMED=yes; RPC_URL must serve the chain. */
+  /**
+   * Why this sender may not send, or null. Mainnet needs ONCHAIN_MAINNET_CONFIRMED=yes; RPC_URL (and RPC_URL_SEND)
+   * must serve the configured chain.
+   */
   refusal(): string | null {
-    const mainnet = this.o.chainId === ONCHAIN_MAINNET_CHAIN_ID || this.rpcChainId === ONCHAIN_MAINNET_CHAIN_ID;
+    const ids = [this.rpcChainId, this.sendChainId];
+    const mainnet = this.o.chainId === ONCHAIN_MAINNET_CHAIN_ID || ids.includes(ONCHAIN_MAINNET_CHAIN_ID);
     if (mainnet && !this.o.mainnetConfirmed) return 'Robinhood Chain mainnet: transactions need ONCHAIN_MAINNET_CONFIRMED=yes';
-    if (this.rpcChainId === null) return 'RPC chain id not verified yet';
+    if (this.rpcChainId === null || (this.separateSend && this.sendChainId === null)) return NOT_VERIFIED;
     if (this.rpcChainId !== this.o.chainId) return `RPC_URL serves chain ${this.rpcChainId}, not ${this.o.chainId}`;
+    if (this.separateSend && this.sendChainId !== this.o.chainId) return `RPC_URL_SEND serves chain ${this.sendChainId}, not ${this.o.chainId}`;
     return null;
   }
 
@@ -158,15 +196,18 @@ export class TxSender {
     return this.inflight !== null;
   }
 
-  /** Verify the RPC's chain id, adopt pending transactions of this key, read the balance. Safe to call again. */
+  /**
+   * Verify the RPCs' chain ids, adopt pending transactions of this key (only when this sender may send: a refused
+   * one never signs, so it must not take over a nonce it would have to cancel), read the balance. Safe to call again.
+   */
   async init(): Promise<void> {
     this.rpcChainId = await this.chain.getChainId();
+    this.sendChainId = this.separateSend ? await this.send.getChainId() : this.rpcChainId;
     const refusal = this.refusal();
     if (refusal) {
       this.lastError = refusal;
       this.o.log.warn('on-chain sender will not send', { role: this.o.role, address: this.address, reason: refusal });
-    }
-    await this.adoptPending();
+    } else await this.adoptPending();
     await this.refreshBalance(true).catch((err: unknown) => this.o.log.warn('balance read failed', { role: this.o.role, err: describeError(err) }));
   }
 
@@ -174,8 +215,8 @@ export class TxSender {
   private async adoptPending(): Promise<boolean> {
     if (this.inflight) return false;
     const [latest, pending] = await Promise.all([
-      this.chain.getTransactionCount({ address: this.address, blockTag: 'latest' }),
-      this.chain.getTransactionCount({ address: this.address, blockTag: 'pending' }),
+      this.send.getTransactionCount({ address: this.address, blockTag: 'latest' }),
+      this.send.getTransactionCount({ address: this.address, blockTag: 'pending' }),
     ]);
     if (pending <= latest) return false;
     this.inflight = unknownInflight(latest, this.o.now());
@@ -222,7 +263,10 @@ export class TxSender {
     } else this.lowLoggedAt = 0;
   }
 
+  /** Signs one transaction; refuses (throws) whenever the network guard does (audit L-1: every signing path). */
   private async sign(req: TxRequest, nonce: number, gas: bigint, maxFee: bigint, prio: bigint): Promise<{ raw: Hex; hash: Hex }> {
+    const refusal = this.refusal();
+    if (refusal) throw new Error(`refusing to sign: ${refusal}`);
     const raw = await this.account.signTransaction({
       type: 'eip1559',
       chainId: this.o.chainId,
@@ -270,10 +314,24 @@ export class TxSender {
         await this.refreshBalance(true);
         if (this.balance !== null && this.balance < gas * fees.maxFee + (req.value ?? 0n)) return { status: 'refused', reason: this.lastError };
       }
-      const nonce = await this.chain.getTransactionCount({ address: this.address, blockTag: 'latest' });
+      const nonce = await this.send.getTransactionCount({ address: this.address, blockTag: 'latest' });
       const { raw, hash } = await this.sign(req, nonce, gas, fees.maxFee, fees.prio);
       // Tracked before sending: if the send times out after the node accepted it, the hash is still watched.
-      this.inflight = { nonce, label: req.label, request: { ...req, gas }, unknown: false, rebuild, maxFee: fees.maxFee, prio: fees.prio, hashes: [hash], lastSentAt: this.o.now(), replacements: 0, gapSeen: 0, gapFilled: false };
+      this.inflight = {
+        nonce,
+        label: req.label,
+        request: { ...req, gas },
+        unknown: false,
+        rebuild,
+        maxFee: fees.maxFee,
+        prio: fees.prio,
+        hashes: [hash],
+        raws: [raw],
+        lastSentAt: this.o.now(),
+        replacements: 0,
+        gapSeen: 0,
+        gapFilledAt: null,
+      };
       const sent = await this.broadcast(raw);
       if (sent !== 'ok' && sent !== 'unknown') {
         // "underpriced": the node holds another transaction with this nonce that the pending count did not
@@ -295,7 +353,7 @@ export class TxSender {
   /** "ok", "unknown" (timeout or network error: the node may have it) or the rejection reason. */
   private async broadcast(raw: Hex): Promise<'ok' | 'unknown' | string> {
     try {
-      await this.chain.sendRawTransaction({ serializedTransaction: raw });
+      await this.send.sendRawTransaction({ serializedTransaction: raw });
       return 'ok';
     } catch (err) {
       const text = errorText(err);
@@ -305,85 +363,136 @@ export class TxSender {
     }
   }
 
+  /** The in-flight transaction is over (mined, or its nonce used elsewhere): the alerts about it end. */
+  private settle(): void {
+    this.inflight = null;
+    this.stuck = false;
+    this.nonceAlert = null;
+    this.gapAlert = null;
+  }
+
   /**
    * Advance the in-flight transaction: "mined" (success or reverted) once a receipt of any of its versions
    * exists, "dropped" when its nonce was used by a transaction this process did not send, otherwise
-   * "pending" (replaced with bumped fees when it has waited longer than stuckAfterMs). Also refreshes the
-   * balance once a minute.
+   * "pending" (replaced with bumped fees, then cancelled, when it has waited longer than stuckAfterMs). Also
+   * refreshes the balance once a minute.
    */
   async poll(): Promise<PollResult> {
     await this.refreshBalance().catch((err: unknown) => this.o.log.warn('balance read failed', { role: this.o.role, err: describeError(err) }));
     const f = this.inflight;
     if (!f) {
-      this.stuck = false;
+      this.settle();
       return { state: 'idle' };
     }
     for (const hash of [...f.hashes].reverse()) {
-      const receipt = await this.chain.getTransactionReceipt({ hash }).catch(() => null);
+      const receipt = await this.send.getTransactionReceipt({ hash }).catch(() => null);
       if (!receipt) continue;
-      this.inflight = null;
-      this.stuck = false;
+      this.settle();
       this.lastTx = receipt.transactionHash;
       this.lastConfirmedAt = this.o.now();
       if (receipt.status !== 'success') this.lastError = `${f.label} reverted`;
       await this.refreshBalance(true).catch(() => undefined);
       return { state: 'mined', label: f.label, receipt };
     }
-    const latest = await this.chain.getTransactionCount({ address: this.address, blockTag: 'latest' });
+    const latest = await this.send.getTransactionCount({ address: this.address, blockTag: 'latest' });
     if (latest > f.nonce) {
-      this.inflight = null;
-      this.stuck = false;
+      this.settle();
       if (!f.unknown) this.o.log.warn('nonce used by a transaction this process did not send', { role: this.o.role, label: f.label, nonce: f.nonce });
       return { state: 'dropped', label: f.label };
     }
-    // Seen twice (a load-balanced RPC may answer once from a node that lags): a reorg dropped earlier
-    // transactions of this key, so this one can never mine until the gap is filled.
-    if (latest < f.nonce && ++f.gapSeen >= 2 && !f.gapFilled) await this.fillGap(f, latest);
-    else if (this.o.now() - f.lastSentAt >= this.o.stuckAfterMs) await this.replace(f);
+    if (latest < f.nonce) {
+      // Seen twice (a load-balanced RPC may answer once from a node that lags): a reorg dropped earlier
+      // transactions of this key, so this one can never mine until the gap is filled. Refilled (at the ceiling)
+      // after stuckAfterMs while the gap persists.
+      if (++f.gapSeen >= 2 && (f.gapFilledAt === null || this.o.now() - f.gapFilledAt >= this.o.stuckAfterMs)) await this.fillGap(f, latest);
+    } else {
+      f.gapSeen = 0;
+      this.gapAlert = null;
+      if (this.o.now() - f.lastSentAt >= this.o.stuckAfterMs) await this.replace(f);
+    }
     return { state: 'pending', hash: f.hashes.at(-1) ?? null, stuck: this.stuck };
   }
 
   /**
    * The in-flight transaction sits above a nonce gap. Its payload must never mine late (a price push would
    * carry old prices), so it is replaced with a cancellation first; then every missing nonce gets a 0-value
-   * transfer to self, after which the cancellation mines and sending resumes.
+   * transfer to self, after which the cancellation mines and sending resumes. A filler the node rejects raises an
+   * alert, and the fill is repeated at the fee ceiling while the gap persists (audit M-1).
    */
   private async fillGap(f: Inflight, latest: number): Promise<void> {
-    f.gapFilled = true;
-    this.o.log.warn('nonce gap below the in-flight transaction (a reorg dropped earlier ones): cancelling it and filling the gap', {
-      role: this.o.role,
-      label: f.label,
-      nonce: f.nonce,
-      chainNonce: latest,
-    });
-    if (f.request || f.unknown) await this.replace(f, true);
-    const market = await this.fees().catch(() => null);
-    const maxFee = market && market.maxFee * 2n < this.o.maxFeeWei ? market.maxFee * 2n : this.o.maxFeeWei;
-    const prio = market && market.prio < maxFee ? market.prio : maxFee;
-    for (let n = latest; n < f.nonce; n++) {
-      const { raw } = await this.sign({ to: this.address, data: '0x', value: 0n, label: 'gap' }, n, CANCEL_GAS, maxFee, prio);
-      const sent = await this.broadcast(raw);
-      if (sent !== 'ok' && sent !== 'unknown') this.o.log.warn('gap filler rejected', { role: this.o.role, nonce: n, err: sent });
-    }
-  }
-
-  /**
-   * Same nonce, fees bumped by 12.5% (or to the current market, if higher), payload rebuilt or cancelled
-   * (`cancel`: always a 0-value transfer to self).
-   */
-  private async replace(f: Inflight, cancel = false): Promise<void> {
-    if (f.replacements >= this.o.maxReplacements && !cancel) {
-      if (!this.stuck) this.o.log.error('transaction still not mined after the maximum number of replacements', { role: this.o.role, label: f.label, nonce: f.nonce });
-      this.stuck = true;
-      return;
-    }
     const refusal = this.refusal();
     if (refusal) {
       this.stuck = true;
       this.lastError = refusal;
       return;
     }
-    let req: TxRequest | null = cancel ? null : f.request && f.rebuild ? await f.rebuild().catch(() => f.request) : f.request;
+    const first = f.gapFilledAt === null;
+    f.gapFilledAt = this.o.now();
+    (first ? this.o.log.warn : this.o.log.info)('nonce gap below the in-flight transaction (a reorg dropped earlier ones): cancelling it and filling the gap', {
+      role: this.o.role,
+      label: f.label,
+      nonce: f.nonce,
+      chainNonce: latest,
+      attempt: first ? 1 : 'retry',
+    });
+    const failures: string[] = [];
+    try {
+      if (first && (f.request || f.unknown)) await this.replace(f, true);
+      let maxFee = this.o.maxFeeWei;
+      let prio = this.o.maxFeeWei;
+      if (first) {
+        const market = await this.fees().catch(() => null);
+        maxFee = market && market.maxFee * 2n < this.o.maxFeeWei ? market.maxFee * 2n : this.o.maxFeeWei;
+        prio = market && market.prio < maxFee ? market.prio : maxFee;
+      }
+      for (let n = latest; n < f.nonce; n++) {
+        const { raw } = await this.sign({ to: this.address, data: '0x', value: 0n, label: 'gap' }, n, CANCEL_GAS, maxFee, prio);
+        const sent = await this.broadcast(raw);
+        if (sent !== 'ok' && sent !== 'unknown') failures.push(`nonce ${n}: ${sent}`);
+      }
+    } catch (err) {
+      failures.push(describeError(err));
+    }
+    if (failures.length) {
+      this.gapAlert = `nonce gap ${latest}-${f.nonce - 1} below the in-flight transaction not filled: ${failures[0]}`.slice(0, 200);
+      this.stuck = true;
+      this.o.log.error('nonce gap filler rejected; retrying at the fee ceiling while the gap persists', { role: this.o.role, nonce: f.nonce, chainNonce: latest, err: failures[0] });
+    }
+  }
+
+  /** Re-sends the newest signed version (no higher fee is allowed): an RPC or node that dropped it gets it again. */
+  private async rebroadcast(f: Inflight): Promise<void> {
+    const raw = f.raws.at(-1);
+    f.lastSentAt = this.o.now();
+    if (!raw) return;
+    const sent = await this.broadcast(raw);
+    if (sent !== 'ok' && sent !== 'unknown') this.o.log.debug('re-broadcast rejected', { role: this.o.role, nonce: f.nonce, err: sent });
+  }
+
+  /**
+   * Same nonce, fees bumped by 12.5% (or to the current market, if higher), payload rebuilt, or a cancellation
+   * (a 0-value transfer to self) when `cancel` is set, when the rebuild finds nothing to send, or once the payload
+   * replacements ran out. Never above the fee ceiling: when no valid bump fits under it, the newest version is
+   * re-broadcast instead, so the nonce keeps being offered until it is used (audit M-1).
+   */
+  private async replace(f: Inflight, cancel = false): Promise<void> {
+    const refusal = this.refusal();
+    if (refusal) {
+      this.stuck = true;
+      this.lastError = refusal;
+      return;
+    }
+    const exhausted = f.replacements >= this.o.maxReplacements;
+    if (exhausted && !this.nonceAlert) {
+      this.o.log.error('transaction still not mined after the maximum number of replacements; cancelling its nonce at up to the fee ceiling until it is used', {
+        role: this.o.role,
+        label: f.label,
+        nonce: f.nonce,
+      });
+      this.nonceAlert = `nonce ${f.nonce} (${f.label}) not mined after ${this.o.maxReplacements} replacements: cancelling it at up to the ${weiToGwei(this.o.maxFeeWei)} gwei ceiling until it is used`;
+    }
+    if (exhausted) this.stuck = true;
+    let req: TxRequest | null = cancel || exhausted ? null : f.request && f.rebuild ? await f.rebuild().catch(() => f.request) : f.request;
     let gas = CANCEL_GAS;
     if (req) {
       try {
@@ -407,18 +516,19 @@ export class TxSender {
       if (market && market.prio > prio) prio = market.prio;
       maxFee = bump(f.maxFee);
       if (market && market.base * 2n + prio > maxFee) maxFee = market.base * 2n + prio;
-      if (maxFee > this.o.maxFeeWei) maxFee = bump(f.maxFee) <= this.o.maxFeeWei ? this.o.maxFeeWei : 0n;
+      if (maxFee > this.o.maxFeeWei) maxFee = this.o.maxFeeWei;
       if (prio > maxFee) prio = maxFee;
     }
-    if (maxFee === 0n || maxFee <= f.maxFee) {
-      if (!this.gasCapped) this.o.log.warn('cannot replace a stuck transaction: bumped fee would exceed the ceiling', { role: this.o.role, label: f.label, ceilingGwei: weiToGwei(this.o.maxFeeWei) });
+    // A node accepts a replacement only with both fees raised by at least 10%: below that, re-broadcast.
+    if (!f.unknown && (maxFee < bump(f.maxFee) || prio < bump(f.prio))) {
+      if (!this.gasCapped) this.o.log.warn('cannot replace a stuck transaction: bumped fee would exceed the ceiling; re-broadcasting it until its nonce is used', { role: this.o.role, label: f.label, ceilingGwei: weiToGwei(this.o.maxFeeWei) });
       this.gasCapped = true;
       this.stuck = true;
+      this.nonceAlert = `nonce ${f.nonce} (${f.label}) not mined at the ${weiToGwei(this.o.maxFeeWei)} gwei fee ceiling: re-broadcasting it until it is used`;
+      await this.rebroadcast(f);
       return;
     }
     const { raw, hash } = await this.sign(send, f.nonce, req ? gas : CANCEL_GAS, maxFee, prio);
-    f.maxFee = maxFee;
-    f.prio = prio;
     f.lastSentAt = this.o.now();
     f.replacements++;
     const sent = await this.broadcast(raw);
@@ -426,12 +536,20 @@ export class TxSender {
       this.o.log.warn('replacement rejected', { role: this.o.role, label: send.label, nonce: f.nonce, err: sent });
       return;
     }
+    f.maxFee = maxFee;
+    f.prio = prio;
     f.hashes.push(hash);
+    f.raws.push(raw);
     f.label = send.label;
     f.request = req ? { ...req, gas } : null;
     f.unknown = false;
     if (!req) f.rebuild = undefined;
     this.o.log.warn('replaced a transaction that did not mine', { role: this.o.role, label: send.label, nonce: f.nonce, hash, maxFeeGwei: weiToGwei(maxFee), replacement: f.replacements });
+  }
+
+  /** Alerts an operator must act on (no secrets): an unused nonce, a failed gap fill. */
+  alerts(): string[] {
+    return [this.nonceAlert, this.gapAlert].filter((a): a is string => a !== null);
   }
 
   status(enabled = true): SenderStatus {
@@ -447,6 +565,7 @@ export class TxSender {
       lastTx: this.lastTx,
       lastConfirmedAt: this.lastConfirmedAt,
       error: this.lastError,
+      alerts: this.alerts(),
     };
   }
 

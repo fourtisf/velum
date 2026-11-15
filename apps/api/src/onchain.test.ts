@@ -3,7 +3,7 @@
  * and the on-chain summary in /v1/health, with fakes; the Prisma reader against a real Postgres when
  * TEST_DATABASE_URL points at a migrated scratch database (skipped otherwise).
  */
-import { parseDeployment, type Deployment, type OnchainStatus } from '@velum/config/src/onchain';
+import { parseDeployment, type Deployment, type OnchainStatus, type RoleHealth } from '@velum/config/src/onchain';
 import { Prisma, PrismaClient } from '@velum/db';
 import { getAddress } from 'viem';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -151,6 +151,12 @@ describe('GET /v1/accounts/:address/*', () => {
     expect(parseActivityCursor('1-2')).toEqual({ block: 1n, logIndex: 2 });
     expect(parseActivityCursor(undefined)).toBeNull();
     expect(parseActivityCursor('-1-2')).toBe('invalid');
+    // Audit L-9: out of the columns' range is a 400, not a database error (503).
+    expect(parseActivityCursor('9223372036854775807-2147483647')).toEqual({ block: 2n ** 63n - 1n, logIndex: 2 ** 31 - 1 });
+    expect(parseActivityCursor('9223372036854775808-1')).toBe('invalid');
+    expect(parseActivityCursor('9999999999999999999-1')).toBe('invalid');
+    expect(parseActivityCursor('1-2147483648')).toBe('invalid');
+    expect((await app.inject(`/v1/accounts/${TAKER}/activity?before=9999999999999999999-1`)).statusCode).toBe(400);
   });
   it('404 before a deployment, 503 when the index cannot be read', async () => {
     expect((await (await make({ d: null })).inject(`/v1/accounts/${TAKER}/positions`)).statusCode).toBe(404);
@@ -193,6 +199,7 @@ describe('/v1/health on-chain summary', () => {
     const h = res.json();
     expect(h.onchain).toEqual({
       ok: true,
+      reasons: [],
       age: 3,
       chainId: 46630,
       indexer: { block: 120, head: 123, lag: 3, reorgs: 0, lastRun: 1, error: null },
@@ -210,6 +217,50 @@ describe('/v1/health on-chain summary', () => {
     expect(onchainSummary(status({ indexer: { ...status().indexer, error: 'RPC down' } }), NOW)!.ok).toBe(false);
     // A disabled keeper with an error ("KEEPER_PRIVATE_KEY not set") does not make it unhealthy.
     expect(onchainSummary(status({ keeper: { ...status().keeper, enabled: false, error: 'KEEPER_PRIVATE_KEY not set' } }), NOW)!.ok).toBe(true);
+  });
+
+  // Audit M-3: a Redis tenant holding the role locks or deleting the schedulers stopped every role while ok stayed true.
+  const roles = (o: Partial<Record<'relayer' | 'keeper' | 'indexer', Partial<RoleHealth>>> = {}) => ({
+    relayer: { enabled: true, lockHeld: true, lastOkAt: NOW - 1000, everyMs: 1000, ...o.relayer },
+    keeper: { enabled: true, lockHeld: true, lastOkAt: NOW - 2000, everyMs: 3000, ...o.keeper },
+    indexer: { enabled: true, lockHeld: true, lastOkAt: NOW - 1000, everyMs: 2000, ...o.indexer },
+  });
+  const live = (o: Partial<OnchainStatus> = {}) => status({ startedAt: NOW - 600_000, pushIntervalMs: 9000, roles: roles(), error: null, ...o });
+  const open = () => true;
+  const closed = () => false;
+  it('ok with every role holding its lock and ticking, and a push within two intervals in session', () => {
+    expect(onchainSummary(live(), NOW, open)).toMatchObject({ ok: true, reasons: [] });
+  });
+  it('not ok when this process does not hold a role lock, with the reason (M-3)', () => {
+    const s = onchainSummary(live({ roles: roles({ relayer: { lockHeld: false }, indexer: { lockHeld: false } }) }), NOW, open)!;
+    expect(s.ok).toBe(false);
+    expect(s.reasons).toEqual([expect.stringMatching(/^relayer: this process does not hold the role's lock/), expect.stringMatching(/^indexer: this process does not hold/)]);
+    // A role that is off (no key) is not expected to hold anything.
+    expect(onchainSummary(live({ roles: roles({ keeper: { enabled: false, lockHeld: null, lastOkAt: null } }) }), NOW, open)!.ok).toBe(true);
+  });
+  it('not ok when a role has not ticked successfully for a minute (a deleted scheduler), or never since the start', () => {
+    expect(onchainSummary(live({ roles: roles({ keeper: { lastOkAt: NOW - 61_000 } }) }), NOW, open)!.reasons).toEqual(['keeper: no successful tick for 61 s']);
+    expect(onchainSummary(live({ roles: roles({ indexer: { lastOkAt: null } }) }), NOW, open)!.reasons).toEqual(['indexer: no successful tick for 600 s']);
+    // A slow role gets five of its intervals.
+    expect(onchainSummary(live({ roles: roles({ keeper: { everyMs: 30_000, lastOkAt: NOW - 120_000 } }) }), NOW, open)!.ok).toBe(true);
+  });
+  it('not ok during an open session when no push was confirmed for more than two push intervals', () => {
+    const stale = live({ relayer: { ...status().relayer, lastPushAt: NOW - 19_000 } });
+    expect(onchainSummary(stale, NOW, open)!.reasons).toEqual(['relayer: no confirmed push for 19 s during the market session']);
+    expect(onchainSummary(stale, NOW, closed)!.ok).toBe(true);
+    expect(onchainSummary(live({ relayer: { ...status().relayer, lastPushAt: NOW - 18_000 } }), NOW, open)!.ok).toBe(true);
+    // Never pushed since a start 10 minutes ago.
+    expect(onchainSummary(live({ relayer: { ...status().relayer, lastPushAt: null } }), NOW, open)!.ok).toBe(false);
+    // Not expected: the relayer cannot send (mainnet lock), or the sequencer is down (reported as such).
+    expect(onchainSummary(live({ relayer: { ...stale.relayer, sending: false } }), NOW, open)!.ok).toBe(true);
+    expect(onchainSummary(live({ relayer: { ...stale.relayer, sequencerUp: false } }), NOW, open)!.ok).toBe(true);
+  });
+  it('not ok on a sender alert or while the on-chain workers are disabled, with the reason and no secret', () => {
+    const alert = 'nonce 7 (push:TSLA) not mined after 6 replacements: cancelling it at up to the 1 gwei ceiling until it is used';
+    expect(onchainSummary(live({ relayer: { ...status().relayer, alerts: [alert] } }), NOW, open)!.reasons).toEqual([`relayer: ${alert}`]);
+    const off = onchainSummary(live({ error: 'REDIS_URL is not a unix socket: the on-chain workers run only on Velum\'s own Redis' }), NOW, open)!;
+    expect(off.ok).toBe(false);
+    expect(off.reasons[0]).toMatch(/^on-chain workers disabled: REDIS_URL is not a unix socket/);
   });
 });
 
@@ -325,6 +376,9 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Prisma reader on Postgres', () 
     ]);
     expect((await r.positions(d, TAKER, 'closed', 100)).map((p) => p.id)).toEqual(['3', '1']);
     expect((await r.positions(d, TAKER, 'open', 100)).map((p) => p.id)).toEqual(['2']);
+    // Audit L-9: an open position older than the newest `limit` rows is still returned first.
+    expect((await r.positions(d, TAKER, 'all', 1)).map((p) => p.id)).toEqual(['2']);
+    expect((await r.positions(d, TAKER, 'all', 2)).map((p) => p.id)).toEqual(['2', '3']);
   });
 
   it('activity pages newest first without gaps or repeats, scoped to the deployment', async () => {
@@ -346,6 +400,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('Prisma reader on Postgres', () 
       { t: 2000, rate: '-0.01', index: '2', block: 2, tx: '0xf2' },
       { t: 3000, rate: '0.0042', index: '3', block: 3, tx: '0xf3' },
     ]);
+    expect(await r.closeOnly(d)).toEqual({ [d.tokens.TSLA!]: false, [d.tokens.AMZN!]: true });
+  });
+
+  it('the latest close-only flag per market however long the history (audit L-9: an oldest-first read capped at 1,000)', async () => {
+    const r = prismaOnchain(prisma);
+    const many = Array.from({ length: 1200 }, (_, i) => ({ chainId: CHAIN, kind: 'CloseOnlySet', address: d.contracts.perpsMarkets, market: d.tokens.TSLA!, txHash: `0xd${i}`, logIndex: 1, block: 10n + BigInt(i), data: { market: d.tokens.TSLA!, closeOnly: i % 2 === 1 } }));
+    await prisma.chainEvent.createMany({ data: many });
+    expect(await r.closeOnly(d)).toEqual({ [d.tokens.TSLA!]: true, [d.tokens.AMZN!]: true });
+    await prisma.chainEvent.create({ data: { chainId: CHAIN, kind: 'CloseOnlySet', address: d.contracts.perpsMarkets, txHash: '0xdlast', logIndex: 0, block: 5000n, data: { market: d.tokens.TSLA!, closeOnly: false } } });
     expect(await r.closeOnly(d)).toEqual({ [d.tokens.TSLA!]: false, [d.tokens.AMZN!]: true });
   });
 });

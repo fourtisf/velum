@@ -4,20 +4,24 @@
  * OracleAdapter.pushPrices, in one batched transaction, but only prices that are safe to put on chain:
  *  - the snapshot verifies (MAC, docs/02) and parses, and price-relay confirmed it with its source within
  *    RELAY_SNAPSHOT_MAX_AGE_MS (stale snapshots are never re-stamped as fresh on chain);
+ *  - it is newer than the snapshot last pushed for that market (audit L-6: observations only move forward);
  *  - it is not a demo (simulated) price, on any network;
  *  - its quote is confirmed and not frozen (QUOTE_FROZEN_AFTER_MS), and the US-equity session is open;
- *  - the market is relay-sourced on chain and the price is inside the adapter's fixed bounds (an
- *    out-of-bounds price is never pushed: the adapter would clamp it and walk the market to the bound);
+ *  - the market is relay-sourced on chain; a price outside the adapter's fixed bounds is pushed as it is (the
+ *    adapter clamps it and the market reads as lagging, IA-06) and raises an alert (audit L-7);
  *  - on the configured network, the deployment's token is the verified token in packages/config;
  *  - the L2 sequencer is up (OracleAdapter.sequencerStatus);
  * and when the rate limit allows it (relay-math.ts: defer a clamped push while that helps, push to converge
- * otherwise). A stuck push is replaced with the prices of the moment (or cancelled when none qualify), never
- * re-sent with old prices.
+ * otherwise). Every push carries its observation time (audit M-1): the chain clock estimate minus the oldest
+ * snapshot's age and one second of margin, so the adapter refuses it if it lands more than MAX_PUSH_DELAY
+ * (10 s) after the prices were observed. A stuck push is replaced with the prices of the moment (or cancelled
+ * when none qualify), never re-sent with old prices. The gas limit comes from eth_estimateGas, which on Arbitrum
+ * chains includes the L1 data cost (audit L-4); a reverted push backs off (5 s, doubling to a minute) and alerts.
  */
 import { CHAIN, MAX_SNAPSHOT_BYTES, QUOTE_FROZEN_AFTER_MS, TOKENS, cacheKeys, parseSnapshot, usEquitySession, type MarketSnapshot } from '@velum/config';
 import type { CacheMac } from '@velum/config/src/cache-mac';
 import { RELAY_MAX_PUSH_GAP_S, RELAY_SNAPSHOT_MAX_AGE_MS, deploymentMarkets, type Deployment, type LowerAddress, type RelayerStatus } from '@velum/config/src/onchain';
-import { parseWad } from '@velum/math';
+import { parseWad, toDecimalString } from '@velum/math';
 import type { Redis } from 'ioredis';
 import { decodeEventLog, encodeFunctionData, type Address, type PublicClient } from 'viem';
 import type { Logger } from '../lib/log';
@@ -26,11 +30,21 @@ import { describeError, throttledWarn } from './errors';
 import { decide, type Band, type RelayDecision, type Relayed } from './relay-math';
 import type { PollResult, TxRequest, TxSender } from './tx-sender';
 
-/** Gas limit of a push: generous for the storage writes of each market (measured in the end-to-end test). */
-export const PUSH_GAS_BASE = 60_000n;
-export const PUSH_GAS_PER_MARKET = 60_000n;
+/**
+ * Execution gas of a push beyond what eth_estimateGas reports for the same calldata sent to the relay's own address
+ * (the intrinsic and calldata gas, plus the L1 data cost on Arbitrum chains): generous bounds for the storage writes
+ * and the event of each market (a market's first push, zero to non-zero storage, executes in about 57,000 gas in the
+ * end-to-end test, which checks 25% headroom).
+ */
+export const PUSH_EXEC_GAS_BASE = 25_000n;
+export const PUSH_EXEC_GAS_PER_MARKET = 60_000n;
+/** Margin on the estimated part (the L1 data price moves between the estimate and inclusion). */
+const PUSH_ESTIMATE_MARGIN_PCT = 125n;
+/** Back-off after a reverted push: 5 s, doubling, at most a minute. */
+const REVERT_BACKOFF_MS = { first: 5000, max: 60_000 } as const;
+const MAX_ALERTS = 8;
 
-export type SkipReason = 'no-snapshot' | 'demo' | 'stale' | 'unconfirmed' | 'frozen' | 'closed' | 'bad-price' | 'bounds' | 'not-relay-sourced' | 'token-mismatch' | 'sequencer-down';
+export type SkipReason = 'no-snapshot' | 'demo' | 'stale' | 'unconfirmed' | 'frozen' | 'closed' | 'bad-price' | 'not-relay-sourced' | 'token-mismatch' | 'sequencer-down';
 
 export type Eligibility = { ok: true; price: bigint } | { ok: false; reason: SkipReason };
 
@@ -52,7 +66,7 @@ export function snapshotEligibility(snap: MarketSnapshot | undefined, now: numbe
 }
 
 /** The relay reads of one tick (a viem PublicClient provides them). */
-export type RelayClient = Pick<PublicClient, 'readContract' | 'getBlock'>;
+export type RelayClient = Pick<PublicClient, 'readContract' | 'getBlock' | 'estimateGas'>;
 
 export interface RelayerDeps {
   client: RelayClient;
@@ -79,11 +93,23 @@ interface MarketInfo {
   blocked: SkipReason | null;
 }
 
+interface PushItem {
+  symbol: string;
+  token: LowerAddress;
+  price: bigint;
+  /** The snapshot's observation (checkedAt, `now` clock, ms). */
+  obsMs: number;
+}
+
 interface Plan {
-  push: Array<{ symbol: string; token: LowerAddress; price: bigint }>;
+  push: PushItem[];
+  /** The batch's observation time (chain time, s): what pushPrices gets as observedAt. */
+  observedAt: bigint;
   /** Seconds until the next decision can change (cadence or deferral), or null. */
   waitS: bigint | null;
 }
+
+const ceilDiv = (a: number, b: number) => Math.ceil(a / b);
 
 export class PriceRelayer {
   private markets: MarketInfo[] = [];
@@ -94,6 +120,13 @@ export class PriceRelayer {
   private lastPushAt: number | null = null;
   private lastPushBlockTime: number | null = null;
   private sequencerUp: boolean | null = null;
+  /** The observation (snapshot checkedAt) of the last snapshot sent for each market (audit L-6). */
+  private readonly sentObs = new Map<string, number>();
+  /** Markets whose quote is outside the adapter's bounds, with the alert text (audit L-7). */
+  private readonly boundsAlerts = new Map<string, string>();
+  private revertStreak = 0;
+  private revertAlert: string | null = null;
+  private okAt: number | null = null;
   /** The newest block seen and the wall-clock time it was first seen: the chain clock runs on from it. */
   private ref: { number: bigint; ts: bigint; wallMs: number } | null = null;
   private readonly now: () => number;
@@ -108,6 +141,11 @@ export class PriceRelayer {
 
   private oracle(): Address {
     return this.d.deployment.contracts.oracle;
+  }
+
+  /** Unix ms (wall clock) of the last tick that ran to the end without an error (audit M-3). */
+  get lastOkAt(): number | null {
+    return this.okAt;
   }
 
   /** Reads the relayer address and each market's source configuration. Disables itself on a wrong key. */
@@ -156,22 +194,41 @@ export class PriceRelayer {
     (quiet ? this.d.log.debug : reason === 'bounds' || reason === 'token-mismatch' ? this.d.log.error : this.d.log.info)('price relay market state', { symbol, state: reason, was: prev ?? null });
   }
 
-  /** What to push now. Reads snapshots, then the chain state of the markets that qualify. */
-  async plan(): Promise<Plan> {
+  /**
+   * What to push now. Reads snapshots, then the chain state of the markets that qualify. `replacing`: the plan
+   * replaces the in-flight push, so the snapshot it carries may be sent again (with higher fees); otherwise only a
+   * newer one qualifies.
+   */
+  async plan(replacing = false): Promise<Plan> {
     const snaps = await this.snapshots();
     const now = this.now();
-    const candidates: Array<{ m: MarketInfo; price: bigint }> = [];
+    const candidates: Array<{ m: MarketInfo; price: bigint; clamped: boolean; obsMs: number }> = [];
     for (const m of this.markets) {
       if (m.blocked) {
         this.note(m.symbol, m.blocked);
         continue;
       }
-      const e = snapshotEligibility(snaps.get(m.symbol), now, this.d.sessionOpen);
-      if (!e.ok) this.note(m.symbol, e.reason);
-      else if (e.price < m.minPrice || e.price > m.maxPrice) this.note(m.symbol, 'bounds');
-      else candidates.push({ m, price: e.price });
+      const snap = snaps.get(m.symbol);
+      const e = snapshotEligibility(snap, now, this.d.sessionOpen);
+      if (!e.ok) {
+        this.note(m.symbol, e.reason);
+        this.boundsAlerts.delete(m.symbol);
+        continue;
+      }
+      const obsMs = snap!.checkedAt ?? snap!.updatedAt;
+      const sent = this.sentObs.get(m.symbol);
+      // Never a snapshot older than the one last sent (L-6); the same one only to replace the in-flight push.
+      if (sent !== undefined && (replacing ? obsMs < sent : obsMs <= sent)) continue;
+      const clamped = e.price < m.minPrice || e.price > m.maxPrice;
+      if (clamped) {
+        this.boundsAlerts.set(
+          m.symbol,
+          `${m.symbol} quote ${toDecimalString(e.price)} is outside the oracle bounds [${toDecimalString(m.minPrice)}, ${toDecimalString(m.maxPrice)}]: pushed as it is, the adapter clamps it and the market reads as lagging`,
+        );
+      } else this.boundsAlerts.delete(m.symbol);
+      candidates.push({ m, price: e.price, clamped, obsMs });
     }
-    if (!candidates.length) return { push: [], waitS: null };
+    if (!candidates.length) return { push: [], observedAt: 0n, waitS: null };
 
     const oracle = this.oracle();
     const [block, seq, states] = await Promise.all([
@@ -180,7 +237,7 @@ export class PriceRelayer {
       Promise.all(
         candidates.map(async ({ m }) => {
           const [r, b] = await Promise.all([
-            this.d.client.readContract({ address: oracle, abi: abis.oracle, functionName: 'relayed', args: [m.token] }) as Promise<readonly [bigint, bigint]>,
+            this.d.client.readContract({ address: oracle, abi: abis.oracle, functionName: 'relayed', args: [m.token] }) as Promise<readonly [bigint, bigint, bigint]>,
             this.d.client.readContract({ address: oracle, abi: abis.oracle, functionName: 'bands', args: [m.token] }) as Promise<readonly [bigint, bigint, bigint]>,
           ]);
           return { relayed: { price: r[0], updatedAt: r[1] } as Relayed, band: { last: b[0], lastAt: b[1], lastValidAt: b[2] } as Band };
@@ -190,18 +247,18 @@ export class PriceRelayer {
     this.sequencerUp = seq[0];
     if (!seq[0]) {
       for (const { m } of candidates) this.note(m.symbol, 'sequencer-down');
-      return { push: [], waitS: null };
+      return { push: [], observedAt: 0n, waitS: null };
     }
     const t = this.chainNow(block);
     const intervalS = BigInt(Math.ceil(this.d.intervalMs / 1000));
-    const push: Plan['push'] = [];
+    const due: Array<{ item: PushItem; clamped: boolean; fits: boolean; updatedAt: bigint }> = [];
     let waitS: bigint | null = null;
-    candidates.forEach(({ m, price }, i) => {
+    candidates.forEach(({ m, price, clamped, obsMs }, i) => {
       const s = states[i]!;
-      const dec: RelayDecision = decide({ target: price, band: s.band, relayed: s.relayed, t, intervalS, maxGapS: BigInt(RELAY_MAX_PUSH_GAP_S) });
+      const target = price < m.minPrice ? m.minPrice : price > m.maxPrice ? m.maxPrice : price;
+      const dec: RelayDecision = decide({ target, clamped, band: s.band, relayed: s.relayed, t, intervalS, maxGapS: BigInt(RELAY_MAX_PUSH_GAP_S) });
       if (dec.action === 'push') {
-        push.push({ symbol: m.symbol, token: m.token, price });
-        if (!dec.fits) this.note(m.symbol, 'converging');
+        due.push({ item: { symbol: m.symbol, token: m.token, price, obsMs }, clamped, fits: dec.fits, updatedAt: s.relayed.updatedAt });
       } else {
         // While waiting for the cadence a market keeps its last state ("pushed", "lagging", ...).
         if (dec.reason === 'deferred') this.note(m.symbol, 'deferred');
@@ -210,7 +267,20 @@ export class PriceRelayer {
         if (waitS === null || w < waitS) waitS = w;
       }
     });
-    return { push, waitS };
+    if (!due.length) return { push: [], observedAt: 0n, waitS };
+    // The batch's observation: the chain clock estimate minus the oldest snapshot's age (whole seconds, rounded up)
+    // and one second against clock skew, so it is never after the push's block time (M-1).
+    const oldest = Math.max(0, ...due.map((x) => now - x.item.obsMs));
+    const observedAt = t - 1n - BigInt(ceilDiv(oldest, 1000));
+    const push: PushItem[] = [];
+    for (const x of due) {
+      // The adapter refuses a whole batch with an observation not newer than a market's last one.
+      if (observedAt <= x.updatedAt) continue;
+      push.push(x.item);
+      if (x.clamped) this.note(x.item.symbol, 'bounds');
+      else if (!x.fits) this.note(x.item.symbol, 'converging');
+    }
+    return { push, observedAt, waitS };
   }
 
   /**
@@ -230,37 +300,51 @@ export class PriceRelayer {
   }
 
   /**
-   * The push transaction. Its gas limit is fixed, not estimated: an estimate runs in the context of the latest
-   * block, which on an idle chain is this relayer's previous push, so it would revert TooSoon.
+   * The push transaction. Its gas limit is eth_estimateGas of the same calldata sent to the relay's own address
+   * (intrinsic and calldata gas, plus the L1 data cost on Arbitrum chains), with a margin, plus a fixed bound for the
+   * execution (audit L-4). The push itself is not estimated: an estimate runs in the context of the latest block,
+   * which on an idle chain is this relayer's previous push, so it would revert TooSoon.
    */
-  private encode(push: Plan['push']): TxRequest {
+  private async request(plan: Plan): Promise<TxRequest> {
+    const { push, observedAt } = plan;
+    const data = encodeFunctionData({ abi: abis.oracle, functionName: 'pushPrices', args: [push.map((p) => p.token), push.map((p) => p.price), observedAt] });
+    const self = this.d.sender.address;
+    const estimated = await this.d.client.estimateGas({ account: self, to: self, data });
+    for (const p of push) this.sentObs.set(p.symbol, p.obsMs);
     return {
       to: this.oracle(),
-      data: encodeFunctionData({ abi: abis.oracle, functionName: 'pushPrices', args: [push.map((p) => p.token), push.map((p) => p.price)] }),
-      gas: PUSH_GAS_BASE + PUSH_GAS_PER_MARKET * BigInt(push.length),
+      data,
+      gas: (estimated * PUSH_ESTIMATE_MARGIN_PCT) / 100n + PUSH_EXEC_GAS_BASE + PUSH_EXEC_GAS_PER_MARKET * BigInt(push.length),
       label: `push:${push.map((p) => p.symbol).join(',')}`,
     };
   }
 
   /** Fresh payload for a replacement: the prices that qualify now, or null (cancel). */
   private async rebuild(): Promise<TxRequest | null> {
-    const plan = await this.plan();
+    const plan = await this.plan(true);
     if (!plan.push.length) this.d.log.info('no market qualifies for a push any more; cancelling the stuck push', { markets: Object.fromEntries(this.reasons) });
-    return plan.push.length ? this.encode(plan.push) : null;
+    return plan.push.length ? this.request(plan) : null;
   }
 
   private onMined(p: Extract<PollResult, { state: 'mined' }>): void {
     if (p.receipt.status !== 'success') {
-      this.d.log.error('price push reverted', { label: p.label, tx: p.receipt.transactionHash });
+      this.revertStreak++;
+      const backoff = Math.min(REVERT_BACKOFF_MS.max, REVERT_BACKOFF_MS.first * 2 ** Math.min(this.revertStreak - 1, 8));
+      this.nextCheckAt = this.wallNow() + backoff;
+      this.revertAlert = `price push reverted ${this.revertStreak} time(s) in a row (last ${p.receipt.transactionHash}); next try in ${backoff / 1000} s`;
+      this.d.log.error('price push reverted; backing off', { label: p.label, tx: p.receipt.transactionHash, streak: this.revertStreak, backoffMs: backoff });
       return;
     }
+    this.revertStreak = 0;
+    this.revertAlert = null;
+    this.nextCheckAt = 0;
     for (const log of p.receipt.logs) {
       if (log.address.toLowerCase() !== this.oracle()) continue;
       try {
         const ev = decodeEventLog({ abi: abis.oracle, data: log.data, topics: log.topics as [`0x${string}`, ...`0x${string}`[]], strict: true });
         if (ev.eventName !== 'PriceRelayed') continue;
         const m = this.markets.find((x) => x.token === ev.args.token.toLowerCase());
-        if (m) this.note(m.symbol, ev.args.price === ev.args.effectivePrice ? 'pushed' : 'lagging');
+        if (m) this.note(m.symbol, this.boundsAlerts.has(m.symbol) ? 'bounds' : ev.args.price === ev.args.effectivePrice ? 'pushed' : 'lagging');
         this.lastPushBlockTime = Number(ev.args.timestamp);
       } catch {
         /* not an oracle event this version knows */
@@ -272,32 +356,8 @@ export class PriceRelayer {
   /** One tick: follow the in-flight push, then push what is due. Never throws (errors go to the status). */
   async tick(): Promise<void> {
     try {
-      if (this.disabled) return;
-      if (!this.ready) {
-        if (this.wallNow() < this.nextCheckAt) return;
-        await this.init();
-        if (this.disabled) return;
-      }
-      const p = await this.d.sender.poll();
-      if (p.state === 'mined') {
-        this.onMined(p);
-        this.nextCheckAt = 0;
-      }
-      if (this.d.sender.busy) return;
-      if (this.wallNow() < this.nextCheckAt) return;
-      const plan = await this.plan();
-      // Re-plan when the earliest waiting market can change, at most once a second (pushes never come
-      // closer than the 8 s cadence; a deferral is re-checked every second).
-      const waitMs = plan.waitS === null ? 1000 : Math.max(1000, Number(plan.waitS) * 1000 - 500);
-      this.nextCheckAt = this.wallNow() + (plan.push.length ? 0 : waitMs);
-      if (!plan.push.length) return;
-      const res = await this.d.sender.submit(this.encode(plan.push), () => this.rebuild());
-      if (res.status === 'failed') this.warn('price push not sent', { err: res.error });
-      else if (res.status === 'refused') {
-        // Mainnet without ONCHAIN_MAINNET_CONFIRMED=yes, a wrong RPC or the gas ceiling: look again in 10 s.
-        this.d.log.debug('price push refused', { reason: res.reason });
-        this.nextCheckAt = this.wallNow() + 10_000;
-      }
+      await this.step();
+      this.okAt = this.wallNow();
     } catch (err) {
       // An RPC or Redis outage: back off 5 s, warn once a minute.
       this.warn('price relay tick failed', { err: describeError(err) });
@@ -305,11 +365,39 @@ export class PriceRelayer {
     }
   }
 
+  private async step(): Promise<void> {
+    if (this.disabled) return;
+    if (!this.ready) {
+      if (this.wallNow() < this.nextCheckAt) return;
+      await this.init();
+      if (this.disabled) return;
+    }
+    const p = await this.d.sender.poll();
+    if (p.state === 'mined') this.onMined(p);
+    if (this.d.sender.busy) return;
+    if (this.wallNow() < this.nextCheckAt) return;
+    const plan = await this.plan();
+    // Re-plan when the earliest waiting market can change, at most once a second (pushes never come
+    // closer than the 8 s cadence; a deferral is re-checked every second).
+    const waitMs = plan.waitS === null ? 1000 : Math.max(1000, Number(plan.waitS) * 1000 - 500);
+    this.nextCheckAt = this.wallNow() + (plan.push.length ? 0 : waitMs);
+    if (!plan.push.length) return;
+    const res = await this.d.sender.submit(await this.request(plan), () => this.rebuild());
+    if (res.status === 'failed') this.warn('price push not sent', { err: res.error });
+    else if (res.status === 'refused') {
+      // Mainnet without ONCHAIN_MAINNET_CONFIRMED=yes, a wrong RPC or the gas ceiling: look again in 10 s.
+      this.d.log.debug('price push refused', { reason: res.reason });
+      this.nextCheckAt = this.wallNow() + 10_000;
+    }
+  }
+
   status(): RelayerStatus {
     const s = this.d.sender.status(true);
+    const alerts = [...(s.alerts ?? []), ...(this.revertAlert ? [this.revertAlert] : []), ...this.boundsAlerts.values()].map((a) => a.slice(0, 200)).slice(0, MAX_ALERTS);
     return {
       ...s,
       error: this.disabled ?? s.error,
+      alerts,
       lastPushAt: this.lastPushAt,
       lastPushBlockTime: this.lastPushBlockTime,
       sequencerUp: this.sequencerUp,

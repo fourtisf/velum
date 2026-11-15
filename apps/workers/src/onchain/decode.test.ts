@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readDeploymentFile } from '@velum/config/src/deployment-file';
@@ -49,12 +49,16 @@ describe('deployment file', () => {
 
   it('reads the file for the chain: missing, invalid or ok', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'velum-deploy-'));
-    expect(readDeploymentFile(dir, 31337).status).toBe('missing');
-    writeFileSync(path.join(dir, '31337.json'), '{ nope');
-    expect(readDeploymentFile(dir, 31337)).toMatchObject({ status: 'invalid', error: expect.stringMatching(/JSON/) });
-    writeFileSync(path.join(dir, '31337.json'), JSON.stringify(raw));
-    expect(readDeploymentFile(dir, 31337)).toMatchObject({ status: 'ok', deployment: { startBlock: 12 } });
-    expect(readDeploymentFile(dir, 46630).status).toBe('missing');
+    try {
+      expect(readDeploymentFile(dir, 31337).status).toBe('missing');
+      writeFileSync(path.join(dir, '31337.json'), '{ nope');
+      expect(readDeploymentFile(dir, 31337)).toMatchObject({ status: 'invalid', error: expect.stringMatching(/JSON/) });
+      writeFileSync(path.join(dir, '31337.json'), JSON.stringify(raw));
+      expect(readDeploymentFile(dir, 31337)).toMatchObject({ status: 'ok', deployment: { startBlock: 12 } });
+      expect(readDeploymentFile(dir, 46630).status).toBe('missing');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

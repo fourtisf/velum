@@ -5,14 +5,15 @@
  * The rule (contracts/README.md "The rate-limit clock", FA-01): a recording may move the reported price from
  * the last recorded price `last` by at most
  *     maxMove = last x 5% x dt / 300 s,   dt = min(t - lastAt, 300 s)
- * where `lastAt` is the rate-limit clock. A push is a new source value, so it sets the clock to its own block
- * time; anyone else's recording that changes nothing leaves the clock alone, and one that moves the price
- * advances it only by the whole seconds the move used. So:
- *  - the allowance a push gets is the time since the clock (normally the previous push), 1/6000 of the price
- *    per second, never more than 5%;
+ * where `lastAt` is the rate-limit clock and `t` the block time. A push is a new source value, so it sets the
+ * clock to at least its observation time (`observedAt`, the source timestamp since audit M-1, a few seconds
+ * before its block time); anyone else's recording that changes nothing leaves the clock alone, and one that
+ * moves the price advances it only by the whole seconds the move used. So:
+ *  - the allowance a push gets is the block time since the clock (normally the previous push's observation),
+ *    1/6000 of the price per second, never more than 5%;
  *  - a push the limit clamps is recorded as the source price but reported at the clamped price: the market
  *    reads as lagging (opens, closes, margin removal and forced exits revert) until a later recording catches
- *    up, and the push still restarts the clock at its own time;
+ *    up, and the push still restarts the clock at its observation time;
  *  - waiting costs nothing: the allowance keeps growing until the next push.
  *
  * The relay therefore pushes the true price on its cadence when it fits the allowance at the push's block
@@ -34,7 +35,7 @@ export interface Band {
 
 export interface Relayed {
   price: bigint;
-  /** Block time of the last push (s), 0 before the first. */
+  /** Observation time of the last push (s, chain time; the source timestamp, audit M-1), 0 before the first. */
   updatedAt: bigint;
 }
 
@@ -80,8 +81,13 @@ export type RelayDecision =
   | { action: 'wait'; reason: 'interval' | 'deferred'; until: bigint };
 
 export interface DecideInput {
-  /** The price to push (1e18), inside the bounds. */
+  /** The price to push (1e18), inside the bounds (an out-of-bounds quote: the bound it is clamped to). */
   target: bigint;
+  /**
+   * The quote is outside the adapter's bounds (audit L-7): it is pushed as it is on the cadence, never deferred
+   * (the adapter clamps it, so it reads as lagging however long the push waits).
+   */
+  clamped?: boolean;
   band: Band;
   relayed: Relayed;
   /** Lower estimate of the push's block time (s). */
@@ -100,6 +106,7 @@ export function decide(i: DecideInput): RelayDecision {
   const lastPush = i.relayed.updatedAt;
   if (lastPush === 0n || i.band.last === 0n) return { action: 'push', fits: true };
   if (i.t < lastPush + i.intervalS) return { action: 'wait', reason: 'interval', until: lastPush + i.intervalS };
+  if (i.clamped) return { action: 'push', fits: false };
   if (fits(i.band, i.target, i.t)) return { action: 'push', fits: true };
   const deadline = lastPush + i.maxGapS;
   const at = fitTime(i.band, i.target);

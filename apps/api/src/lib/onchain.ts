@@ -6,7 +6,7 @@
  */
 import { readDeploymentFile } from '@velum/config/src/deployment-file';
 import type { Deployment } from '@velum/config/src/onchain';
-import type { Prisma, PrismaClient } from '@velum/db';
+import { Prisma, type PrismaClient } from '@velum/db';
 import { getAddress } from 'viem';
 
 /** The deployment file, re-read when it changes (checked at most every `checkMs`). */
@@ -122,10 +122,21 @@ export interface OnchainReader {
 /** `${block}-${logIndex}` cursor of an activity row. */
 export const activityCursor = (block: bigint, logIndex: number): string => `${block}-${logIndex}`;
 
+/** The columns the cursor is compared with: block BIGINT, logIndex INTEGER. */
+const MAX_BLOCK = 2n ** 63n - 1n;
+const MAX_LOG_INDEX = 2 ** 31 - 1;
+
+/**
+ * A `before` cursor, null when absent, 'invalid' (a 400) when malformed or out of the columns' range: a block above
+ * BIGINT or a log index above INTEGER would otherwise fail in Postgres and answer 503 (on-chain workers audit L-9).
+ */
 export function parseActivityCursor(raw: string | undefined): { block: bigint; logIndex: number } | null | 'invalid' {
   if (raw === undefined || raw === '') return null;
-  const m = /^(\d{1,19})-(\d{1,9})$/.exec(raw);
-  return m ? { block: BigInt(m[1]!), logIndex: Number(m[2]) } : 'invalid';
+  const m = /^(\d{1,19})-(\d{1,10})$/.exec(raw);
+  if (!m) return 'invalid';
+  const block = BigInt(m[1]!);
+  const logIndex = Number(m[2]);
+  return block <= MAX_BLOCK && logIndex <= MAX_LOG_INDEX ? { block, logIndex } : 'invalid';
 }
 
 type PositionRow = Prisma.PerpPositionGetPayload<Record<string, never>>;
@@ -189,16 +200,22 @@ export function prismaOnchain(prisma: PrismaClient): OnchainReader {
   };
   return {
     async positions(d, account, status, limit) {
-      const perps = d.contracts.perpsMarkets;
-      const where: Prisma.PerpPositionWhereInput = {
-        chainId: d.chainId,
-        perps,
-        OR: [{ taker: account }, { maker: account }],
-        ...(status === 'open' ? { status: 'open' } : status === 'closed' ? { status: { not: 'open' } } : {}),
-      };
-      const [rows, dec] = await Promise.all([prisma.perpPosition.findMany({ where, orderBy: [{ openedBlock: 'desc' }, { positionId: 'desc' }], take: limit }), usdgDecimals(d)]);
-      // Open positions first, then the newest.
-      return rows.sort((a, b) => Number(b.status === 'open') - Number(a.status === 'open')).map((r) => positionView(r, account, dec));
+      const base: Prisma.PerpPositionWhereInput = { chainId: d.chainId, perps: d.contracts.perpsMarkets, OR: [{ taker: account }, { maker: account }] };
+      const orderBy: Prisma.PerpPositionOrderByWithRelationInput[] = [{ openedBlock: 'desc' }, { positionId: 'desc' }];
+      const open = () => prisma.perpPosition.findMany({ where: { ...base, status: 'open' }, orderBy, take: limit });
+      const closed = (take: number) => prisma.perpPosition.findMany({ where: { ...base, status: { not: 'open' } }, orderBy, take });
+      const dec = usdgDecimals(d);
+      // Open positions first, selected as such (audit L-9: the newest `limit` rows sorted afterwards could leave an
+      // old open position out), then the newest closed ones up to the limit.
+      let rows: Awaited<ReturnType<typeof open>>;
+      if (status === 'open') rows = await open();
+      else if (status === 'closed') rows = await closed(limit);
+      else {
+        const o = await open();
+        rows = o.length < limit ? [...o, ...(await closed(limit - o.length))] : o;
+      }
+      const decimals = await dec;
+      return rows.map((r) => positionView(r, account, decimals));
     },
     async activity(d, account, limit, before) {
       const contracts = Object.values(d.contracts);
@@ -245,16 +262,17 @@ export function prismaOnchain(prisma: PrismaClient): OnchainReader {
       }));
     },
     async closeOnly(d) {
-      const rows = await prisma.chainEvent.findMany({
-        where: { chainId: d.chainId, address: d.contracts.perpsMarkets, kind: 'CloseOnlySet' },
-        orderBy: [{ block: 'asc' }, { logIndex: 'asc' }],
-        select: { data: true },
-        take: 1000,
-      });
+      // The latest CloseOnlySet per market, selected in SQL (audit L-9: an oldest-first read capped at 1,000 events
+      // stopped seeing newer flags once the history grew past the cap).
+      const rows = await prisma.$queryRaw<Array<{ data: unknown }>>(Prisma.sql`
+        SELECT DISTINCT ON (COALESCE("market", "data"->>'market')) "data" FROM "ChainEvent"
+        WHERE "chainId" = ${d.chainId} AND "address" = ${d.contracts.perpsMarkets} AND "kind" = 'CloseOnlySet'
+        ORDER BY COALESCE("market", "data"->>'market'), "block" DESC, "logIndex" DESC
+        LIMIT 256`);
       const out: Record<string, boolean> = {};
       for (const sym of Object.keys(d.tokens)) if (sym !== 'USDG') out[d.tokens[sym]!] = false;
       for (const r of rows) {
-        const v = r.data as { market?: unknown; closeOnly?: unknown };
+        const v = (r.data ?? {}) as { market?: unknown; closeOnly?: unknown };
         if (typeof v.market === 'string') out[v.market] = v.closeOnly === true;
       }
       return out;

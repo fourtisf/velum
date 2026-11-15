@@ -54,6 +54,16 @@ import {FixedMath} from "./libraries/FixedMath.sol";
 /// reached it (`atBound`). (Before, an out-of-bounds answer reverted every read before the rate limit, froze
 /// liquidations and, after 14 days, made the token dead.)
 ///
+/// Relay pushes expire (independent audit of the on-chain workers, M-1). Every `pushPrices` call carries the time the
+/// relay observed its prices (`observedAt`, chain time, one per batch). The adapter refuses a push whose observation is
+/// in the future or more than MAX_PUSH_DELAY (10 s) old when it lands, and one that is not newer than the token's last
+/// pushed observation; the observation time, not the inclusion time, is the source timestamp (freshness, age, the
+/// rate-limit clock, liveness). Before, a signed push carried no time and was stamped with its inclusion time, so an
+/// RPC that withheld it could land it minutes later as a fresh price. MAX_PUSH_DELAY equals perps' OPEN_MAX_AGE: a push
+/// lands while its prices are still fresh enough for an open, or not at all, so whoever delays a signed push can at
+/// most pick which of the relay's own observations of the last 10 s lands, the same choice any open already has. The
+/// one-push-per-token-per-second limit is kept on the inclusion time.
+///
 /// Liveness (F-03). `lastValidAt` is the newest valid source timestamp recorded by `read`, `poke` or
 /// `pushPrices`. A valid reading is any positive answer, inside the bounds or not (IA-06: a fresh out-of-bounds
 /// answer keeps the token alive). A failed, zero or malformed read only makes the price stale. A token is dead
@@ -87,6 +97,9 @@ contract OracleAdapter is IOracleAdapter {
     /// @notice Opens and margin removal wait this long after the L2 sequencer comes back up; liquidations only
     ///         for positions above half the maintenance margin (IA-07).
     uint256 public constant SEQUENCER_GRACE = 1 hours;
+    /// @notice A relay push must land at most this many seconds after the observation time it carries (M-1), the
+    ///         same 10 s an open allows its price (PerpsBase.OPEN_MAX_AGE).
+    uint256 public constant MAX_PUSH_DELAY = 10;
 
     struct Source {
         address feed; // zero = relay-sourced
@@ -96,9 +109,12 @@ contract OracleAdapter is IOracleAdapter {
         bool configured;
     }
 
+    /// @dev updatedAt: the observation time of the newest push, the source timestamp. pushedAt: its block time (one
+    ///      push per token per second).
     struct Relayed {
         uint128 price;
         uint64 updatedAt;
+        uint64 pushedAt;
     }
 
     /// @dev last: last recorded effective price (0 = no price yet). lastAt: block time of that recording.
@@ -124,7 +140,10 @@ contract OracleAdapter is IOracleAdapter {
 
     event Setup(address[] tokens, address[] feeds, address relayer, address sequencerFeed);
     /// @param price The price the relayer pushed. @param effectivePrice The rate-limited price now reported.
-    event PriceRelayed(address indexed token, uint256 price, uint256 effectivePrice, uint256 timestamp);
+    /// @param observedAt When the relay observed the price (the source timestamp). @param timestamp The push's block time.
+    event PriceRelayed(
+        address indexed token, uint256 price, uint256 effectivePrice, uint256 observedAt, uint256 timestamp
+    );
 
     error NotDeployer();
     error AlreadySetUp();
@@ -144,6 +163,12 @@ contract OracleAdapter is IOracleAdapter {
     /// @notice A relayed price of zero or above type(uint128).max (reads clamp out-of-bounds prices, IA-06).
     error PriceOutOfBounds(address token, uint256 price);
     error TooSoon(address token);
+    /// @notice A push whose observation time is after its block time (M-1).
+    error ObservedInFuture(uint256 observedAt);
+    /// @notice A push that landed more than MAX_PUSH_DELAY after its observation time (M-1).
+    error PushExpired(uint256 observedAt);
+    /// @notice A push whose observation is not newer than the token's last pushed one (M-1, L-6).
+    error StaleObservation(address token, uint256 observedAt);
 
     constructor() {
         deployer = msg.sender;
@@ -196,9 +221,14 @@ contract OracleAdapter is IOracleAdapter {
     /// @notice Push prices for relay-sourced tokens (testnet price-relay worker). Any positive price that fits
     ///         uint128 is accepted. A price outside the token's bounds is stored as pushed and clamped when
     ///         recorded (IA-06); the reported price follows the (clamped) pushed price only at the rate limit.
-    function pushPrices(address[] calldata tokens, uint256[] calldata prices) external {
+    /// @param observedAt When the relay observed these prices (chain time, seconds): at most block.timestamp, at most
+    ///        MAX_PUSH_DELAY earlier, and newer than each token's last pushed observation (M-1). It is the prices'
+    ///        source timestamp: their age, freshness and the rate-limit clock count from it.
+    function pushPrices(address[] calldata tokens, uint256[] calldata prices, uint256 observedAt) external {
         if (msg.sender != relayer) revert NotRelayer();
         if (tokens.length != prices.length) revert LengthMismatch();
+        if (observedAt > block.timestamp) revert ObservedInFuture(observedAt);
+        if (block.timestamp - observedAt > MAX_PUSH_DELAY) revert PushExpired(observedAt);
         for (uint256 i; i < tokens.length; ++i) {
             address token = tokens[i];
             Source memory s = sources[token];
@@ -206,13 +236,16 @@ contract OracleAdapter is IOracleAdapter {
             if (s.feed != address(0)) revert NotRelaySourced(token);
             uint256 p = prices[i];
             if (p == 0 || p > type(uint128).max) revert PriceOutOfBounds(token, p);
+            Relayed memory r = relayed[token];
             // Arbitrum's block.number is an L1 estimate, so rate-limit by timestamp instead.
-            if (relayed[token].updatedAt >= block.timestamp) revert TooSoon(token);
-            // p <= type(uint128).max was checked above; timestamps fit uint64 for billions of years.
+            if (r.pushedAt >= block.timestamp) revert TooSoon(token);
+            if (observedAt <= r.updatedAt) revert StaleObservation(token, observedAt);
+            // p <= type(uint128).max was checked above; observedAt <= block.timestamp, and timestamps fit uint64 for
+            // billions of years.
             // forge-lint: disable-next-line(unsafe-typecast)
-            relayed[token] = Relayed(uint128(p), uint64(block.timestamp));
-            uint256 effective = _record(token, s, p, block.timestamp);
-            emit PriceRelayed(token, p, effective, block.timestamp);
+            relayed[token] = Relayed(uint128(p), uint64(observedAt), uint64(block.timestamp));
+            uint256 effective = _record(token, s, p, observedAt);
+            emit PriceRelayed(token, p, effective, observedAt, block.timestamp);
         }
     }
 
@@ -345,7 +378,8 @@ contract OracleAdapter is IOracleAdapter {
         if (newSource) {
             uint256 gap = _deadGap(old.lastValidAt, updatedAt);
             if (gap != 0) deadTime[token] += gap;
-            // Source timestamps are at most block.timestamp (relay: the push time; feeds: checked in _source).
+            // Source timestamps are at most block.timestamp (relay: the observation time, checked in pushPrices; feeds:
+            // checked in _source).
             // forge-lint: disable-next-line(unsafe-typecast)
             b.lastValidAt = uint64(updatedAt);
         }

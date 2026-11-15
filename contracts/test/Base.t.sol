@@ -132,7 +132,7 @@ abstract contract VelumBase is Test {
         t[0] = token;
         v[0] = p;
         vm.prank(relayer);
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
     }
 
     /// @dev The relayer pushes `target`; if the price band clamps it, waits one band window and pushes

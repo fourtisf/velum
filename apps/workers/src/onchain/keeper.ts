@@ -11,9 +11,16 @@
  * Every action is simulated first (eth_estimateGas, which also gives the gas), so a position someone else
  * already liquidated costs nothing. A liquidation whose estimated gas costs more than its reward is sent only
  * when solvency needs it (the liquidated side below MM / 2, or unable to pay the full penalty) and logged.
+ *
+ * Throughput (on-chain workers audit L-3): one transaction is in flight at a time, but a tick does not stop at the
+ * first action: after each send it polls the receipt every RECEIPT_POLL_MS and sends the next action as soon as the
+ * previous one mined, until the actions run out or the tick budget (TICK_BUDGET_MS) is spent. Liquidations go
+ * first, the urgent ones (below MM / 2 or unable to pay the full penalty) before the others, then the smallest
+ * remaining claim relative to notional. Each candidate's reads go out together (JSON-RPC batched). On a chain with
+ * quarter-second blocks that is a few liquidations per second, far above the 200 the 572 s keeper window needs.
  */
 import { PERPS_LIMITS, deploymentMarkets, type Deployment, type KeeperStatus, type LowerAddress } from '@velum/config/src/onchain';
-import type { PrismaClient } from '@velum/db';
+import { Prisma, type PrismaClient } from '@velum/db';
 import { encodeFunctionData, type Address, type Hex, type PublicClient } from 'viem';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
@@ -92,7 +99,20 @@ export interface KeeperDeps {
   /** Most positions checked per tick (rotating). */
   maxChecks?: number;
   now?: () => number;
+  /** How long one tick keeps sending actions (default TICK_BUDGET_MS). */
+  tickBudgetMs?: number;
+  /** How often a tick polls the receipt of the action it sent (default RECEIPT_POLL_MS). */
+  receiptPollMs?: number;
 }
+
+/** A tick keeps sending for at most this long (well inside the 30 s role lock and BullMQ's job lock). */
+export const TICK_BUDGET_MS = 10_000;
+/** Receipt polling within a tick: sub-second, so the next action follows the previous one's block at once. */
+export const RECEIPT_POLL_MS = 250;
+/** Most cover claims paid per tick. */
+const COVER_PER_TICK = 5;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 type Action =
   | { kind: 'liquidate'; id: bigint; urgent: boolean; reward: bigint; ratio: number }
@@ -111,10 +131,13 @@ export class Keeper {
   private valueScale = 0n;
   private keeperRewardCap = 0n;
   private usdgDecimals = 6;
+  /** Rotation over the ids not indexed yet, and the last indexed open position checked (keyset pages). */
   private cursor = 0;
+  private pageAfter = 0n;
   private readonly cooldown = new Map<string, number>();
   private readonly skippedLogged = new Set<string>();
   private lastRunAt: number | null = null;
+  private okAt: number | null = null;
   private counts = { liquidations: 0, forcedExits: 0, fundingAdvances: 0, coverPayouts: 0 };
   private readonly now: () => number;
   private readonly warn: (msg: string, data?: Record<string, unknown>) => void;
@@ -126,6 +149,11 @@ export class Keeper {
 
   private perps(): Address {
     return this.d.deployment.contracts.perpsMarkets;
+  }
+
+  /** Unix ms of the last tick that ran to the end without an error (audit M-3). */
+  get lastOkAt(): number | null {
+    return this.okAt;
   }
 
   async init(): Promise<void> {
@@ -144,40 +172,54 @@ export class Keeper {
   }
 
   /** Position ids to check: open ones the indexer knows, plus any above the highest indexed id. */
+  /**
+   * Position ids to check this tick, read page by page (audit L-9: every open position was read on every tick): the
+   * next `maxChecks` open positions the indexer knows (keyset pages by id, rotating), up to `maxChecks` ids above the
+   * highest indexed one (not indexed yet, rotating), and the matured forced exits (oldest first).
+   */
   private async candidateIds(): Promise<{ ids: bigint[]; forced: bigint[] }> {
     const perps = this.perps();
-    const rows = await this.d.prisma.perpPosition.findMany({
-      where: { chainId: this.d.chainId, perps, status: 'open' },
-      select: { positionId: true, exitSettleAfter: true },
-      orderBy: { positionId: 'asc' },
-    });
+    const max = this.d.maxChecks ?? 200;
+    const open = { chainId: this.d.chainId, perps, status: 'open' as const };
+    const page = (positionId: { gt: bigint } | { lte: bigint }, take: number) =>
+      this.d.prisma.perpPosition.findMany({ where: { ...open, positionId }, select: { positionId: true }, orderBy: { positionId: 'asc' }, take });
+    let rows = await page({ gt: this.pageAfter }, max);
+    if (rows.length < max && this.pageAfter > 0n) rows = [...rows, ...(await page({ lte: this.pageAfter }, max - rows.length))];
+    this.pageAfter = rows.at(-1)?.positionId ?? 0n;
+    const ids = rows.map((r) => r.positionId);
     const maxRow = await this.d.prisma.perpPosition.findFirst({ where: { chainId: this.d.chainId, perps }, orderBy: { positionId: 'desc' }, select: { positionId: true } });
     const next = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'nextPositionId' })) as bigint;
-    const ids = rows.map((r) => r.positionId);
-    for (let id = (maxRow?.positionId ?? 0n) + 1n; id < next && ids.length < 10_000; id++) ids.push(id);
+    const from = (maxRow?.positionId ?? 0n) + 1n;
+    const unindexed = next > from ? Number(next - from) : 0;
+    const start = unindexed > max ? this.cursor % unindexed : 0;
+    for (let i = 0; i < Math.min(unindexed, max); i++) ids.push(from + BigInt((start + i) % unindexed));
+    if (unindexed > max) this.cursor = start + max;
     const block = await this.d.client.getBlock({ blockTag: 'latest' });
-    const nowS = Number(block.timestamp);
-    const forced = rows.filter((r) => r.exitSettleAfter && r.exitSettleAfter.getTime() / 1000 <= nowS).map((r) => r.positionId);
-    return { ids, forced };
+    const forced = await this.d.prisma.perpPosition.findMany({
+      where: { ...open, exitSettleAfter: { lte: new Date(Number(block.timestamp) * 1000) } },
+      select: { positionId: true },
+      orderBy: { exitSettleAfter: 'asc' },
+      take: max,
+    });
+    return { ids, forced: forced.map((r) => r.positionId) };
   }
 
-  private async liquidations(ids: bigint[]): Promise<Action[]> {
+  private async liquidations(batch: bigint[]): Promise<Action[]> {
     const perps = this.perps();
-    const max = this.d.maxChecks ?? 200;
-    let batch = ids;
-    if (ids.length > max) {
-      const start = this.cursor % ids.length;
-      batch = [...ids.slice(start), ...ids.slice(0, start)].slice(0, max);
-      this.cursor = start + max;
-    }
     const flags = await Promise.all(
       batch.map((id) => (this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'isLiquidatable', args: [id] }) as Promise<boolean>).catch(() => false)),
     );
     const due = batch.filter((_, i) => flags[i]);
     if (!due.length) return [];
     const insurance = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'insurance' })) as bigint;
-    const out: Action[] = [];
-    for (const id of due) {
+    // One price read per market, shared by its candidates; every candidate's reads go out together (batched).
+    const prices = new Map<string, Promise<bigint>>();
+    const priceOf = (market: Address) => {
+      const key = market.toLowerCase();
+      if (!prices.has(key)) prices.set(key, this.d.client.readContract({ address: this.d.deployment.contracts.oracle, abi: abis.oracle, functionName: 'price', args: [market] }) as Promise<bigint>);
+      return prices.get(key)!;
+    };
+    const read = async (id: bigint): Promise<Extract<Action, { kind: 'liquidate' }> | null> => {
       try {
         const p = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'getPosition', args: [id] })) as {
           market: Address;
@@ -185,17 +227,19 @@ export class Keeper {
           takerMargin: bigint;
           makerMargin: bigint;
         };
-        const price = (await this.d.client.readContract({ address: this.d.deployment.contracts.oracle, abi: abis.oracle, functionName: 'price', args: [p.market] })) as bigint;
+        const price = await priceOf(p.market);
         const takerClaim = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'takerClaimAt', args: [id, price] })) as bigint;
         const e = liquidationEconomics({ qty: p.qty, price, valueScale: this.valueScale, takerMargin: p.takerMargin, makerMargin: p.makerMargin, takerClaim, keeperRewardCap: this.keeperRewardCap, insurance });
         const ratio = e.notional > 0n ? Number((e.loserClaim * 1_000_000n) / e.notional) / 1_000_000 : 0;
-        out.push({ kind: 'liquidate', id, urgent: e.urgent, reward: e.reward, ratio });
+        return { kind: 'liquidate', id, urgent: e.urgent, reward: e.reward, ratio };
       } catch (err) {
         this.d.log.debug('liquidation candidate unreadable', { id: id.toString(), err: describeError(err) });
+        return null;
       }
-    }
-    // Most underwater first: the smallest remaining claim relative to notional.
-    return out.sort((a, b) => (a.kind === 'liquidate' && b.kind === 'liquidate' ? a.ratio - b.ratio : 0));
+    };
+    const out = (await Promise.all(due.map(read))).filter((a): a is Extract<Action, { kind: 'liquidate' }> => a !== null);
+    // By risk: the urgent ones (solvency needs them) first, then the smallest remaining claim relative to notional.
+    return out.sort((a, b) => (a.urgent === b.urgent ? a.ratio - b.ratio : a.urgent ? -1 : 1));
   }
 
   private async fundingActions(): Promise<Action[]> {
@@ -212,26 +256,33 @@ export class Keeper {
     return out;
   }
 
-  /** Shortfall claims of ended epochs not paid yet (from the indexed CoverClaimFiled and CoverPaid events). */
+  /**
+   * Shortfall claims of ended epochs not paid yet: the indexed CoverClaimFiled events with no CoverPaid for the same
+   * epoch and account after them, selected in SQL (audit L-9: a capped, oldest-first read of every claim and payout
+   * stopped seeing new claims once the history grew past the cap). Oldest epochs first.
+   */
   private async coverActions(): Promise<Action[]> {
     const perps = this.perps();
-    const events = await this.d.prisma.chainEvent.findMany({
-      where: { chainId: this.d.chainId, address: perps, kind: { in: ['CoverClaimFiled', 'CoverPaid'] } },
-      select: { kind: true, data: true },
-      orderBy: [{ block: 'asc' }, { logIndex: 'asc' }],
-      take: 5000,
-    });
-    if (!events.length) return [];
     const current = (await this.d.client.readContract({ address: perps, abi: abis.perpsMarkets, functionName: 'currentCoverEpoch' })) as bigint;
-    const open = new Map<string, { epoch: bigint; account: LowerAddress }>();
-    for (const e of events) {
-      const d = e.data as { epoch?: string; account?: string };
-      if (!d.epoch || !d.account) continue;
-      const key = `${d.epoch}:${d.account}`;
-      if (e.kind === 'CoverClaimFiled') open.set(key, { epoch: BigInt(d.epoch), account: d.account as LowerAddress });
-      else open.delete(key);
-    }
-    return [...open.values()].filter((c) => c.epoch < current).slice(0, 5).map((c) => ({ kind: 'cover' as const, ...c }));
+    const rows = await this.d.prisma.$queryRaw<Array<{ epoch: string; account: string }>>(Prisma.sql`
+      SELECT DISTINCT CASE WHEN c."data"->>'epoch' ~ '^[0-9]{1,30}$' THEN (c."data"->>'epoch')::numeric END AS n,
+        c."data"->>'epoch' AS epoch, c."data"->>'account' AS account
+      FROM "ChainEvent" c
+      WHERE c."chainId" = ${this.d.chainId} AND c."address" = ${perps} AND c."kind" = 'CoverClaimFiled'
+        AND CASE WHEN c."data"->>'epoch' ~ '^[0-9]{1,30}$' THEN (c."data"->>'epoch')::numeric END < ${current.toString()}::numeric
+        AND NOT EXISTS (
+          SELECT 1 FROM "ChainEvent" p
+          WHERE p."chainId" = c."chainId" AND p."address" = c."address" AND p."kind" = 'CoverPaid'
+            AND p."data"->>'epoch' = c."data"->>'epoch' AND p."data"->>'account' = c."data"->>'account'
+            AND (p."block" > c."block" OR (p."block" = c."block" AND p."logIndex" > c."logIndex"))
+        )
+      ORDER BY n, account
+      LIMIT ${COVER_PER_TICK * 4}`);
+    return rows
+      .filter((r) => /^\d+$/.test(r.epoch) && /^0x[0-9a-f]{40}$/.test(r.account))
+      .map((r) => ({ kind: 'cover' as const, epoch: BigInt(r.epoch), account: r.account as LowerAddress }))
+      .sort((a, b) => (a.epoch === b.epoch ? 0 : a.epoch < b.epoch ? -1 : 1))
+      .slice(0, COVER_PER_TICK);
   }
 
   private call(a: Action): { functionName: 'liquidate' | 'settleForcedExit' | 'advanceFunding' | 'claimCover'; args: readonly unknown[] } {
@@ -272,61 +323,93 @@ export class Keeper {
     (ok ? this.d.log.info : this.d.log.warn)(ok ? 'keeper action confirmed' : 'keeper action reverted (someone else was first, or the state changed)', { action: p.label, tx: p.receipt.transactionHash });
   }
 
+  /**
+   * Polls the in-flight action until it mined (true) or the deadline passed (false: the next tick follows it).
+   * A replacement, when it is stuck, happens inside the sender's poll.
+   */
+  private async waitMined(deadline: number): Promise<boolean> {
+    while (this.d.sender.busy) {
+      if (this.now() >= deadline) return false;
+      await sleep(this.d.receiptPollMs ?? RECEIPT_POLL_MS);
+      const p = await this.d.sender.poll();
+      if (p.state === 'mined') this.onMined(p);
+    }
+    return true;
+  }
+
   /** One tick. Never throws. */
   async tick(): Promise<void> {
     try {
-      if (!this.ready) await this.init();
-      const p = await this.d.sender.poll();
-      if (p.state === 'mined') this.onMined(p);
-      this.lastRunAt = this.now();
-      // Mainnet without ONCHAIN_MAINNET_CONFIRMED=yes or a wrong RPC: nothing could be sent, so nothing to plan.
-      if (this.d.sender.busy || this.d.sender.refusal()) return;
-      const [up] = (await this.d.client.readContract({ address: this.d.deployment.contracts.oracle, abi: abis.oracle, functionName: 'sequencerStatus' })) as readonly [boolean, boolean];
-      const { ids, forced } = await this.candidateIds();
-      const actions: Action[] = [];
-      // isLiquidatable is false while the sequencer is down; skip the reads then.
-      if (up) actions.push(...(await this.liquidations(ids)));
-      actions.push(...forced.map((id) => ({ kind: 'forced_exit' as const, id })));
-      actions.push(...(await this.fundingActions()));
-      actions.push(...(await this.coverActions()));
-      for (const a of actions) {
-        const key = actionKey(a);
-        if (this.cooling(key)) continue;
-        const gas = await this.simulate(a);
-        if (gas === null) continue;
-        if (a.kind === 'liquidate') {
-          const fee = (await this.d.sender.feeQuote().catch(() => null)) ?? this.d.maxFeeWei;
-          const cost = gasCostUsdg(gas, fee, this.d.ethPriceUsd, this.usdgDecimals);
-          if (a.reward < cost) {
-            if (!a.urgent) {
-              if (!this.skippedLogged.has(key)) this.d.log.info('liquidation not worth its gas yet; waiting', { action: key, rewardUsdg: a.reward.toString(), gasCostUsdg: cost.toString() });
-              this.skippedLogged.add(key);
-              continue;
-            }
-            this.d.log.warn('liquidating at a gas loss: needed for solvency', { action: key, rewardUsdg: a.reward.toString(), gasCostUsdg: cost.toString() });
-          }
-        }
-        const { functionName, args } = this.call(a);
-        const data = encodeFunctionData({ abi: abis.perpsMarkets, functionName, args: args as never }) as Hex;
-        const rebuild = async () => {
-          const g = await this.simulate(a);
-          return g === null ? null : { to: this.perps(), data, gas: (g * 125n) / 100n, label: key };
-        };
-        const res = await this.d.sender.submit({ to: this.perps(), data, gas: (gas * 125n) / 100n, label: key }, rebuild);
-        if (res.status === 'sent') {
-          this.cooldown.set(key, this.now() + COOLDOWN_MS.sent);
-          this.skippedLogged.delete(key);
-          return;
-        }
-        if (res.status === 'refused') {
-          this.d.log.debug('keeper action refused by the sender', { action: key, reason: res.reason });
-          return;
-        }
-        if (res.status === 'failed') this.d.log.warn('keeper action not sent', { action: key, err: res.error });
-        if (res.status === 'busy') return;
-      }
+      await this.step();
+      this.okAt = this.now();
     } catch (err) {
       this.warn('keeper tick failed', { err: describeError(err) });
+    }
+  }
+
+  private async step(): Promise<void> {
+    if (!this.ready) await this.init();
+    const deadline = this.now() + (this.d.tickBudgetMs ?? TICK_BUDGET_MS);
+    const p = await this.d.sender.poll();
+    if (p.state === 'mined') this.onMined(p);
+    this.lastRunAt = this.now();
+    // Mainnet without ONCHAIN_MAINNET_CONFIRMED=yes or a wrong RPC: nothing could be sent, so nothing to plan.
+    if (this.d.sender.busy || this.d.sender.refusal()) return;
+    const [up] = (await this.d.client.readContract({ address: this.d.deployment.contracts.oracle, abi: abis.oracle, functionName: 'sequencerStatus' })) as readonly [boolean, boolean];
+    const { ids, forced } = await this.candidateIds();
+    const actions: Action[] = [];
+    // A failed read of one kind of action never holds up the others (a cover query must not stop liquidations).
+    const gather = async (what: string, read: () => Promise<Action[]>) =>
+      actions.push(
+        ...(await read().catch((err: unknown) => {
+          this.warn(`keeper could not read its ${what}`, { err: describeError(err) });
+          return [];
+        })),
+      );
+    // isLiquidatable is false while the sequencer is down; skip the reads then.
+    if (up) await gather('liquidation candidates', () => this.liquidations(ids));
+    actions.push(...forced.map((id) => ({ kind: 'forced_exit' as const, id })));
+    await gather('funding markets', () => this.fundingActions());
+    await gather('cover claims', () => this.coverActions());
+    let fee: bigint | null = null;
+    for (const a of actions) {
+      if (this.now() >= deadline) return;
+      const key = actionKey(a);
+      if (this.cooling(key)) continue;
+      const gas = await this.simulate(a);
+      if (gas === null) continue;
+      if (a.kind === 'liquidate') {
+        fee ??= (await this.d.sender.feeQuote().catch(() => null)) ?? this.d.maxFeeWei;
+        const cost = gasCostUsdg(gas, fee, this.d.ethPriceUsd, this.usdgDecimals);
+        if (a.reward < cost) {
+          if (!a.urgent) {
+            if (!this.skippedLogged.has(key)) this.d.log.info('liquidation not worth its gas yet; waiting', { action: key, rewardUsdg: a.reward.toString(), gasCostUsdg: cost.toString() });
+            this.skippedLogged.add(key);
+            continue;
+          }
+          this.d.log.warn('liquidating at a gas loss: needed for solvency', { action: key, rewardUsdg: a.reward.toString(), gasCostUsdg: cost.toString() });
+        }
+      }
+      const { functionName, args } = this.call(a);
+      const data = encodeFunctionData({ abi: abis.perpsMarkets, functionName, args: args as never }) as Hex;
+      const rebuild = async () => {
+        const g = await this.simulate(a);
+        return g === null ? null : { to: this.perps(), data, gas: (g * 125n) / 100n, label: key };
+      };
+      const res = await this.d.sender.submit({ to: this.perps(), data, gas: (gas * 125n) / 100n, label: key }, rebuild);
+      if (res.status === 'sent') {
+        this.cooldown.set(key, this.now() + COOLDOWN_MS.sent);
+        this.skippedLogged.delete(key);
+        // Next action as soon as this one mined (L-3); a slow block leaves it to the next tick.
+        if (!(await this.waitMined(deadline))) return;
+        continue;
+      }
+      if (res.status === 'refused') {
+        this.d.log.debug('keeper action refused by the sender', { action: key, reason: res.reason });
+        return;
+      }
+      if (res.status === 'failed') this.d.log.warn('keeper action not sent', { action: key, err: res.error });
+      if (res.status === 'busy') return;
     }
   }
 

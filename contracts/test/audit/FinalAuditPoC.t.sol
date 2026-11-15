@@ -30,7 +30,7 @@ contract FinalAuditPoC is VelumBase {
         t[0] = address(tsla);
         v[0] = p;
         vm.prank(relayer);
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
     }
 
     function _band() internal view returns (uint256 last, uint256 lastAt) {
@@ -490,7 +490,7 @@ contract FinalAuditLaggingTable is VelumBase {
         t[0] = address(tsla);
         v[0] = p;
         vm.prank(relayer);
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
     }
 
     function _simulate(uint256 stepPpm, uint256 interval, bool poke) internal returns (uint256 lagging) {

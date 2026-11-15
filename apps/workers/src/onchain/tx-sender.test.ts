@@ -174,7 +174,7 @@ describe('TxSender', () => {
     expect(s.busy).toBe(false);
   });
 
-  it('stops at the ceiling instead of overpaying for a replacement', async () => {
+  it('stops at the ceiling instead of overpaying for a replacement, and keeps re-broadcasting until the nonce is used', async () => {
     const s = make({ maxFeeWei: GWEI / 4n });
     await s.init();
     chain.baseFee = GWEI / 10n;
@@ -183,12 +183,47 @@ describe('TxSender', () => {
     clock += 5000;
     await s.poll(); // bump to 0.225 gwei
     clock += 5000;
-    await s.poll(); // the next bump would be 0.253 > 0.25 (and a smaller one would not replace): stop
+    await s.poll(); // the next bump would be 0.253 > 0.25 (and a smaller one would not replace): re-broadcast
     clock += 5000;
     await s.poll();
-    expect(chain.sent.map((t) => t.maxFee <= GWEI / 4n)).toEqual([true, true]);
-    expect(s.status()).toMatchObject({ stuck: true, gasCapped: true });
+    expect(chain.sent.every((t) => t.maxFee <= GWEI / 4n)).toBe(true);
+    expect(new Set(chain.sent.map((t) => t.hash)).size).toBe(2); // no third version: the newest one again
+    expect(chain.sent.slice(2).every((t) => t.hash === chain.sent[1]!.hash)).toBe(true);
+    expect(chain.sent).toHaveLength(4);
+    expect(s.status()).toMatchObject({ stuck: true, gasCapped: true, alerts: [expect.stringMatching(/nonce 0 \(push\) not mined at the 0\.25 gwei fee ceiling/)] });
     expect(logs.lines.some((l) => /would exceed the ceiling/.test(l.msg))).toBe(true);
+    // Its nonce is used at last: the alert ends.
+    chain.mine(chain.sent[1]!.hash);
+    expect(await s.poll()).toMatchObject({ state: 'mined' });
+    expect(s.status()).toMatchObject({ stuck: false, alerts: [] });
+  });
+
+  it('never leaves a nonce unused: after the replacements run out it cancels, bumping to the ceiling, then re-broadcasts (M-1)', async () => {
+    const s = make({ maxReplacements: 2 });
+    await s.init();
+    let n = 0;
+    await s.submit({ to: TO, data: '0xaa', label: 'push' }, async () => ({ to: TO, data: `0xb${++n}` as Hex, gas: 90_000n, label: 'push' }));
+    for (let i = 0; i < 20; i++) {
+      clock += 5000;
+      await s.poll();
+    }
+    const versions = [...new Map(chain.sent.map((t) => [t.hash, t])).values()];
+    // Two payload replacements, then cancellations (0 value to self, 21,000 gas) with fees bumped to the 1 gwei ceiling.
+    expect(versions.slice(0, 3).map((t) => t.data)).toEqual(['0xaa', '0xb1', '0xb2']);
+    const cancels = versions.slice(3);
+    expect(cancels.length).toBeGreaterThan(1);
+    expect(cancels.every((t) => t.nonce === 0 && t.data === '0x' && t.to === account.address.toLowerCase() && t.gas === 21_000n)).toBe(true);
+    for (let i = 1; i < versions.length; i++) expect(versions[i]!.maxFee >= bump(versions[i - 1]!.maxFee)).toBe(true);
+    expect(cancels.at(-1)!.maxFee).toBeLessThanOrEqual(GWEI);
+    // Once no higher fee is allowed, the newest cancellation keeps going out: the nonce is never abandoned.
+    expect(chain.sent.at(-1)!.hash).toBe(cancels.at(-1)!.hash);
+    expect(chain.sent.filter((t) => t.hash === cancels.at(-1)!.hash).length).toBeGreaterThan(1);
+    expect(s.status()).toMatchObject({ stuck: true, alerts: [expect.stringMatching(/nonce 0 .* re-broadcasting it until it is used/)] });
+    expect(logs.lines.some((l) => l.level === 'error' && /maximum number of replacements/.test(l.msg))).toBe(true);
+    // An old version mined (e.g. an RPC held it back): reported, and the sender is free and quiet again.
+    chain.mine(versions[0]!.hash);
+    expect(await s.poll()).toMatchObject({ state: 'mined', label: 'cancel:push' });
+    expect(s.status()).toMatchObject({ stuck: false, alerts: [], inflight: false });
   });
 
   it('adopts a pending transaction it did not send, then cancels it at the ceiling', async () => {
@@ -247,6 +282,71 @@ describe('TxSender', () => {
       [4, '0x'],
     ]);
     expect(logs.lines.some((l) => /nonce gap/.test(l.msg))).toBe(true);
+  });
+
+  it('a rejected nonce-gap filler raises an alert, and the gap is filled again at the ceiling (M-1)', async () => {
+    chain.latest = 5;
+    const s = make();
+    await s.init();
+    await s.submit({ to: TO, data: '0xaa', label: 'push' });
+    chain.latest = 3;
+    chain.sendError = new Error('insufficient funds for gas * price + value');
+    await s.poll();
+    await s.poll();
+    expect(s.status()).toMatchObject({ stuck: true, alerts: [expect.stringMatching(/^nonce gap 3-4 below the in-flight transaction not filled: nonce 3: /)] });
+    expect(logs.lines.some((l) => l.level === 'error' && /gap filler rejected/.test(l.msg))).toBe(true);
+    chain.sendError = null;
+    await s.poll(); // within stuckAfterMs: not again yet
+    expect(chain.sent).toHaveLength(1);
+    clock += 5000;
+    await s.poll();
+    expect(chain.sent.slice(1).map((t) => [t.nonce, t.maxFee])).toEqual([
+      [3, GWEI],
+      [4, GWEI],
+    ]);
+    chain.latest = 5; // the fillers mined: the gap closed
+    await s.poll();
+    expect(s.status().alerts).toEqual([]);
+  });
+
+  it('R4: a mainnet-locked sender adopts nothing and never signs, not even a nonce-gap fill (L-1)', async () => {
+    chain.chainId = 4663;
+    chain.latest = 5;
+    chain.foreignPending = 1;
+    const signed: unknown[] = [];
+    const watched = { address: account.address, signTransaction: async (tx: Parameters<typeof account.signTransaction>[0]) => (signed.push(tx), account.signTransaction(tx)) };
+    const s = new TxSender(chain, watched, { role: 'keeper', chainId: 4663, maxFeeWei: GWEI, minBalanceWei: 0n, mainnetConfirmed: false, stuckAfterMs: 15_000, log: logs.log, now: () => clock });
+    await s.init();
+    expect(s.refusal()).toMatch(/ONCHAIN_MAINNET_CONFIRMED/);
+    expect(s.busy).toBe(false); // the pending transaction is not adopted
+    chain.latest = 3; // a reorg dropped two earlier transactions of this key
+    await s.poll();
+    await s.poll();
+    clock += 60_000;
+    await s.poll();
+    expect(await s.submit({ to: TO, data: '0x01', label: 'liquidate:1' })).toMatchObject({ status: 'refused' });
+    expect(signed).toHaveLength(0);
+    expect(chain.sent).toHaveLength(0);
+  });
+
+  it('RPC_URL_SEND: broadcasts, nonces and receipts go through the send endpoint, which must serve the chain (M-1)', async () => {
+    const send = new FakeChain();
+    send.latest = 7;
+    chain.latest = 2; // the read RPC's view does not matter for nonces
+    const s = make({ send });
+    await s.init();
+    expect(await s.submit({ to: TO, data: '0x01', label: 'push' })).toMatchObject({ status: 'sent', nonce: 7 });
+    expect(send.sent).toHaveLength(1);
+    expect(chain.sent).toHaveLength(0);
+    send.mine(send.sent[0]!.hash);
+    expect(await s.poll()).toMatchObject({ state: 'mined' });
+    // A send endpoint on another chain refuses everything.
+    const wrong = new FakeChain();
+    wrong.chainId = 1;
+    const t = make({ send: wrong });
+    await t.init();
+    expect(t.refusal()).toMatch(/RPC_URL_SEND serves chain 1/);
+    expect(await t.submit({ to: TO, data: '0x01', label: 'push' })).toMatchObject({ status: 'refused' });
   });
 
   it('monitors the balance: warns below the threshold and refuses a send it cannot pay for', async () => {

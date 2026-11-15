@@ -15,7 +15,7 @@
  */
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { cacheKeys, type MarketSnapshot } from '@velum/config';
+import { cacheKeys, parseRedisUrl, type MarketSnapshot } from '@velum/config';
 import { createCacheMac } from '@velum/config/src/cache-mac';
 import { readDeploymentFile } from '@velum/config/src/deployment-file';
 import type { Deployment } from '@velum/config/src/onchain';
@@ -26,6 +26,7 @@ import {
   encodeFunctionData,
   http,
   parseAbi,
+  parseEventLogs,
   toEventSelector,
   toFunctionSelector,
   toHex,
@@ -41,7 +42,7 @@ import type { Logger } from '../lib/log';
 import { abis, chainFor, publicClientFor } from './chain';
 import { loadOnchainEnv } from './env';
 import { startOnchain, type OnchainHandle } from './index';
-import { PUSH_GAS_BASE, PUSH_GAS_PER_MARKET } from './relayer';
+import { PUSH_EXEC_GAS_BASE, PUSH_EXEC_GAS_PER_MARKET } from './relayer';
 import { bump } from './tx-sender';
 
 const RPC = process.env.VELUM_E2E_RPC;
@@ -123,7 +124,7 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
   const call = (abi: readonly unknown[], functionName: string, args: readonly unknown[]): Hex =>
     (encodeFunctionData as (p: { abi: unknown; functionName: string; args: readonly unknown[] }) => Hex)({ abi, functionName, args });
   const blockTime = async () => (await client.getBlock({ blockTag: 'latest' })).timestamp;
-  const relayed = async (sym: string) => (await client.readContract({ address: d.contracts.oracle, abi: abis.oracle, functionName: 'relayed', args: [d.tokens[sym]!] })) as readonly [bigint, bigint];
+  const relayed = async (sym: string) => (await client.readContract({ address: d.contracts.oracle, abi: abis.oracle, functionName: 'relayed', args: [d.tokens[sym]!] })) as readonly [bigint, bigint, bigint];
   const band = async (sym: string) => (await client.readContract({ address: d.contracts.oracle, abi: abis.oracle, functionName: 'bands', args: [d.tokens[sym]!] })) as readonly [bigint, bigint, bigint];
   const position = (id: bigint) => prisma.perpPosition.findUnique({ where: { chainId_perps_positionId: { chainId: CHAIN_ID, perps: d.contracts.perpsMarkets, positionId: id } } });
 
@@ -143,7 +144,10 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
     if (read.status !== 'ok') throw new Error(`deployment file: ${read.status}`);
     d = read.deployment;
     prisma = new PrismaClient({ datasources: { db: { url: DB } } });
-    redis = new Redis(REDIS, { maxRetriesPerRequest: null });
+    // A unix socket, like Velum's own Redis: the on-chain workers refuse any other (audit M-3).
+    const parsed = parseRedisUrl(REDIS);
+    if (!parsed.ok) throw new Error(parsed.error);
+    redis = new Redis({ ...parsed.options, maxRetriesPerRequest: null });
     await redis.flushdb();
     client = publicClientFor(CHAIN_ID, RPC!);
     await writeSnapshots();
@@ -204,10 +208,22 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
     expect((await relayed('AMZN'))[1]).toBe(0n);
     expect(handle.status().relayer.markets.AMZN).toBe('demo');
     expect(handle.status().relayer.sending).toBe(true);
-    // The fixed push gas limit leaves room over what a push uses.
+    // The push gas limit (estimated calldata part + 25%, plus the execution bound, audit L-4) leaves room over what a
+    // push uses, and the execution bound alone covers the push's execution.
     const tx = await waitFor('the push receipt', async () => handle.senders.relay!.status().lastTx);
-    const used = (await client.getTransactionReceipt({ hash: tx as Hex })).gasUsed;
-    expect(used).toBeLessThan(((PUSH_GAS_BASE + PUSH_GAS_PER_MARKET) * 3n) / 4n);
+    const [receipt, sent] = await Promise.all([client.getTransactionReceipt({ hash: tx as Hex }), client.getTransaction({ hash: tx as Hex })]);
+    const used = receipt.gasUsed;
+    const intrinsic = await client.estimateGas({ account: sent.from, to: sent.from, data: sent.input });
+    expect(used - intrinsic).toBeLessThan(((PUSH_EXEC_GAS_BASE + PUSH_EXEC_GAS_PER_MARKET) * 3n) / 4n);
+    expect(sent.gas).toBe((intrinsic * 125n) / 100n + PUSH_EXEC_GAS_BASE + PUSH_EXEC_GAS_PER_MARKET);
+    // The observation time it carried is its source timestamp: at least a second (the margin) and at most
+    // MAX_PUSH_DELAY before its block (audit M-1).
+    const block = await client.getBlock({ blockNumber: receipt.blockNumber });
+    const ev = parseEventLogs({ abi: abis.oracle, logs: receipt.logs, eventName: 'PriceRelayed' })[0]!;
+    expect(ev.args.timestamp).toBe(block.timestamp);
+    expect(block.timestamp - ev.args.observedAt).toBeLessThanOrEqual(10n);
+    expect(block.timestamp - ev.args.observedAt).toBeGreaterThanOrEqual(1n);
+    expect(ev.args.observedAt).toBeGreaterThanOrEqual(at);
     result.pushGasUsed = used.toString();
   }, 90_000);
 
@@ -293,7 +309,12 @@ describe.skipIf(!RPC)('on-chain workers end to end (anvil)', () => {
       // Without mining the block time stands still: one block 10 s later makes the next push due.
       await rpc('evm_increaseTime', [10]);
       await rpc('evm_mine');
-      const first = await waitFor('a pending push', async () => sender.pending(), 30_000, 200);
+      // A push still in the mempool (not the previous one, mined just before automine went off but not polled yet).
+      const first = await waitFor('a pending push', async () => {
+        const p = sender.pending();
+        if (!p) return null;
+        return (await client.getTransactionReceipt({ hash: p.hashes[0]! }).catch(() => null)) ? null : p;
+      }, 30_000, 200);
       // anvil drops a replaced transaction from its pool: read the original while it is there.
       const orig = await client.getTransaction({ hash: first.hashes[0]! });
       expect(first.label).toBe('push:TSLA');

@@ -52,7 +52,7 @@ contract OracleAdapterTest is VelumBase {
         t[0] = token;
         v[0] = p;
         vm.prank(relayer);
-        o.pushPrices(t, v);
+        o.pushPrices(t, v, block.timestamp);
     }
 
     // ------------------------------------------------------------ setup
@@ -121,30 +121,30 @@ contract OracleAdapterTest is VelumBase {
         v[0] = 400e18;
 
         vm.expectRevert(OracleAdapter.NotRelayer.selector);
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
 
         vm.startPrank(relayer);
         vm.expectRevert(OracleAdapter.LengthMismatch.selector);
-        oracle.pushPrices(t, new uint256[](2));
+        oracle.pushPrices(t, new uint256[](2), block.timestamp);
 
         t[0] = address(amzn);
         v[0] = 234e18;
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.TooSoon.selector, address(amzn)));
-        oracle.pushPrices(t, v); // AMZN was pushed in this same second
+        oracle.pushPrices(t, v, block.timestamp); // AMZN was pushed in this same second
 
         // Out-of-bounds prices are accepted and clamped when recorded (IA-06); zero and > uint128 are malformed.
         t[0] = address(tsla);
         v[0] = 0;
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), 0));
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
         v[0] = uint256(type(uint128).max) + 1;
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), v[0]));
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
 
         t[0] = address(usdg);
         v[0] = 1e18;
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.UnknownToken.selector, address(usdg)));
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
         vm.stopPrank();
     }
 
@@ -155,7 +155,137 @@ contract OracleAdapterTest is VelumBase {
         v[0] = 391e18;
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.NotRelaySourced.selector, address(tsla)));
-        cl.pushPrices(t, v);
+        cl.pushPrices(t, v, block.timestamp);
+    }
+
+    // ------------------------------------------------------------ push expiry (on-chain workers audit M-1)
+
+    function _pushObserved(address token, uint256 p, uint256 observedAt) internal {
+        address[] memory t = new address[](1);
+        uint256[] memory v = new uint256[](1);
+        t[0] = token;
+        v[0] = p;
+        vm.prank(relayer);
+        oracle.pushPrices(t, v, observedAt);
+    }
+
+    function _pushObservedReverts(address token, uint256 p, uint256 observedAt, bytes memory err) internal {
+        address[] memory t = new address[](1);
+        uint256[] memory v = new uint256[](1);
+        t[0] = token;
+        v[0] = p;
+        vm.prank(relayer);
+        vm.expectRevert(err);
+        oracle.pushPrices(t, v, observedAt);
+    }
+
+    function test_M1_pushExpiresAfterMaxPushDelay() public {
+        assertEq(oracle.MAX_PUSH_DELAY(), 10);
+        assertEq(oracle.MAX_PUSH_DELAY(), perps.OPEN_MAX_AGE(), "a push lands fresh enough for an open, or not at all");
+        vm.warp(block.timestamp + 30);
+        uint256 t = block.timestamp;
+        _pushObservedReverts(
+            address(tsla), 392e18, t - 11, abi.encodeWithSelector(OracleAdapter.PushExpired.selector, t - 11)
+        );
+        _pushObservedReverts(
+            address(tsla), 392e18, t + 1, abi.encodeWithSelector(OracleAdapter.ObservedInFuture.selector, t + 1)
+        );
+        // Exactly MAX_PUSH_DELAY old still lands.
+        _pushObserved(address(tsla), 392e18, t - 10);
+        (uint128 p, uint64 updatedAt, uint64 pushedAt) = oracle.relayed(address(tsla));
+        assertEq(p, 392e18);
+        assertEq(updatedAt, t - 10, "the observation time is the source timestamp");
+        assertEq(pushedAt, t, "the block time is kept for the one-push-per-second limit");
+    }
+
+    function test_M1_observationMustBeNewerAndOnePushPerSecond() public {
+        vm.warp(block.timestamp + 30);
+        uint256 t = block.timestamp;
+        _pushObserved(address(tsla), 392e18, t - 5);
+        vm.warp(t + 1);
+        // An older observation (the push before, withheld and landed later) and the same one are refused.
+        _pushObservedReverts(
+            address(tsla),
+            391.9e18,
+            t - 6,
+            abi.encodeWithSelector(OracleAdapter.StaleObservation.selector, address(tsla), t - 6)
+        );
+        _pushObservedReverts(
+            address(tsla),
+            391.9e18,
+            t - 5,
+            abi.encodeWithSelector(OracleAdapter.StaleObservation.selector, address(tsla), t - 5)
+        );
+        _pushObserved(address(tsla), 392.1e18, t - 4);
+        // Still one push per token per block second, whatever the observation time.
+        _pushObservedReverts(
+            address(tsla), 392.2e18, t + 1, abi.encodeWithSelector(OracleAdapter.TooSoon.selector, address(tsla))
+        );
+        // The batch checks hold for every token in it: one stale entry refuses the whole push.
+        vm.warp(t + 2);
+        _pushObserved(address(amzn), AMZN_PRICE, t + 2);
+        vm.warp(t + 3);
+        address[] memory tokens = _stocks();
+        uint256[] memory v = new uint256[](2);
+        v[0] = 392.3e18;
+        v[1] = AMZN_PRICE;
+        vm.prank(relayer);
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.StaleObservation.selector, address(amzn), t + 2));
+        oracle.pushPrices(tokens, v, t + 2);
+        (uint128 tslaPrice,,) = oracle.relayed(address(tsla));
+        assertEq(tslaPrice, 392.1e18, "nothing of the refused batch was stored");
+    }
+
+    function test_M1_freshnessAndClockCountFromTheObservation() public {
+        vm.warp(block.timestamp + 30);
+        uint256 t = block.timestamp;
+        (uint256 last, uint256 at) = _bandOf(oracle, address(tsla));
+        _pushObserved(address(tsla), last, t - 8); // same price, observed 8 s ago
+        (, uint256 updatedAt) = oracle.latest(address(tsla));
+        assertEq(updatedAt, t - 8);
+        assertEq(oracle.lastValidAt(address(tsla)), t - 8);
+        (, uint256 clock) = _bandOf(oracle, address(tsla));
+        assertEq(clock, t - 8 > at ? t - 8 : at, "a new source value sets the clock to at least its observation");
+        assertLe(clock, block.timestamp);
+        // Opens (10 s) see the price as 8 s old: fresh for two more seconds.
+        vm.warp(t + 2);
+        oracle.read(address(tsla), 10);
+        vm.warp(t + 3);
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.StalePrice.selector, address(tsla), t - 8));
+        oracle.read(address(tsla), 10);
+        // price() (60 s) the same way.
+        vm.warp(t + 52);
+        oracle.price(address(tsla));
+        vm.warp(t + 53);
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.StalePrice.selector, address(tsla), t - 8));
+        oracle.price(address(tsla));
+    }
+
+    /// @notice testFuzz_limit_everyRecordingWithinLimit with pushes that land 0 to MAX_PUSH_DELAY seconds after their
+    ///         observation: the per-recording range, the clock rule (a new source value moves the clock to at least its
+    ///         observation time, never past now) and the run-wide bound on the clock all hold unchanged.
+    function testFuzz_M1_everyRecordingWithinLimitWithObservationDelays(uint256[12] memory ops) public {
+        (uint256 start, uint256 t0) = _bandOf(oracle, address(tsla));
+        for (uint256 i; i < 12; ++i) {
+            vm.warp(block.timestamp + bound(ops[i] >> 160, 0, 15 minutes));
+            (uint256 last, uint256 at) = _bandOf(oracle, address(tsla));
+            uint256 kind = (ops[i] >> 128) % 3;
+            uint256 sourceAt;
+            if (kind == 0) {
+                (, uint64 updatedAt, uint64 pushedAt) = oracle.relayed(address(tsla));
+                uint256 observedAt = block.timestamp - bound(ops[i] >> 96, 0, oracle.MAX_PUSH_DELAY());
+                if (pushedAt == block.timestamp || observedAt <= updatedAt) continue;
+                _pushObserved(address(tsla), bound(uint96(ops[i]), 1e18, 100_000e18), observedAt);
+                sourceAt = observedAt;
+            } else if (kind == 1) {
+                assertTrue(oracle.poke(address(tsla)));
+            } else {
+                (, uint256 updatedAt) = oracle.latest(address(tsla));
+                if (block.timestamp > updatedAt + 60) continue;
+                oracle.read(address(tsla), 60);
+            }
+            _checkRecording(last, at, sourceAt, start, t0);
+        }
     }
 
     // ------------------------------------------------------------ rate limit (audit F-04, F-02, R2-01)
@@ -180,7 +310,7 @@ contract OracleAdapterTest is VelumBase {
         (, uint256 hi) = _range(last, at, block.timestamp + 1);
         assertEq(hi, TSLA_PRICE + TSLA_PRICE / 3000, "two seconds: 2/6000");
         vm.expectEmit(address(oracle));
-        emit OracleAdapter.PriceRelayed(address(tsla), 431e18, hi, block.timestamp + 1);
+        emit OracleAdapter.PriceRelayed(address(tsla), 431e18, hi, block.timestamp + 1, block.timestamp + 1);
         _pushPrice(address(tsla), 431e18); // +10% in one push
         assertEq(oracle.price(address(tsla)), hi);
         assertTrue(oracle.lagging(address(tsla)));
@@ -291,14 +421,14 @@ contract OracleAdapterTest is VelumBase {
             (uint256 last, uint256 at) = _bandOf(oracle, address(tsla));
             uint256 kind = (ops[i] >> 128) % 3;
             if (kind == 0) {
-                (, uint64 pushedAt) = oracle.relayed(address(tsla));
+                (,, uint64 pushedAt) = oracle.relayed(address(tsla));
                 if (pushedAt == block.timestamp) continue; // one push per second
                 vm.prank(relayer);
                 address[] memory t = new address[](1);
                 uint256[] memory v = new uint256[](1);
                 t[0] = address(tsla);
                 v[0] = bound(uint128(ops[i]), 1e18, 100_000e18);
-                oracle.pushPrices(t, v);
+                oracle.pushPrices(t, v, block.timestamp);
             } else if (kind == 1) {
                 assertTrue(oracle.poke(address(tsla)));
             } else {
@@ -306,12 +436,15 @@ contract OracleAdapterTest is VelumBase {
                 if (block.timestamp > updatedAt + 60) continue;
                 oracle.read(address(tsla), 60);
             }
-            _checkRecording(last, at, kind == 0, start, t0);
+            _checkRecording(last, at, kind == 0 ? block.timestamp : 0, start, t0);
         }
     }
 
     /// @dev After one recording (the band was `last`, `at` before it): per-recording range, clock rule, run-wide bound.
-    function _checkRecording(uint256 last, uint256 at, bool newSource, uint256 start, uint256 t0) internal view {
+    ///      `sourceAt`: the source timestamp of a recording that brought a new source value (a push's observation
+    ///      time), else 0.
+    function _checkRecording(uint256 last, uint256 at, uint256 sourceAt, uint256 start, uint256 t0) internal view {
+        bool newSource = sourceAt != 0;
         (uint256 lo, uint256 hi) = _range(last, at, block.timestamp);
         (uint256 now_, uint256 nowAt) = _bandOf(oracle, address(tsla));
         assertGe(now_, lo);
@@ -322,7 +455,7 @@ contract OracleAdapterTest is VelumBase {
             uint256 from = block.timestamp - at > 5 minutes ? block.timestamp - 5 minutes : at;
             uint256 moved = now_ > last ? now_ - last : last - now_;
             uint256 expected = from + (moved * 6000 + last - 1) / last;
-            if (newSource && block.timestamp > expected) expected = block.timestamp;
+            if (newSource && sourceAt > expected) expected = sourceAt;
             assertEq(nowAt, expected, "clock: start of the allowance + whole seconds used");
         }
         assertLe(nowAt, block.timestamp);

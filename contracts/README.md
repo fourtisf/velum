@@ -13,11 +13,13 @@ separate step the owner must confirm.
 
 The November 2026 internal audit (`docs/audit/2026-11-internal.md`) findings F-01 to F-08, F-10 to F-13
 and I-1 are fixed or mitigated here, and so are the second-round findings R2-01 to R2-07, the
-independent third-round findings IA-01 to IA-08, IA-10 and RC-02, and the final internal audit's FA-01 to FA-07;
+independent third-round findings IA-01 to IA-08, IA-10 and RC-02, the final internal audit's FA-01 to FA-07, and the
+contract side of M-1 of the independent audit of the on-chain workers (relay pushes expire);
 see [Audit hardening](#audit-hardening-2026-11).
 Each fix has a regression that runs the original exploit: `test_Fxx_fixed_*` in `test/audit/AuditPoC.t.sol`,
 `test_R2_xx*_fixed*` in `test/audit/Round2PoC.t.sol`, `test_IAxx_*_fixed` in
-`test/audit/Round3IndependentPoC.t.sol`, `test_FAxx_*_fixed` in `test/audit/FinalAuditPoC.t.sol` (plus the
+`test/audit/Round3IndependentPoC.t.sol`, `test_FAxx_*_fixed` in `test/audit/FinalAuditPoC.t.sol`, `test_M1_*_fixed` in
+`test/audit/OnchainWorkersAuditPoC.t.sol` (plus the
 extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuzz tests in
 `test/audit/FinalAuditFuzz.t.sol` and the config check in `test/ConfigConstants.t.sol`).
 
@@ -37,7 +39,7 @@ extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuz
 | Contract | File | Responsibility |
 |---|---|---|
 | `VelumVault` | `src/VelumVault.sol` | Holds all tokens. `deposit` (fee-on-transfer safe) / `withdraw` from your own balance. Neither a deposit nor a withdrawal (FA-06) may go to an address that can never use it: a module, the vault itself, a listed token, or a protocol address fixed at setup (the oracle). Modules may only debit themselves or accounts that approved them. Tokens, modules, blocked recipients and the optional launch guard fixed by a one-time `setup`, then locked: no owner, no pause, no upgrade. The launch guard (off unless a guard admin is given) limits deposits to allowlisted addresses and caps them until its admin switches it off for good; it never blocks a withdrawal ([Guarded launch](#guarded-launch)). |
-| `OracleAdapter` | `src/OracleAdapter.sol` | One source per token: Chainlink AggregatorV3 (decimals scaled to 1e18, answer > 0) guarded by the L2 sequencer-uptime feed, or a testnet price-relay address. Every source price is **clamped** to the token's fixed bounds and then **rate-limited** against the last recorded price: at most 5% × dt / 5 min per recording (dt capped at 5 minutes), so 1/6000 per second, 1% per minute, and never more than 5% at once. dt is measured on the rate-limit clock, which only moves when a recording brings a new source value or changes the price (FA-01, [below](#the-rate-limit-clock-fa-01)). `price()` reverts if older than 60 s or missing; `read()` and `poke()` also record the reading (new last price, `lastValidAt`). The price is "lagging" when the reported price differs from the source (outside the rate limit or outside the bounds); `atBound()` says the source is outside the bounds and the reported price has reached the bound. Any positive answer is a valid reading, inside the bounds or not (IA-06); a failed or zero read is stale; `isDead()` only after 14 days without any valid price. `liveClock()` is the clock funding runs on: block time minus every gap of more than 14 days between valid prices (FA-02, FA-03). `sequencerStatus()` returns (up, ready = up for more than the 1 h grace). Feeds are read with a length-checked staticcall: a feed without code or with malformed data reads as stale (sequencer: down) and `poke` never reverts; `setup` refuses such a feed, and a sequencer feed whose answer is not 0 or 1 (FA-07). Relay updates: at most one per token per second, any positive price up to `uint128`. |
+| `OracleAdapter` | `src/OracleAdapter.sol` | One source per token: Chainlink AggregatorV3 (decimals scaled to 1e18, answer > 0) guarded by the L2 sequencer-uptime feed, or a testnet price-relay address. Every source price is **clamped** to the token's fixed bounds and then **rate-limited** against the last recorded price: at most 5% × dt / 5 min per recording (dt capped at 5 minutes), so 1/6000 per second, 1% per minute, and never more than 5% at once. dt is measured on the rate-limit clock, which only moves when a recording brings a new source value or changes the price (FA-01, [below](#the-rate-limit-clock-fa-01)). `price()` reverts if older than 60 s or missing; `read()` and `poke()` also record the reading (new last price, `lastValidAt`). The price is "lagging" when the reported price differs from the source (outside the rate limit or outside the bounds); `atBound()` says the source is outside the bounds and the reported price has reached the bound. Any positive answer is a valid reading, inside the bounds or not (IA-06); a failed or zero read is stale; `isDead()` only after 14 days without any valid price. `liveClock()` is the clock funding runs on: block time minus every gap of more than 14 days between valid prices (FA-02, FA-03). `sequencerStatus()` returns (up, ready = up for more than the 1 h grace). Feeds are read with a length-checked staticcall: a feed without code or with malformed data reads as stale (sequencer: down) and `poke` never reverts; `setup` refuses such a feed, and a sequencer feed whose answer is not 0 or 1 (FA-07). Relay updates: at most one per token per second, any positive price up to `uint128`, each carrying the time the relay observed it (`observedAt`), which must be at most `MAX_PUSH_DELAY` (10 s) before the push's block and newer than the token's last pushed observation; that observation time is the source timestamp (freshness, rate-limit clock, liveness), so a signed push held back by an RPC expires instead of landing later as a fresh price ([M-1](#on-chain-workers-audit-2026-11-testauditonchainworkersauditpoctsol)). |
 | `SpotPools` | `src/SpotPools.sol` | Constant-product Stock/USDG pools. A 30 bps fee stays in the pool, and a stock→stock swap routes through USDG in one call, paying two fees. LP shares are tracked internally. The first deposit locks 1,000 shares against inflation attacks. Reserves are state variables, so donations can't skew them. `minOut`, `minShares`, `minStock` and `minUsdg` must be non-zero (FA-05). |
 | `MakerBook` | `src/MakerBook.sol` | Standing offers: backing (USDG), largest single fill (≤ backing), open spread (2 bps to 5%) and close spread (≤ 5%), expiry. The maker can withdraw unused backing at any time. Only `PerpsMarkets` can allocate backing to a fill. Backing caps the maker's **margin**, not its exposure (see [Maker offers](#maker-offers)). |
 | `PerpsMarkets` | `src/PerpsMarkets.sol` + `src/perps/*` | Pairs between a taker and the maker of the chosen offer. Open, close (any time, no maker signature), add/remove margin, funding, liquidation, forced exit, an insurance fund with deferred pro-rata shortfall cover (`PerpsCover`), and an optional close-only switch held by a guardian. |
@@ -75,7 +77,7 @@ extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuz
 | `SpotPools` | `PoolChanged` (after every reserve change), `LiquidityAdded`, `LiquidityRemoved`, `Swapped` |
 | `MakerBook` | `OfferPosted`, `OfferFilled`, `OfferWithdrawn` |
 | `PerpsMarkets` | `PositionChanged` (`Action`: Open, Close, AddMargin, RemoveMargin, Liquidate, ForcedExit), `PositionSettled` (`exitPrice` = spread-adjusted exit on a close and on a taker-requested forced exit; `fee` = close fee on both, 0 on a maker-requested forced exit, the penalty on liquidation), `Liquidated` (`shortfall` = amount claimed), `FundingAdvanced` (only when the index is current; since IA-02 also after a dead-oracle forced exit, with the index frozen over the dead period), `InsuranceFunded`, `ForcedExitRequested`, `ForcedExitSettled` (`price` = oracle, entry or bound), `BondRefundDeferred`, `BondClaimed`, `CloseOnlySet`, `CoverClaimFiled`, `CoverEpochSettled` (the budget fixed while the epoch ran), `CoverPaid` |
-| `OracleAdapter` | `PriceRelayed` (pushed price as pushed, and the clamped, rate-limited price) |
+| `OracleAdapter` | `PriceRelayed` (pushed price as pushed, the clamped, rate-limited price, the observation time the push carried and its block time) |
 
 ## Invariants (tested in `test/invariant/`)
 
@@ -350,6 +352,43 @@ Design choices:
   dead-oracle path needs no price. No new liveness problem; with heartbeat-only Chainlink feeds a keeper settles right
   after a round, as for opens (see the production-oracle limitation).
 
+### On-chain workers audit (2026-11, `test/audit/OnchainWorkersAuditPoC.t.sol`)
+
+The independent audit of the Phase 3 on-chain workers found one issue with a contract side; its other findings are
+worker fixes (docs/02-architecture.md, "Phase 3 on-chain workers").
+
+| Finding | Change | Regressions (before → after) |
+|---|---|---|
+| M-1 (Medium) | `pushPrices(tokens, prices, observedAt)`: every push carries the time the relay observed its prices (chain time, one per batch). It reverts `ObservedInFuture` when `observedAt > block.timestamp`, `PushExpired` when `block.timestamp > observedAt + MAX_PUSH_DELAY` (10 s), and `StaleObservation` when `observedAt` is not newer than a token's last pushed observation (the whole batch reverts). `observedAt` is the prices' source timestamp: `relayed(token).updatedAt`, the freshness of `read` and `price` (10 s for opens, 60 s otherwise), `lastValidAt`, the live clock and the clock rule "a new source value sets the clock to at least its timestamp". The one-push-per-token-per-second limit stays on the block time (`relayed(token).pushedAt`); bounds, rate limit and sequencer rules are unchanged | `test_M1_withheldPushLandedMinutesLaterIsRefused_fixed` (the auditor's R1 run: 392.00 signed, held back 206 s while the market fell to 380.00: landed as a fresh, non-lagging price and a short could open at it → `PushExpired`, the price stays stale, no open), `test_M1_pushHeldForTheMaxDelayLeavesNoExtraOpenWindow_fixed` (held exactly 10 s: lands, stamped with its observation, so the open window still ends 10 s after the observation), `test_M1_withheldOlderPushCannotOverrideANewerOne_fixed`, `test_M1_pushExpiresAfterMaxPushDelay`, `test_M1_observationMustBeNewerAndOnePushPerSecond`, `test_M1_freshnessAndClockCountFromTheObservation`, `testFuzz_M1_everyRecordingWithinLimitWithObservationDelays` |
+
+- **Why 10 s.** `MAX_PUSH_DELAY` equals `OPEN_MAX_AGE`: a push lands while its prices are still fresh enough for an open,
+  or not at all. Whoever holds back a signed push (a withholding RPC, a stuck mempool) can at most choose which of the
+  relay's own observations of the last 10 s lands, which is the option any open already has on a price up to 10 s old,
+  and never an older one over a newer one. A longer validity would only add pushes that land too old for opens and are
+  written as current for closes, liquidations and funding; a shorter one would make honest pushes fail: the relay
+  stamps `observedAt` with its chain-clock estimate minus the snapshot's age (at most 6 s) and one second of margin, so an
+  honest push lands 1 to 8 s after its observation.
+- **Every oracle property is kept.** `observedAt ≤ block.timestamp`, so a new source value still moves the clock to at
+  most now; the clock still only moves forward and every move still advances it by the whole seconds it used, so one
+  recording moves the price at most 5% and over any run the price stays within `(1 + 1/6000)^t` of the price at the
+  clock's start (`testFuzz_M1_everyRecordingWithinLimitWithObservationDelays`, the FA-01 fuzz test with pushes landing
+  0 to 10 s after their observation). A push observed d seconds before its block restarts the clock d seconds earlier
+  than before, so the next push has up to d more seconds of allowance: the time that really passed since the
+  observation, which is what the limit measures. "At any successful read the clock started at most maxAge earlier"
+  holds as before, because the read's freshness and the clock count from the same observation time. Every earlier test
+  pushes with `observedAt = block.timestamp`, the old behaviour, and passes unchanged; the 12-minute, keeper-window and
+  relay-key bounds are therefore unchanged.
+
+ABI changes (contracts are immutable: this is a redeploy, and the price-relay worker of the same release must be used):
+
+- `OracleAdapter.pushPrices(address[] tokens, uint256[] prices)` → `pushPrices(address[] tokens, uint256[] prices, uint256 observedAt)` (new selector).
+- `OracleAdapter.relayed(address)` → `(uint128 price, uint64 updatedAt, uint64 pushedAt)`: `updatedAt` is now the observation
+  time, `pushedAt` the block time of the push (same storage slot).
+- `event PriceRelayed(address indexed token, uint256 price, uint256 effectivePrice, uint256 observedAt, uint256 timestamp)`
+  (was without `observedAt`: new topic0).
+- New constant `MAX_PUSH_DELAY() → 10`; new errors `ObservedInFuture(uint256)`, `PushExpired(uint256)`,
+  `StaleObservation(address, uint256)`. `IOracleAdapter` and every other contract: no ABI change.
+
 ### New parameters (constants; not in CLAUDE.md §5, which is unchanged)
 
 | Parameter | Value | Contract |
@@ -357,6 +396,7 @@ Design choices:
 | Price rate limit | 5% per recording at most (`MAX_MOVE_BPS` = 500) | `OracleAdapter` |
 | Rate-limit window | 5 minutes (`MOVE_WINDOW`): the move allowed grows linearly with time on the rate-limit clock up to this, so 1/6000 per second, 1% per minute; the clock only moves for a new source value or a price change, by the time the move used (FA-01) | `OracleAdapter` |
 | Sequencer grace | 1 hour (`SEQUENCER_GRACE`) | `OracleAdapter` |
+| Relay push validity | 10 s (`MAX_PUSH_DELAY`) from the observation time a push carries to its block, equal to `OPEN_MAX_AGE` (M-1) | `OracleAdapter` |
 | Open price age | 10 s (`OPEN_MAX_AGE`), also for margin removal (IA-03) and forced-exit settlement (FA-04); closes, liquidations, funding 60 s (`MAX_PRICE_AGE`) | `PerpsBase` |
 | Funding dead-gap threshold | A gap between valid prices longer than `DEAD_AFTER` (14 days) is not charged: the oracle's existing dead threshold, not a new constant (FA-02, FA-03) | `OracleAdapter.liveClock` |
 | Grace-period liquidation threshold | MM / 2, derived (`MM_BPS / 2` = 5% of notional at 5x), not a new constant (IA-07) | `PerpsBase._liquidationSide` |
@@ -389,7 +429,8 @@ opens, closes, margin removal and forced exits reverted. The quiet column is the
 - a recording that moves the price sets `lastAt` to the start of the allowance it used (`lastAt`, or `now − 5 min` if
   later) plus the whole seconds the move needed at 1/6000 of the price per second, rounded up, never past now. A move
   clamped at the limit therefore uses everything up to now, as before; a catch-up that needed less leaves the rest;
-- a new source value sets `lastAt` to at least its timestamp (for the relay: the push time).
+- a new source value sets `lastAt` to at least its timestamp (for the relay: the observation time the push carries, at
+  most 10 s before its block, M-1; before, the push's block time).
 
 What a third party can still do: a recording rounds the time a catch-up used up to the next whole second, so a poke
 costs at most one second of allowance per pushed value that lagged; and a recorded price pins the path, so the next
@@ -416,8 +457,8 @@ the source follows a per-second random walk, the relay pushes its latest value e
 | | 8 s | 20.0% | 64.0% | 31.3% |
 | | 10 s | 13.2% | 58.5% | 21.2% |
 
-Pushing more often does not help: every pushed value restarts the clock at its own time (needed so that the clock is
-never more than 10 s behind an open), so frequent small pushes each get little allowance. With pushes every 8-10 s at
+Pushing more often does not help: every pushed value restarts the clock at its own (observation) time (needed so that
+the clock is never more than 10 s behind an open), so frequent small pushes each get little allowance. With pushes every 8-10 s at
 TSLA-like volatility, at most 1-2% of seconds lag, busy or not; pushes must stay at most 10 s apart for opens.
 
 ## Guarded launch
@@ -573,7 +614,7 @@ must be empty first.
 
 ## Known limitations and risks (review before any audit)
 
-- **Relayer trust (testnet).** A compromised relay key can still move a price, but only at 1% per minute (5.5% of a 5x maker's margin per minute, doubling in ≥ 69 minutes). Makers cannot close a filled position themselves, so committed margin stays exposed at that rate until the taker closes, a keeper liquidates, or a forced exit matures. Production must use verified Chainlink feeds with the sequencer-uptime feed (implemented) or a low-latency verified oracle.
+- **Relayer trust (testnet).** A signed push is valid for 10 s after the observation it carries (M-1), so a withholding RPC cannot land it later as a fresh price; the price-relay worker can broadcast through a second, trusted endpoint (`RPC_URL_SEND`). A compromised relay key can still move a price, but only at 1% per minute (5.5% of a 5x maker's margin per minute, doubling in ≥ 69 minutes). Makers cannot close a filled position themselves, so committed margin stays exposed at that rate until the taker closes, a keeper liquidates, or a forced exit matures. Production must use verified Chainlink feeds with the sequencer-uptime feed (implemented) or a low-latency verified oracle.
 - **Production oracle choice is open.** Opens and forced-exit settlement need a price at most 10 s old. Chainlink push feeds for stocks update on deviation or heartbeat, so with them opens would revert most of the time; production needs a low-latency verified source (for example a pull oracle verified at open), which changes the adapter. Choose before the external audit.
 - **Lagging in normal markets (owner decision).** Because "lagging" means the effective price differs from the source at all, ordinary volatility faster than the limit over the push interval makes opens, closes, margin removal and forced exits revert until the price catches up. Since FA-01, recordings by other users no longer make this worse beyond the rounding described in [The rate-limit clock](#the-rate-limit-clock-fa-01); its table has the measured numbers. At TSLA-like volatility (0.19% per minute) about 1.6% of seconds lag with 8-s pushes and 0.2% with 10-s pushes in a busy market (5-s pushes: 6.5%; the earlier "push every 5-8 s, about 14% lagging" estimate is replaced by these measurements, and pushing more often makes it worse: 42% with 2-s pushes). At twice that volatility it is 31% with 8-s pushes and 21% with 10-s pushes. Refusing then is protective (the on-chain price is behind the market, so opening at it would be a free option), but users see retries. The price-relay worker should push every 8-10 s (opens and forced-exit settlement need ≤ 10 s), and the UI should retry after a fresh push. Alternatives for the owner (same model, busy market, 8-s pushes): a faster limit (2% per minute: 0% lagging at TSLA-like volatility, 1.8% at twice that, but twice the relay-key bound and keeper windows half as long); or a small lag tolerance for opens executed at the worse of the two prices for the taker (changes the lagging rule). A slower limit (0.5% per minute) is safer but leaves 33% (TSLA-like) to 76% of seconds lagging.
 - **Lag after real gaps.** With the limit on Chainlink too, a 30% opening gap is reported over about 20-35 minutes (the first recording moves 5%, then 1% per minute); opens and closes wait, liquidations proceed at the effective price (a loser keeps under 9% of notional more than at the true price). An owner may prefer raw feed prices plus a market-hours close-only policy instead; that reopens the F-02 straddle around gaps (bounded by the epoch cap).

@@ -3,10 +3,10 @@
  * API or the web. Runs the PM2 file in a child process with a temporary env file (it reads its env at load).
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 const ECOSYSTEM = path.resolve(__dirname, '../../../../deploy/ecosystem.config.cjs');
 // Throwaway values (never real keys).
@@ -21,8 +21,14 @@ function keysFor(envFile: string): Record<string, string[]> {
   return JSON.parse(out) as Record<string, string[]>;
 }
 
+const dirs: string[] = [];
+afterAll(() => {
+  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+});
+
 function envFile(text: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'velum-eco-'));
+  dirs.push(dir);
   const f = path.join(dir, '.env');
   writeFileSync(f, text);
   return f;

@@ -7,12 +7,19 @@
  * Reorgs: the checkpoint stores the hash of the last indexed block. Before a range, the first new block's
  * parent hash must equal it (and while idle, the checkpoint block must still have that hash); otherwise the
  * indexer walks back through the stored hashes of indexed blocks (every block with logs, and the last block
- * of every range) until one matches the chain, deletes everything above that common ancestor and refolds the
- * state it touched. A range whose last block changed hash while it was read is discarded and read again.
+ * of every range) until one matches the chain, deletes this deployment's rows above that common ancestor and
+ * refolds the state it touched. A mismatch or a head below the checkpoint must be seen on REORG_CONFIRM_POLLS
+ * consecutive polls first (a load-balanced RPC may answer once from a node that lags), and the rewind only touches
+ * the deployment's own contracts (audit L-8). A range whose last block changed hash while it was read is
+ * discarded and read again.
+ *
+ * Provider log caps (audit L-2): a range the provider refuses is halved; a single block it still refuses (anyone
+ * can fill one with permissionless events, e.g. advanceFunding in a loop) is read with eth_getBlockReceipts, or
+ * else contract by contract and, for a contract still over the cap, event by event.
  */
 import { type Deployment, type IndexerStatus, type LowerAddress, deploymentId } from '@velum/config/src/onchain';
 import type { PrismaClient } from '@velum/db';
-import type { Hex, PublicClient } from 'viem';
+import { toHex, type Abi, type AbiEvent, type Hex, type PublicClient } from 'viem';
 import type { Logger } from '../lib/log';
 import { abis } from './chain';
 import { contractNames, decodeLog, indexedAddresses, type ChainLogEvent, type RawLog } from './decode';
@@ -24,8 +31,39 @@ export const ZERO_HASH: Hex = '0x00000000000000000000000000000000000000000000000
 const KEEP_HASHES_BLOCKS = 50_000n;
 /** Stop a tick after this long; the next tick goes on. */
 const TICK_BUDGET_MS = 20_000;
+/** Consecutive polls that must see a reorg (hash mismatch, head below the checkpoint) before the index rewinds. */
+export const REORG_CONFIRM_POLLS = 2;
 
-export type IndexerClient = Pick<PublicClient, 'getBlockNumber' | 'getBlock' | 'getLogs' | 'readContract'>;
+/**
+ * Provider texts for "this eth_getLogs asks for too much" (block range or result count): geth/Nitro, Alchemy,
+ * Infura, QuickNode, Ankr, Chainstack, BlastAPI, dRPC and others, plus the JSON-RPC codes some of them use.
+ */
+export const LOG_CAP_ERROR =
+  /range|too many|limit|exceed|10000|10,000|response size|too big|too large|timeout|timed out|max(imum)? (number of )?(results|logs)|query returned more than|logs matched|result window|-32005|-32602|-32011/;
+
+export type IndexerClient = Pick<PublicClient, 'getBlockNumber' | 'getBlock' | 'getLogs' | 'readContract'> & {
+  /** eth_getBlockReceipts for one block (any viem client); used only when a single block's logs exceed the cap. */
+  request?: PublicClient['request'];
+};
+
+interface RpcReceiptLog {
+  address: Hex;
+  topics: Hex[];
+  data: Hex;
+  blockNumber: Hex;
+  blockHash: Hex;
+  transactionHash: Hex;
+  logIndex: Hex;
+  removed?: boolean;
+}
+
+const CONTRACT_ABIS: Record<string, Abi> = {
+  vault: abis.vault,
+  oracle: abis.oracle,
+  spotPools: abis.spotPools,
+  makerBook: abis.makerBook,
+  perpsMarkets: abis.perpsMarkets,
+};
 
 export interface IndexerDeps {
   client: IndexerClient;
@@ -53,6 +91,9 @@ export class Indexer {
   private lastRunAt: number | null = null;
   private reorgs = 0;
   private lastError: string | null = null;
+  private okAt: number | null = null;
+  /** Consecutive polls that saw a reorg at the checkpoint (REORG_CONFIRM_POLLS needed to rewind). */
+  private suspect: { block: bigint; polls: number } | null = null;
   private readonly now: () => number;
   private readonly warn: (msg: string, data?: Record<string, unknown>) => void;
 
@@ -67,6 +108,11 @@ export class Indexer {
 
   get startBlock(): number {
     return this.d.startBlock ?? this.d.deployment.startBlock;
+  }
+
+  /** Unix ms of the last tick that ran to the end without an error (audit M-3). */
+  get lastOkAt(): number | null {
+    return this.okAt;
   }
 
   /** Token metadata (stored for the API) and the checkpoint, created at startBlock - 1 the first time. */
@@ -111,6 +157,7 @@ export class Indexer {
         if (r === 'idle' || r === 'retry' || this.now() - started > TICK_BUDGET_MS) break;
       }
       this.lastError = null;
+      this.okAt = this.now();
     } catch (err) {
       this.lastError = describeError(err);
       this.warn('indexer tick failed', { err: this.lastError });
@@ -140,8 +187,9 @@ export class Indexer {
       // or a shorter one).
       if (cp.block >= 0n && cp.blockHash !== ZERO_HASH) {
         const h = cp.block <= head ? await this.hashOf(cp.block) : null;
-        if (cp.block > head || (h !== null && h !== cp.blockHash)) return this.rewind(cp.block);
+        if (cp.block > head || (h !== null && h !== cp.blockHash)) return this.suspectReorg(cp.block, 'idle');
       }
+      this.suspect = null;
       return 'idle';
     }
     const from = cp.block + 1n;
@@ -149,20 +197,23 @@ export class Indexer {
     if (to > safe) to = safe;
 
     const hFrom = await client.getBlock({ blockNumber: from });
-    if (cp.blockHash !== ZERO_HASH && hFrom.parentHash !== cp.blockHash) return this.rewind(cp.block);
+    if (cp.blockHash !== ZERO_HASH && hFrom.parentHash !== cp.blockHash) return this.suspectReorg(cp.block, 'retry');
+    this.suspect = null;
     const hTo = to === from ? hFrom : await client.getBlock({ blockNumber: to });
 
     let logs: RawLog[];
     try {
       logs = (await client.getLogs({ address: this.addresses, fromBlock: from, toBlock: to })) as unknown as RawLog[];
     } catch (err) {
-      const text = errorText(err);
-      if (this.chunk > 1 && /range|too many|limit|exceed|10000|block range|response size|timeout/.test(text)) {
+      if (!LOG_CAP_ERROR.test(errorText(err))) throw err;
+      if (this.chunk > 1 && to > from) {
         this.chunk = Math.max(1, Math.floor(this.chunk / 2));
         this.d.log.info('eth_getLogs range refused; halving the range', { chunkBlocks: this.chunk });
         return 'progress';
       }
-      throw err;
+      // One block over the provider's cap: read it another way, never stall on it (L-2).
+      this.d.log.warn('eth_getLogs refused a single block; reading it without the cap', { block: Number(from), err: describeError(err) });
+      logs = await this.singleBlockLogs(from);
     }
     const again = to === from ? hFrom : await client.getBlock({ blockNumber: to });
     if (again.hash !== hTo.hash) return 'retry';
@@ -202,7 +253,63 @@ export class Indexer {
     return 'progress';
   }
 
-  /** Finds the common ancestor through the stored block hashes, deletes everything above it and refolds. */
+  /**
+   * A reorg seen at the checkpoint: rewind once it was seen on REORG_CONFIRM_POLLS consecutive polls (L-8), else wait
+   * (`wait`: what this step reports meanwhile).
+   */
+  private async suspectReorg(cpBlock: bigint, wait: 'idle' | 'retry'): Promise<StepResult> {
+    const polls = this.suspect?.block === cpBlock ? this.suspect.polls + 1 : 1;
+    this.suspect = { block: cpBlock, polls };
+    if (polls < REORG_CONFIRM_POLLS) {
+      this.d.log.info('possible chain reorganisation at the checkpoint; checking again before rewinding', { block: Number(cpBlock), polls });
+      return wait;
+    }
+    this.suspect = null;
+    return this.rewind(cpBlock);
+  }
+
+  /**
+   * Every log of the deployment's contracts in block `n`, for a block whose logs exceed the provider's eth_getLogs
+   * cap (L-2): eth_getBlockReceipts (no cap), or else one eth_getLogs per contract and, for a contract still over the
+   * cap, one per known event (logs of events no ABI here knows are then not seen in that block: logged).
+   */
+  private async singleBlockLogs(n: bigint): Promise<RawLog[]> {
+    const { client } = this.d;
+    const mine = new Set<string>(this.addresses);
+    if (client.request) {
+      try {
+        const receipts = (await client.request({ method: 'eth_getBlockReceipts', params: [toHex(n)] } as never)) as Array<{ logs: RpcReceiptLog[] }> | null;
+        if (Array.isArray(receipts)) {
+          return receipts
+            .flatMap((r) => r.logs ?? [])
+            .filter((l) => mine.has(l.address.toLowerCase()) && l.removed !== true)
+            .map((l) => ({ address: l.address, topics: l.topics, data: l.data, blockNumber: BigInt(l.blockNumber), blockHash: l.blockHash, transactionHash: l.transactionHash, logIndex: Number(l.logIndex) }));
+        }
+      } catch (err) {
+        this.d.log.info('eth_getBlockReceipts unavailable; reading the block contract by contract', { block: Number(n), err: describeError(err) });
+      }
+    }
+    const out: RawLog[] = [];
+    for (const address of this.addresses) {
+      try {
+        out.push(...((await client.getLogs({ address, fromBlock: n, toBlock: n })) as unknown as RawLog[]));
+      } catch (err) {
+        if (!LOG_CAP_ERROR.test(errorText(err))) throw err;
+        const abi = CONTRACT_ABIS[this.names.get(address) ?? ''];
+        if (!abi) throw err;
+        this.d.log.warn('one contract\'s logs in one block exceed the provider cap; reading them event by event (unknown events of this block are skipped)', { block: Number(n), address });
+        for (const event of abi.filter((x): x is AbiEvent => x.type === 'event')) {
+          out.push(...((await client.getLogs({ address, event, fromBlock: n, toBlock: n, strict: false })) as unknown as RawLog[]));
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Finds the common ancestor through the stored block hashes, deletes this deployment's rows above it (L-8: never
+   * another deployment's on the same chain) and refolds the state it touched.
+   */
   private async rewind(cpBlock: bigint): Promise<StepResult> {
     const { prisma, chainId } = this.d;
     const floor = BigInt(this.startBlock) - 1n;
@@ -227,16 +334,19 @@ export class Indexer {
     }
     const a = ancestor;
     const ctx = this.ctx!;
+    const { perpsMarkets: perps, spotPools: pools, vault } = this.d.deployment.contracts;
     const rebuilt = await prisma.$transaction(
       async (tx) => {
+        // Only this deployment's rows: another deployment on the same chain keeps its own (L-8). The block hashes
+        // are the chain's, wrong above the ancestor for every reader.
         const gt = { chainId, block: { gt: a } };
-        await tx.chainEvent.deleteMany({ where: gt });
-        await tx.perpTrade.deleteMany({ where: gt });
-        await tx.fundingPoint.deleteMany({ where: gt });
-        await tx.spotSwap.deleteMany({ where: gt });
-        await tx.spotLiquidity.deleteMany({ where: gt });
-        await tx.vaultTransfer.deleteMany({ where: gt });
-        await tx.accountActivity.deleteMany({ where: gt });
+        await tx.chainEvent.deleteMany({ where: { ...gt, address: { in: this.addresses } } });
+        await tx.perpTrade.deleteMany({ where: { ...gt, perps } });
+        await tx.fundingPoint.deleteMany({ where: { ...gt, perps } });
+        await tx.spotSwap.deleteMany({ where: { ...gt, pools } });
+        await tx.spotLiquidity.deleteMany({ where: { ...gt, pools } });
+        await tx.vaultTransfer.deleteMany({ where: { ...gt, vault } });
+        await tx.accountActivity.deleteMany({ where: { ...gt, contract: { in: this.addresses } } });
         await tx.indexedBlock.deleteMany({ where: { chainId, number: { gt: a } } });
         const r = await rebuildState(tx, ctx, a, this.names);
         await tx.indexerCheckpoint.update({ where: { chainId_deployment: this.key }, data: { block: a, blockHash: ancestorHash } });

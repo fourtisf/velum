@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { ORACLE_LIMITS, PERPS_LIMITS, RELAY_INTERVAL_MS, RELAY_MAX_PUSH_GAP_S } from '@velum/config/src/onchain';
+import { ORACLE_LIMITS, PERPS_LIMITS, RELAY_INTERVAL_MS, RELAY_MAX_PUSH_GAP_S, RELAY_SNAPSHOT_MAX_AGE_MS } from '@velum/config/src/onchain';
 import { describe, expect, it } from 'vitest';
 import { allowance, decide, fitTime, fits, limitedPrice, type Band } from './relay-math';
 
@@ -46,7 +46,7 @@ describe('the TypeScript rate limit equals OracleAdapter._limit', () => {
   });
 });
 
-describe('the push decision (FA-01 clock: a push restarts the clock at its own block time)', () => {
+describe('the push decision (FA-01 clock: a push restarts the clock at its observation time)', () => {
   const base = { intervalS: 9n, maxGapS: BigInt(RELAY_MAX_PUSH_GAP_S) };
 
   it('pushes the first price at once', () => {
@@ -73,7 +73,7 @@ describe('the push decision (FA-01 clock: a push restarts the clock at its own b
   it('pushes to converge when the move cannot fit before the gap limit (a jump), or the limit passed', () => {
     const b = band(P, 1000n);
     const r = { price: P, updatedAt: 1000n };
-    expect(decide({ ...base, target: P + (P * 3n) / 1000n, band: b, relayed: r, t: 1009n })).toEqual({ action: 'push', fits: false }); // needs 18 s > 15
+    expect(decide({ ...base, target: P + (P * 3n) / 1000n, band: b, relayed: r, t: 1009n })).toEqual({ action: 'push', fits: false }); // needs 18 s > 12
     expect(decide({ ...base, target: P - (P * 8n) / 100n, band: b, relayed: r, t: 1009n })).toEqual({ action: 'push', fits: false }); // > 5%
     // After a lagging push the band trails the source; the next push converges further.
     const lagging = band(P + (P * 15n) / 10_000n, 1009n);
@@ -81,10 +81,19 @@ describe('the push decision (FA-01 clock: a push restarts the clock at its own b
   });
 
   it('the clock in the band, not the last push, sets the allowance (a recording that moved the price advanced it)', () => {
-    const b = band(P, 1005n); // a poke at 1005 caught the price up and advanced the clock
+    const b = band(P, 1003n); // a poke at 1003 caught the price up and advanced the clock
     const r = { price: P, updatedAt: 1000n };
     const target = P + (P * 15n) / 10_000n; // 9 s of allowance
-    expect(decide({ ...base, target, band: b, relayed: r, t: 1009n })).toEqual({ action: 'wait', reason: 'deferred', until: 1014n });
+    expect(decide({ ...base, target, band: b, relayed: r, t: 1009n })).toEqual({ action: 'wait', reason: 'deferred', until: 1012n });
+    // Needing longer than the 12 s gap limit (L-5): pushed to converge.
+    expect(decide({ ...base, target, band: band(P, 1005n), relayed: r, t: 1009n })).toEqual({ action: 'push', fits: false });
+  });
+
+  it('pushes a quote outside the bounds on the cadence, never deferred (L-7)', () => {
+    const b = band(P, 1000n);
+    const r = { price: P, updatedAt: 1000n };
+    expect(decide({ ...base, target: P + P / 1000n, clamped: true, band: b, relayed: r, t: 1005n })).toEqual({ action: 'wait', reason: 'interval', until: 1009n });
+    expect(decide({ ...base, target: P + P / 1000n, clamped: true, band: b, relayed: r, t: 1009n })).toEqual({ action: 'push', fits: false });
   });
 });
 
@@ -96,6 +105,7 @@ describe('constants mirror contracts/src', () => {
     expect(oracle).toMatch(/MOVE_WINDOW = 5 minutes;/);
     expect(ORACLE_LIMITS.moveWindowSeconds).toBe(300n);
     expect(oracle).toMatch(new RegExp(`MAX_AGE = ${ORACLE_LIMITS.maxAgeSeconds};`));
+    expect(oracle).toMatch(new RegExp(`MAX_PUSH_DELAY = ${ORACLE_LIMITS.maxPushDelaySeconds};`));
     const perps = src('perps/PerpsBase.sol');
     expect(perps).toMatch(new RegExp(`OPEN_MAX_AGE = ${ORACLE_LIMITS.openMaxAgeSeconds};`));
     expect(perps).toMatch(new RegExp(`MAX_PRICE_AGE = ${ORACLE_LIMITS.maxAgeSeconds};`));
@@ -111,5 +121,12 @@ describe('constants mirror contracts/src', () => {
     expect(RELAY_INTERVAL_MS.max / 1000).toBeLessThanOrEqual(ORACLE_LIMITS.openMaxAgeSeconds);
     expect(RELAY_INTERVAL_MS.min).toBe(8000);
     expect(RELAY_MAX_PUSH_GAP_S).toBeLessThan(ORACLE_LIMITS.maxAgeSeconds);
+    // L-5: the deferral gap stays within 10-12 s (the residual exit option is at most 12 s x 1/6000 = 0.2%).
+    expect(RELAY_MAX_PUSH_GAP_S).toBeGreaterThanOrEqual(10);
+    expect(RELAY_MAX_PUSH_GAP_S).toBeLessThanOrEqual(12);
+  });
+  it('a push lands within MAX_PUSH_DELAY: the oldest snapshot age plus the second of margin leaves time for inclusion (M-1)', () => {
+    expect(ORACLE_LIMITS.maxPushDelaySeconds).toBe(ORACLE_LIMITS.openMaxAgeSeconds);
+    expect(RELAY_SNAPSHOT_MAX_AGE_MS / 1000 + 1 + 3).toBeLessThanOrEqual(ORACLE_LIMITS.maxPushDelaySeconds);
   });
 });

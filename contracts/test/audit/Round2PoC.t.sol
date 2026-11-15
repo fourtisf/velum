@@ -70,7 +70,7 @@ contract Round2PoC is VelumBase {
         t[0] = token;
         v[0] = p;
         vm.prank(relayer);
-        oracle.pushPrices(t, v);
+        oracle.pushPrices(t, v, block.timestamp);
     }
 
     function _makerClaim(uint256 id, uint256 price) internal view returns (int256) {

@@ -125,85 +125,128 @@ committed after a deployment, so every release carries it). The relayer also nee
 (its address must be the oracle's `relayer`), the keeper `KEEPER_PRIVATE_KEY`, a separate key (refused if it is
 the relay key or the deployment's price relayer); without its key a component stays off and the indexer still
 runs. On Robinhood Chain mainnet (4663) nothing is ever signed without `ONCHAIN_MAINNET_CONFIRMED=yes`: the
-sender refuses when the configured chain **or** `RPC_URL`'s `eth_chainId` is 4663, and whenever `RPC_URL` serves
-another chain than `CHAIN_ID`; the relayer and keeper then only read. Indexing mainnet is allowed.
-`deploy/ecosystem.config.cjs` passes the two hot keys to `velum-workers` only while `.env` says
-`ONCHAIN_WORKERS=true`, never to the API or the web (it refuses to load if a hot key is on their lists). Keys
-become viem accounts at start and are never logged (the logger also redacts every `*_PRIVATE_KEY` value).
+sender refuses when the configured chain **or** `RPC_URL`'s (or `RPC_URL_SEND`'s) `eth_chainId` is 4663, and whenever
+an endpoint serves another chain than `CHAIN_ID`; the relayer and keeper then only read, every signing path checks
+it (submit, replacement, cancellation, nonce-gap fill), and a refused sender adopts no pending transaction (audit L-1).
+Indexing mainnet is allowed. `deploy/ecosystem.config.cjs` passes the two hot keys to `velum-workers` only while
+`.env` says `ONCHAIN_WORKERS=true`, never to the API or the web (it refuses to load if a hot key is on their lists).
+Keys become viem accounts at start and are never logged (the logger also redacts every `*_PRIVATE_KEY` value).
+
+**Redis and settings (audit M-3, I-2).** The role locks and job schedulers live in Redis, so a tenant of a shared
+Redis could hold the locks or delete the schedulers and stop every role. The on-chain workers therefore start only
+when `REDIS_URL` is a unix socket, Velum's own Redis from `deploy/redis-velum.sh`
+(`unix://:PASSWORD@/run/velum-redis/redis.sock`); with a TCP `REDIS_URL` they stay off, log
+`on-chain workers off` with the reason, and `/v1/health` shows it. An invalid on-chain setting (a malformed key,
+`CONFIRMATIONS=-1`, a bad `RPC_URL_SEND`, ...) no longer stops the workers process: it is logged by variable name
+(never the value), only the on-chain workers stay off, the Phase 2 price and candle workers run on, and while
+`ONCHAIN_WORKERS` asks for them `/v1/health` names the problem.
 
 **Layout.** Three BullMQ queues in the workers process (`velum-onchain-relay` every second,
 `velum-onchain-keeper` every `KEEPER_INTERVAL_MS`, `velum-onchain-indexer` every `INDEXER_POLL_MS`), each with
 concurrency 1 and behind a Redis role lock (SET NX PX, renewed every tick), so a second process (a release
-overlap, a mistaken copy) stays idle; job payloads are never read. Each hot key has one sender (`tx-sender.ts`):
-one transaction in flight; the nonce is the chain's transaction count; a transaction not mined after 6 s (relay)
-or 15 s (keeper) is replaced at the same nonce with fees bumped 12.5% and a freshly rebuilt payload (or a
-0-value transfer to self when nothing qualifies any more), never above the fee ceiling (`RELAYER_MAX_GWEI`,
-`KEEPER_MAX_GWEI`); pending transactions of the key this process did not send are adopted and cancelled; a nonce
-gap below the in-flight transaction (a reorg dropped earlier ones) cancels its payload and fills the gap with
-self-transfers, so an old price push can never mine late. Balances are read every minute; below
+overlap, a mistaken copy) stays idle; job payloads are never read. A role whose last successful tick is more than a
+minute (and ten intervals) old gets its job scheduler re-added. Each hot key has one sender (`tx-sender.ts`): one
+transaction in flight; the nonce is the chain's transaction count; a transaction not mined after 6 s (relay) or 15 s
+(keeper) is replaced at the same nonce with fees bumped 12.5% and a freshly rebuilt payload (or a 0-value transfer
+to self when nothing qualifies any more), never above the fee ceiling (`RELAYER_MAX_GWEI`, `KEEPER_MAX_GWEI`). A
+nonce is never left unused (audit M-1): after 6 payload replacements the sender cancels it with 0-value transfers to
+itself, bumping the fee up to the ceiling, and once no valid bump fits under it re-broadcasts the newest version
+until the nonce is used, with `stuck` and an alert in `/v1/health` meanwhile. Pending transactions of the key this
+process did not send are adopted and cancelled; a nonce gap below the in-flight transaction (a reorg dropped earlier
+ones) cancels its payload and fills the gap with self-transfers, and a filler the node rejects raises an alert and is
+sent again at the ceiling while the gap persists. Old signed versions an RPC holds back can still land, so every
+price push also expires on chain (`OracleAdapter.MAX_PUSH_DELAY`, 10 s after its observation). Optional
+`RPC_URL_SEND`: a second, trusted endpoint the relayer and keeper broadcast through and read nonces and receipts from
+(every other read uses `RPC_URL`), so an `RPC_URL` that withholds transactions or answers wrong receipts cannot stall
+the keys; its path and query are redacted from logs like `RPC_URL`'s. Balances are read every minute; below
 `RELAYER_MIN_BALANCE_ETH` / `KEEPER_MIN_BALANCE_ETH` the workers warn (every 10 minutes) and `/v1/health` says
 `balanceLow`.
 
 **Price relayer** (`relayer.ts`, `relay-math.ts`). Every `PRICE_PUSH_INTERVAL_MS` (8-10 s, default 9 s) it pushes
 the deployment's markets in one `pushPrices` call, but only prices that are safe on chain: the latest
-MAC-verified Redis snapshot, confirmed with its source within 10 s, never a demo price (on any network: with the
-testnet default `PRICE_SOURCE=demo` nothing is pushed, so on-chain testnet trading needs
-`PRICE_SOURCE=robinhood`), quote confirmed and not frozen (15 minutes), the US-equity session open, the market
-relay-sourced on chain, the price inside the adapter's fixed bounds, and (off anvil) the deployment's token equal
-to the verified token in `packages/config`; and only while `OracleAdapter.sequencerStatus()` reports the
-sequencer up. Rate limit (contracts/README.md, "The rate-limit clock", FA-01): a push restarts the rate-limit
-clock at its own block time, so its allowance is 1/6000 of the price per second since the clock (normally the
-previous push), at most 5%; others' recordings that change nothing leave the clock alone, and one that moves the
-price advances it only by the time the move used. The relayer reads the band (`bands`, `relayed`) and computes the
-allowance at the push's expected block time. A move that fits is pushed on cadence. One that does not is deferred
-second by second (the allowance keeps growing, and the push then lands exactly, not lagging), but only while the
-last push is younger than 15 s (`RELAY_MAX_PUSH_GAP_S`, which bounds the extra exit option a deferral gives a
-closing taker to 0.25% of price); a move that cannot fit by then (a jump) is pushed anyway so the price
-converges, reading as lagging until it does, which is the protection the contracts want during a jump. A
-pre-clamped, made-up price is never pushed (it would hide the lag). The push's gas limit is fixed (an estimate
-runs in the latest block, on an idle chain the previous push, and reverts `TooSoon`), and its expected block time
-runs on from the newest block seen at wall-clock speed.
+MAC-verified Redis snapshot, confirmed with its source within 6 s (`RELAY_SNAPSHOT_MAX_AGE_MS`) and newer than the
+snapshot last pushed for that market (audit L-6), never a demo price (on any network: with the testnet default
+`PRICE_SOURCE=demo` nothing is pushed, so on-chain testnet trading needs `PRICE_SOURCE=robinhood`), quote confirmed
+and not frozen (15 minutes), the US-equity session open, the market relay-sourced on chain, and (off anvil) the
+deployment's token equal to the verified token in `packages/config`; and only while `OracleAdapter.sequencerStatus()`
+reports the sequencer up. A price outside the adapter's fixed bounds is pushed as it is (the adapter clamps it and the
+market reads as lagging, IA-06) and raises an alert, instead of never being pushed (audit L-7). Every push carries its
+observation time (audit M-1): the chain clock estimate minus the oldest snapshot's age (whole seconds, rounded up)
+and one second of margin against clock skew; the adapter refuses it more than 10 s later, and that time is the
+prices' source timestamp on chain (freshness, rate-limit clock). Rate limit (contracts/README.md, "The rate-limit
+clock", FA-01): a push restarts the rate-limit clock at its observation time, so its allowance is 1/6000 of the price
+per second since the clock (normally the previous push's observation), at most 5%; others' recordings that change
+nothing leave the clock alone, and one that moves the price advances it only by the time the move used. The relayer
+reads the band (`bands`, `relayed`) and computes the allowance at the push's expected block time. A move that fits is
+pushed on cadence. One that does not is deferred second by second (the allowance keeps growing, and the push then
+lands exactly, not lagging), but only while the last push's observation is younger than 12 s
+(`RELAY_MAX_PUSH_GAP_S`, audit L-5; it was 15 s); a move that cannot fit by then (a jump) is pushed anyway so the
+price converges, reading as lagging until it does, which is the protection the contracts want during a jump. The
+residual option a deferral leaves: the on-chain price trails the market by at most 12 s × 1/6000 = 0.2% of price,
+which a closing taker (60 s prices) can use, about 2.5 times the minimum close cost (2 bps spread + 6 bps fee);
+opens and margin removal need a price at most 10 s old, so for them a deferral means at most 2 s without a fresh price
+and no option. A pre-clamped, made-up price is never pushed (it would hide the lag). The push's gas limit is
+`eth_estimateGas` of the same calldata sent to the relay's own address (intrinsic and calldata gas, plus on Arbitrum
+chains the L1 data cost) with a 25% margin, plus a fixed bound for the execution (audit L-4; the push itself is not
+estimated: in the latest block, on an idle chain the previous push, it would revert `TooSoon`). A reverted push backs
+off (5 s, doubling to a minute) with an alert until a push succeeds. Its expected block time runs on from the newest
+block seen at wall-clock speed.
 
 **Keeper** (`keeper.ts`). Each tick, most urgent first: liquidations (open positions from the index, plus ids
 above the highest indexed one from `nextPositionId`, so the confirmation lag never hides one), checked with
 `isLiquidatable` (which applies the sequencer rules: none while it is down, only below MM / 2 in the grace hour),
-most underwater first; matured forced exits; `advanceFunding` for markets with open interest whose funding is
-older than `FUNDING_EPOCH_SECONDS`; `claimCover` for shortfall claims of ended epochs (the contracts have no
-keeper insurance top-up action: the keeper top-up is paid inside `liquidate`). Every action is simulated against
-the latest block first (a cool-down follows a refusal), so a position someone else liquidated costs nothing. A
-liquidation whose gas (at the current fee and `KEEPER_ETH_PRICE_USD`) costs more than its expected reward is sent
-only when solvency needs it (the liquidated side below MM / 2, or unable to pay the full penalty), and logged.
+ordered by risk (the urgent ones, below MM / 2 or unable to pay the full penalty, first, then the smallest remaining
+claim relative to notional); matured forced exits; `advanceFunding` for markets with open interest whose funding is
+older than `FUNDING_EPOCH_SECONDS`; `claimCover` for shortfall claims of ended epochs, selected in SQL as the filed
+claims with no later payout (audit L-9; the contracts have no keeper insurance top-up action: the keeper top-up is
+paid inside `liquidate`). Every action is simulated against the latest block first (a cool-down follows a refusal),
+so a position someone else liquidated costs nothing. A liquidation whose gas (at the current fee and
+`KEEPER_ETH_PRICE_USD`) costs more than its expected reward is sent only when solvency needs it (the liquidated side
+below MM / 2, or unable to pay the full penalty), and logged. Throughput (audit L-3): one transaction stays in
+flight, but a tick does not stop at the first action: it polls the receipt every 250 ms and sends the next action as
+soon as the previous one mined, for up to 10 s per tick; each candidate's reads go out together (JSON-RPC batched).
+The end-to-end test liquidates 220 positions on anvil far inside the 572 s keeper window the contracts guarantee.
 
 **Indexer** (`indexer.ts`, `projections.ts`). From `INDEXER_START_BLOCK` (or the deployment file's `startBlock`)
 up to `CONFIRMATIONS` (default 3) blocks behind the head, `eth_getLogs` over every contract the deployment file
-names, in ranges of `INDEXER_CHUNK_BLOCKS` (halved when the provider refuses). Each range is one Postgres
-transaction with its checkpoint (`IndexerCheckpoint`: block and hash), so a crash replays it, and the projections
-are idempotent. Reorgs: the first new block's parent hash must equal the checkpoint's hash (and while idle the
-checkpoint block must keep its hash); otherwise the indexer walks back through `IndexedBlock` (the hashes of
-blocks with logs and of every range end) to the common ancestor, deletes everything above it and refolds the
-positions, offers and pool reserves those blocks had touched from the remaining `ChainEvent` rows. Tables
-(amounts as integer base units, `DECIMAL(78,0)`): `ChainEvent` (every log, decoded; `unknown:<topic0>` for a log no
-ABI knows, so a newer vault's extra events never break it), `PerpPosition`, `PerpTrade`, `MakerOffer`,
-`SpotPoolState`, `SpotSwap`, `SpotLiquidity`, `VaultTransfer`, `FundingPoint`, `AccountActivity` (one row per event
-and account involved: the activity feed), `OnchainToken`, `IndexerCheckpoint`, `IndexedBlock`. Rows carry the chain
-id and the emitting contract, so a redeploy or a network switch never mixes deployments; the API reads the current
-deployment's rows (docs/03). To re-index, delete the deployment's `IndexerCheckpoint` row.
+names, in ranges of `INDEXER_CHUNK_BLOCKS` (halved when the provider refuses; the texts of geth/Nitro, Alchemy,
+Infura, QuickNode, Ankr, Chainstack and others are recognised). A single block whose logs still exceed the provider's
+cap (anyone can fill one with `advanceFunding` calls) is read with `eth_getBlockReceipts`, or else contract by
+contract and event by event, instead of stalling the index for good (audit L-2); the funding points of one market in
+one block collapse to the block's last (every event stays in `ChainEvent`). Each range is one Postgres transaction
+with its checkpoint (`IndexerCheckpoint`: block and hash), so a crash replays it, and the projections are
+idempotent. Reorgs: the first new block's parent hash must equal the checkpoint's hash (and while idle the checkpoint
+block must keep its hash and the head must not be below it); a mismatch must be seen on two consecutive polls (a
+load-balanced RPC may answer once from a lagging node), then the indexer walks back through `IndexedBlock` (the
+hashes of blocks with logs and of every range end) to the common ancestor, deletes this deployment's rows above it
+(never another deployment's on the same chain) and refolds the positions, offers and pool reserves those blocks had
+touched from the remaining `ChainEvent` rows, selected by id in SQL (audit L-8). Tables (amounts as integer base
+units, `DECIMAL(78,0)`): `ChainEvent` (every log, decoded; `unknown:<topic0>` for a log no ABI knows, so a newer
+vault's extra events never break it), `PerpPosition`, `PerpTrade`, `MakerOffer`, `SpotPoolState`, `SpotSwap`,
+`SpotLiquidity`, `VaultTransfer`, `FundingPoint`, `AccountActivity` (one row per event and account involved: the
+activity feed), `OnchainToken`, `IndexerCheckpoint`, `IndexedBlock`. Rows carry the chain id and the emitting
+contract, so a redeploy or a network switch never mixes deployments; the API reads the current deployment's rows
+(docs/03). To re-index, delete the deployment's `IndexerCheckpoint` row.
 
 **Health.** The workers write an authenticated status (`velum:onchain:status`, 2-minute expiry) every 5 s:
 indexer block, head, lag and reorgs; relayer last push, per-market state, sequencer; keeper last run and counts;
-each hot wallet's public address, balance, low/stuck/gas-capped flags and last (redacted) error. `/v1/health`
-summarises it as `onchain` (docs/03).
+each hot wallet's public address, balance, low/stuck/gas-capped flags, last (redacted) error and alerts; per role
+whether this process holds its lock and when its last successful tick was; the push interval; and, while they are
+disabled although `ONCHAIN_WORKERS=true`, the reason. `/v1/health` summarises it as `onchain` with `ok` and the
+`reasons` it is not (docs/03): during an open session no confirmed push for more than two push intervals, a role
+lock held by someone else, a role tick overdue, an alert, a stuck or low wallet, an indexer error (audit M-3).
 
 **Tests.** `bash apps/workers/e2e/onchain-e2e.sh` deploys the contracts on a local anvil with `forge script` (in a
-scratch copy), runs the real relayer, keeper and indexer against their own Postgres and Redis (non-default ports,
-scratch directories), and checks a liquidation, a stuck-transaction replacement, a reorg, a funding advance and a
-forced exit end to end, then the API endpoints over the same index.
+scratch copy), runs the real relayer, keeper and indexer against their own Postgres (non-default port) and Redis (a
+unix socket in the scratch directory, like production), and checks a liquidation, a stuck-transaction replacement, a
+reorg, a funding advance and a forced exit end to end, then the API endpoints over the same index, then the audit's
+reproductions inverted (`audit-e2e.test.ts`: a withheld push landed late, squatted role locks, a block over the
+provider's log cap, keeper throughput with 220 liquidatable positions).
 
 **Limits.** Arbitrum chains make blocks only for transactions: with `CONFIRMATIONS` above 0 the newest events wait
 for later blocks (the relay's pushes make one every 8-10 s in market hours; over a weekend the last events stay
-unindexed until the next transactions). The keeper checks every open position each tick with one
-`isLiquidatable` call each (JSON-RPC batched, at most 200 per tick, rotating). `KEEPER_ETH_PRICE_USD` is a fixed,
-rough price.
+unindexed until the next transactions). The keeper checks open positions with one `isLiquidatable` call each
+(JSON-RPC batched, at most 200 per tick, rotating). `KEEPER_ETH_PRICE_USD` is a fixed, rough price.
 
 **Phase 4 (private):** web builds proofs with the SDK → `POST /v1/relay/:action` →
 queue → relayer submits → indexer stores encrypted records → web fetches

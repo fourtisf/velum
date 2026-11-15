@@ -83,7 +83,7 @@ describe('ABIs', () => {
     const dir = path.join(__dirname, '../../../contracts/src');
     const files = ['VelumVault.sol', 'SpotPools.sol', 'MakerBook.sol', 'OracleAdapter.sol', 'perps/PerpsBase.sol'];
     const names = new Set(ALL_ERRORS_ABI.map((e) => (e as { name: string }).name));
-    const setupOnly = new Set(['NotDeployer', 'AlreadySetUp', 'LengthMismatch', 'BadBounds', 'BadFeedDecimals', 'SequencerFeedRequired', 'BadGuardConfig', 'BadCaps', 'CapDecrease', 'NotGuardAdmin', 'NotPendingGuardAdmin', 'AllowlistInactive', 'CapsInactive', 'NotRelayer', 'TooSoon', 'NotGuardian', 'NotModule', 'NotSetUp', 'DuplicateToken']);
+    const setupOnly = new Set(['NotDeployer', 'AlreadySetUp', 'LengthMismatch', 'BadBounds', 'BadFeedDecimals', 'SequencerFeedRequired', 'BadGuardConfig', 'BadCaps', 'CapDecrease', 'NotGuardAdmin', 'NotPendingGuardAdmin', 'AllowlistInactive', 'CapsInactive', 'NotRelayer', 'TooSoon', 'ObservedInFuture', 'PushExpired', 'StaleObservation', 'NotGuardian', 'NotModule', 'NotSetUp', 'DuplicateToken']);
     for (const f of files) {
       for (const m of readFileSync(path.join(dir, f), 'utf8').matchAll(/^\s*error (\w+)\(/gm)) {
         if (!setupOnly.has(m[1]!)) expect(names.has(m[1]!), `${f}: ${m[1]}`).toBe(true);

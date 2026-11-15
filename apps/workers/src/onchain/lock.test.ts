@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseRedisUrl } from '@velum/config';
 import { Redis } from 'ioredis';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { Logger } from '../lib/log';
 import { loadOnchainEnv } from './env';
 import { onchainDeployment } from './index';
@@ -77,6 +77,7 @@ describe('the on-chain workers start only with ONCHAIN_WORKERS=true and a deploy
 
   it('off by default, off without the file, off with an invalid file, on with both', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'velum-onchain-'));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
     expect(onchainDeployment(loadOnchainEnv({ DEPLOYMENTS_DIR: dir }), 46630, log)).toBeNull();
     expect(lines.at(-1)).toMatch(/ONCHAIN_WORKERS is not true/);
     expect(onchainDeployment(loadOnchainEnv({ ONCHAIN_WORKERS: 'true', DEPLOYMENTS_DIR: dir }), 46630, log)).toBeNull();

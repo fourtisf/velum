@@ -46,6 +46,12 @@ export interface OnchainEnv {
   fundingEpochSeconds: number;
   /** KEEPER_ETH_PRICE_USD (default 4000): rough ETH price for the keeper's gas-versus-reward check. */
   ethPriceUsd: bigint;
+  /**
+   * RPC_URL_SEND (optional, audit M-1): a second, trusted endpoint the relayer and keeper broadcast through and
+   * read nonces and receipts from; every other read uses RPC_URL. Behind a function like the keys (it may carry a
+   * provider key in its path), so it never reaches a log or the status.
+   */
+  sendRpcUrl(): string | null;
   keys: OnchainKeys;
 }
 
@@ -112,6 +118,8 @@ export function loadOnchainEnv(e: NodeJS.ProcessEnv = process.env): OnchainEnv {
     problems.push('KEEPER_PRIVATE_KEY must not be the price-relay key: create a separate one with deploy/new-key.sh KEEPER_PRIVATE_KEY.');
   }
 
+  const sendRpc = (e.RPC_URL_SEND ?? '').trim();
+  if (sendRpc && !/^https?:\/\/[^\s]+$/.test(sendRpc)) problems.push('RPC_URL_SEND must be an http(s) URL (or empty).');
   const relayMaxFeeWei = fixed('RELAYER_MAX_GWEI', '1', 9, true);
   const startRaw = int('INDEXER_START_BLOCK', 0, 0, Number.MAX_SAFE_INTEGER);
   const relayMinBalanceWei = fixed('RELAYER_MIN_BALANCE_ETH', '0.05', 18, false);
@@ -131,6 +139,7 @@ export function loadOnchainEnv(e: NodeJS.ProcessEnv = process.env): OnchainEnv {
     keeperIntervalMs: int('KEEPER_INTERVAL_MS', 3000, 1000, 60_000),
     fundingEpochSeconds: int('FUNDING_EPOCH_SECONDS', 3600, 60, 7 * 86_400),
     ethPriceUsd: BigInt(int('KEEPER_ETH_PRICE_USD', 4000, 1, 1_000_000)),
+    sendRpcUrl: () => (sendRpc && /^https?:\/\//.test(sendRpc) ? sendRpc : null),
     keys: {
       relay: () => (relay && relay !== 'invalid' ? relay : null),
       keeper: () => (keeper && keeper !== 'invalid' ? keeper : null),
@@ -138,6 +147,22 @@ export function loadOnchainEnv(e: NodeJS.ProcessEnv = process.env): OnchainEnv {
   };
   if (problems.length) throw new Error(`Invalid on-chain workers environment:\n  - ${problems.join('\n  - ')}`);
   return env;
+}
+
+/**
+ * The on-chain settings for the workers process, never throwing (audit I-2): an invalid setting disables only the
+ * on-chain workers. `error`: the problems (variable names, never values) to log; `disabled`: the reason /v1/health
+ * shows, set when ONCHAIN_WORKERS asks for the on-chain workers (anything but empty or false).
+ */
+export function loadOnchainSettings(e: NodeJS.ProcessEnv = process.env): { env: OnchainEnv | null; error: string | null; disabled: string | null } {
+  try {
+    return { env: loadOnchainEnv(e), error: null, disabled: null };
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    const flag = (e.ONCHAIN_WORKERS ?? '').trim().toLowerCase();
+    const disabled = flag !== '' && flag !== 'false' ? error.replace(/\s*\n\s*-\s*/g, ' ').slice(0, 480) : null;
+    return { env: null, error, disabled };
+  }
 }
 
 /** wei as a decimal gwei string, for messages. */

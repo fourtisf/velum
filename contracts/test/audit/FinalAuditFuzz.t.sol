@@ -260,7 +260,7 @@ contract FinalAuditFuzzGrace is Test {
         mods[2] = address(perps);
         address[] memory blocked = new address[](1);
         blocked[0] = address(oracle);
-        vault.setup(toks, mods, blocked);
+        vault.setup(toks, mods, blocked, address(0), new uint256[](0), new uint256[](0));
         feed = new MockAggregator(8);
         seq = new MockAggregator(0);
         seq.set(0, block.timestamp - 2 hours);

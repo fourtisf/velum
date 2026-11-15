@@ -9,27 +9,29 @@ contract VelumVaultTest is VelumBase {
     function test_setup_onlyDeployerOnce() public {
         VelumVault v = new VelumVault();
         address[] memory none = new address[](0);
+        uint256[] memory noCaps = new uint256[](0);
         vm.prank(alice);
         vm.expectRevert(VelumVault.NotDeployer.selector);
-        v.setup(none, none, none);
-        v.setup(none, none, none);
+        v.setup(none, none, none, address(0), noCaps, noCaps);
+        v.setup(none, none, none, address(0), noCaps, noCaps);
         assertTrue(v.locked());
         vm.expectRevert(VelumVault.AlreadySetUp.selector);
-        v.setup(none, none, none);
+        v.setup(none, none, none, address(0), noCaps, noCaps);
     }
 
     function test_setup_rejectsZeroAddresses() public {
         VelumVault v = new VelumVault();
         address[] memory bad = new address[](1);
         address[] memory none = new address[](0);
+        uint256[] memory noCaps = new uint256[](0);
         vm.expectRevert(VelumVault.ZeroAddress.selector);
-        v.setup(bad, none, none);
+        v.setup(bad, none, none, address(0), noCaps, noCaps);
         VelumVault v2 = new VelumVault();
         vm.expectRevert(VelumVault.ZeroAddress.selector);
-        v2.setup(none, bad, none);
+        v2.setup(none, bad, none, address(0), noCaps, noCaps);
         VelumVault v3 = new VelumVault();
         vm.expectRevert(VelumVault.ZeroAddress.selector);
-        v3.setup(none, none, bad);
+        v3.setup(none, none, bad, address(0), noCaps, noCaps);
     }
 
     function test_deposit_beforeSetupReverts() public {
@@ -82,7 +84,7 @@ contract VelumVaultTest is VelumBase {
         VelumVault v = new VelumVault();
         address[] memory tokens = new address[](1);
         tokens[0] = address(fee);
-        v.setup(tokens, new address[](0), new address[](0));
+        v.setup(tokens, new address[](0), new address[](0), address(0), new uint256[](0), new uint256[](0));
         fee.mint(alice, 1000e18);
         vm.startPrank(alice);
         fee.approve(address(v), type(uint256).max);

@@ -61,7 +61,8 @@ abstract contract VelumBase is Test {
         modules[2] = address(perps);
         address[] memory blocked = new address[](1);
         blocked[0] = address(oracle);
-        vault.setup(tokens, modules, blocked);
+        (address guardAdmin, uint256[] memory accountCaps, uint256[] memory globalCaps) = _guardConfig();
+        vault.setup(tokens, modules, blocked, guardAdmin, accountCaps, globalCaps);
 
         address[] memory stocks = _stocks();
         address[] memory feeds = new address[](2);
@@ -81,6 +82,30 @@ abstract contract VelumBase is Test {
 
         _pushPrice(address(tsla), TSLA_PRICE);
         _pushPrice(address(amzn), AMZN_PRICE);
+    }
+
+    /// @dev The vault's launch guard: none (unguarded, as the testnet deploy does by default). Caps follow the vault's
+    ///      token order (USDG, TSLA, AMZN). The guard tests and the invariant suites override it.
+    function _guardConfig()
+        internal
+        virtual
+        returns (address admin, uint256[] memory accountCaps, uint256[] memory globalCaps)
+    {}
+
+    /// @dev A guard config with the same caps for both stocks (base units).
+    function _guardCaps(
+        address admin,
+        uint256 usdgAccount,
+        uint256 usdgGlobal,
+        uint256 stockAccount,
+        uint256 stockGlobal
+    ) internal pure returns (address, uint256[] memory accountCaps, uint256[] memory globalCaps) {
+        accountCaps = new uint256[](3);
+        globalCaps = new uint256[](3);
+        (accountCaps[0], globalCaps[0]) = (usdgAccount, usdgGlobal);
+        (accountCaps[1], globalCaps[1]) = (stockAccount, stockGlobal);
+        (accountCaps[2], globalCaps[2]) = (stockAccount, stockGlobal);
+        return (admin, accountCaps, globalCaps);
     }
 
     function _oiCap() internal view virtual returns (uint256) {

@@ -12,7 +12,9 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 import {MockAggregator} from "../mocks/MockAggregator.sol";
 import {Vm} from "forge-std/Vm.sol";
 
-/// @notice Drives random but valid-ish protocol usage for the invariant suite and keeps ghost totals.
+/// @notice Drives random but valid-ish protocol usage for the invariant suite and keeps ghost totals. With a guarded
+///         vault it also checks every deposit, approval and withdrawal against an independent model of the launch
+///         guard and drives the guard admin (allowlisting, cap raises, handovers, `openToPublic`, `liftCaps`).
 contract Handler is Test {
     VelumVault public vault;
     OracleAdapter public oracle;
@@ -64,6 +66,22 @@ contract Handler is Test {
 
     uint256[2] public price = [uint256(391.65e18), uint256(233.4e18)];
 
+    // launch guard (contracts/README.md, Guarded launch); inert when the vault is unguarded
+    /// @dev A deposit the guard should have refused went through (an address outside an active allowlist, or above
+    ///      an active cap), or an address outside an active allowlist granted a module approval.
+    bool public guardBypassed;
+    /// @dev A deposit or approval the guard should have let through was refused, one was refused with a non-guard error,
+    ///      or after an admin action the admin role did not match the guard state (an admin exactly while guarded).
+    bool public guardMisfired;
+    /// @dev A valid withdrawal reverted, or an exit (close, forced exit, liquidity removal) reverted with a guard error.
+    bool public exitBlocked;
+    /// @dev A guard-admin action changed a balance, a reserve, a margin, the fund or an offer's backing.
+    bool public guardAdminMovedFunds;
+    uint256 public guardRefusals;
+    uint256 public guardAdminActions;
+    /// @dev Independent copy of the vault's `netDeposited`, kept while caps are active.
+    mapping(address account => mapping(address token => uint256)) public ghostNet;
+
     constructor(
         VelumVault vault_,
         OracleAdapter oracle_,
@@ -88,19 +106,37 @@ contract Handler is Test {
         stocks[1] = s1;
         relayer = relayer_;
         guardian = guardian_;
+        // With a launch guard, actors 0-3 start allowlisted and actor 4 does not (it can be added later, or the guard
+        // admin opens the vault to the public); only allowlisted actors can approve the modules.
+        address admin = vault_.guardAdmin();
         for (uint256 i; i < 5; ++i) {
             address a = makeAddr(string(abi.encodePacked("actor", vm.toString(i))));
             actors.push(a);
             vm.deal(a, 10 ether);
+            if (admin != address(0) && i < 4) {
+                vm.prank(admin);
+                vault.addToAllowlist(_one(a));
+            }
             vm.startPrank(a);
             usdg.approve(address(vault), type(uint256).max);
             s0.approve(address(vault), type(uint256).max);
             s1.approve(address(vault), type(uint256).max);
-            vault.setApproval(address(pools), true);
-            vault.setApproval(address(book), true);
-            vault.setApproval(address(perps), true);
             vm.stopPrank();
+            if (vault.isAllowed(a)) _approveModules(a);
         }
+    }
+
+    function _one(address a) internal pure returns (address[] memory l) {
+        l = new address[](1);
+        l[0] = a;
+    }
+
+    function _approveModules(address a) internal {
+        vm.startPrank(a);
+        vault.setApproval(address(pools), true);
+        vault.setApproval(address(book), true);
+        vault.setApproval(address(perps), true);
+        vm.stopPrank();
     }
 
     // ------------------------------------------------------------ helpers
@@ -182,21 +218,67 @@ contract Handler is Test {
         address a = _actor(actorSeed);
         MockERC20 t = tokenSeed % 2 == 0 ? usdg : _token(tokenSeed);
         amount = bound(amount, t == usdg ? 100e6 : 1e15, t == usdg ? 200_000e6 : 500e18);
-        t.mint(a, amount);
-        vm.prank(a);
-        uint256 got = vault.deposit(address(t), amount, a);
-        deposited[address(t)] += got;
+        _deposit(a, a, t, amount);
     }
 
+    /// @dev Deposit credited to another actor (or the keeper): with an active allowlist both must be on it, and the
+    ///      credited account's cap applies.
+    function depositFor(uint256 fromSeed, uint256 toSeed, uint256 tokenSeed, uint256 amount) external {
+        address from = _actor(fromSeed);
+        address to = toSeed % 6 == 5 ? liquidator : _actor(toSeed);
+        MockERC20 t = _token(tokenSeed);
+        amount = bound(amount, t == usdg ? 100e6 : 1e15, t == usdg ? 200_000e6 : 500e18);
+        _deposit(from, to, t, amount);
+    }
+
+    /// @dev Checks the launch guard's decision against an independent model (allowlist flags, ghost net deposits).
+    function _deposit(address from, address to, MockERC20 t, uint256 amount) internal {
+        t.mint(from, amount);
+        bool refuse = _guardRefuses(from, to, address(t), amount);
+        vm.prank(from);
+        try vault.deposit(address(t), amount, to) returns (uint256 got) {
+            deposited[address(t)] += got;
+            if (refuse) guardBypassed = true;
+            if (vault.capsActive()) ghostNet[to][address(t)] += got;
+        } catch (bytes memory err) {
+            guardRefusals++;
+            if (!refuse || !_isGuardError(err)) guardMisfired = true;
+        }
+    }
+
+    function _guardRefuses(address from, address to, address t, uint256 amount) internal view returns (bool) {
+        if (vault.allowlistActive() && !(vault.isAllowlisted(from) && vault.isAllowlisted(to))) return true;
+        if (!vault.capsActive()) return false;
+        return ghostNet[to][t] + amount > vault.accountCap(t) || vault.totalInternal(t) + amount > vault.globalCap(t);
+    }
+
+    function _isGuardError(bytes memory err) internal pure returns (bool) {
+        bytes4 sel = bytes4(err);
+        return sel == VelumVault.NotAllowlisted.selector || sel == VelumVault.AccountCapExceeded.selector
+            || sel == VelumVault.GlobalCapExceeded.selector;
+    }
+
+    /// @dev A withdrawal of at most the balance, to the actor itself, must always go through.
     function withdraw(uint256 actorSeed, uint256 tokenSeed, uint256 amount) external {
         address a = _actor(actorSeed);
         MockERC20 t = _token(tokenSeed);
         uint256 bal = vault.balanceOf(a, address(t));
         if (bal == 0) return;
         amount = bound(amount, 1, bal);
+        _withdraw(a, t, amount);
+    }
+
+    function _withdraw(address a, MockERC20 t, uint256 amount) internal {
         vm.prank(a);
-        vault.withdraw(address(t), amount, a);
-        withdrawn[address(t)] += amount;
+        try vault.withdraw(address(t), amount, a) {
+            withdrawn[address(t)] += amount;
+            if (vault.capsActive()) {
+                uint256 g = ghostNet[a][address(t)];
+                ghostNet[a][address(t)] = g > amount ? g - amount : 0;
+            }
+        } catch {
+            exitBlocked = true;
+        }
     }
 
     // ------------------------------------------------------------ spot
@@ -221,7 +303,10 @@ contract Handler is Test {
         uint256 amount = (sh * bound(pct, 1, 100)) / 100;
         if (amount == 0) return;
         vm.prank(a);
-        try pools.removeLiquidity(st, amount, 1, 1, block.timestamp) {} catch {}
+        try pools.removeLiquidity(st, amount, 1, 1, block.timestamp) {}
+        catch (bytes memory err) {
+            if (_isGuardError(err)) exitBlocked = true;
+        }
     }
 
     function swap(uint256 actorSeed, uint256 inSeed, uint256 outSeed, uint256 amount) external {
@@ -366,7 +451,9 @@ contract Handler is Test {
             closes++;
             if (_checkPayout(p, p.taker, b, vm.getRecordedLogs())) closeLiquidations++;
             _trackClaims(p, capWasSet);
-        } catch {}
+        } catch (bytes memory err) {
+            if (_isGuardError(err)) exitBlocked = true;
+        }
     }
 
     /// @dev The taker of the first liquidatable position from `idx` closes it: the close settles as a liquidation
@@ -441,7 +528,9 @@ contract Handler is Test {
             forcedExits++;
             if (_checkPayout(p, liquidator, b, vm.getRecordedLogs())) forcedExitLiquidations++;
             _trackClaims(p, capWasSet);
-        } catch {}
+        } catch (bytes memory err) {
+            if (_isGuardError(err)) exitBlocked = true;
+        }
     }
 
     function requestForcedExit(uint256 idx, bool byMaker) external {
@@ -525,6 +614,166 @@ contract Handler is Test {
         ) guardianMovedFunds = true;
     }
 
+    // ------------------------------------------------------------ launch guard admin
+
+    /// @dev One selector for every guard action, so the main suites' action mix is barely diluted: allowlist an
+    ///      actor, raise caps, open to the public or lift the caps (each one time in two), hand the role over, or an
+    ///      actor re-grants an approval. The guard suite targets the actions one by one.
+    function guardAction(uint256 op, uint256 seed, uint256 x, uint256 y) external {
+        op %= 6;
+        if (op == 0) guardAllowlist(seed);
+        else if (op == 1) guardRaiseCaps(seed, x, y);
+        else if (op == 2 && x % 2 == 0) _openToPublic();
+        else if (op == 3 && x % 2 == 0) _liftCaps();
+        else if (op == 4) guardHandover(seed);
+        else if (op == 5) approveModules(seed);
+    }
+
+    /// @dev The guard admin allowlists an actor (which then approves the modules).
+    function guardAllowlist(uint256 actorSeed) public {
+        if (!vault.allowlistActive()) return;
+        address a = _actor(actorSeed);
+        bytes32 before = fundsHash();
+        vm.prank(vault.guardAdmin());
+        vault.addToAllowlist(_one(a));
+        _afterAdmin(before);
+        _approveModules(a);
+    }
+
+    /// @dev The guard admin raises one token's caps by up to 50%, plus one minimum deposit (so a zero cap grows).
+    function guardRaiseCaps(uint256 tokenSeed, uint256 accountPct, uint256 globalPct) public {
+        if (!vault.capsActive()) return;
+        address t = address(_token(tokenSeed));
+        uint256 step = t == address(usdg) ? 100e6 : 1e15;
+        uint256 a = vault.accountCap(t);
+        uint256 g = vault.globalCap(t);
+        a += (a * bound(accountPct, 0, 50)) / 100 + step;
+        g += (g * bound(globalPct, 0, 50)) / 100 + step;
+        if (g < a) g = a;
+        bytes32 before = fundsHash();
+        vm.prank(vault.guardAdmin());
+        vault.raiseCaps(t, a, g);
+        _afterAdmin(before);
+    }
+
+    /// @dev One time in eight: open to the public for good.
+    function guardOpenToPublic(uint256 seed) external {
+        if (seed % 8 == 0) _openToPublic();
+    }
+
+    /// @dev One time in eight: lift the caps for good.
+    function guardLiftCaps(uint256 seed) external {
+        if (seed % 8 == 0) _liftCaps();
+    }
+
+    /// @dev Every actor then approves the modules.
+    function _openToPublic() internal {
+        if (!vault.allowlistActive()) return;
+        bytes32 before = fundsHash();
+        vm.prank(vault.guardAdmin());
+        vault.openToPublic();
+        _afterAdmin(before);
+        for (uint256 i; i < actors.length; ++i) {
+            _approveModules(actors[i]);
+        }
+    }
+
+    function _liftCaps() internal {
+        if (!vault.capsActive()) return;
+        bytes32 before = fundsHash();
+        vm.prank(vault.guardAdmin());
+        vault.liftCaps();
+        _afterAdmin(before);
+    }
+
+    /// @dev Two-step handover to one of three admin keys; half the time the proposal is not accepted (yet).
+    function guardHandover(uint256 seed) public {
+        address admin = vault.guardAdmin();
+        if (admin == address(0)) return;
+        address next = makeAddr(string.concat("guard-admin-", vm.toString(seed % 3)));
+        bytes32 before = fundsHash();
+        vm.prank(admin);
+        vault.transferGuardAdmin(next);
+        if (seed % 2 == 0) {
+            vm.prank(next);
+            vault.acceptGuardAdmin();
+        }
+        _afterAdmin(before);
+    }
+
+    /// @dev An actor (re)grants a module approval: refused while it is outside an active allowlist.
+    function approveModules(uint256 actorSeed) public {
+        address a = _actor(actorSeed);
+        bool refuse = vault.allowlistActive() && !vault.isAllowlisted(a);
+        vm.prank(a);
+        try vault.setApproval(address(perps), true) {
+            if (refuse) guardBypassed = true;
+        } catch (bytes memory err) {
+            if (!refuse || !_isGuardError(err)) guardMisfired = true;
+        }
+    }
+
+    function _afterAdmin(bytes32 before) internal {
+        guardAdminActions++;
+        if (fundsHash() != before) guardAdminMovedFunds = true;
+        if ((vault.guardAdmin() != address(0)) != vault.guarded()) guardMisfired = true;
+    }
+
+    /// @dev Everything the guard admin must never touch: internal and token balances of everyone, totals, pool
+    ///      reserves, margins, the fund, reserved cover and offer backing.
+    function fundsHash() public view returns (bytes32 h) {
+        address[4] memory held = [address(vault), address(pools), address(book), address(perps)];
+        for (uint256 k; k < 3; ++k) {
+            address t = address(_token(k));
+            h = keccak256(abi.encode(h, vault.totalInternal(t), MockERC20(t).balanceOf(address(vault))));
+            for (uint256 i; i < actors.length; ++i) {
+                h = keccak256(abi.encode(h, vault.balanceOf(actors[i], t), MockERC20(t).balanceOf(actors[i])));
+            }
+            h = keccak256(abi.encode(h, vault.balanceOf(liquidator, t)));
+            for (uint256 i; i < held.length; ++i) {
+                h = keccak256(abi.encode(h, vault.balanceOf(held[i], t)));
+            }
+        }
+        (uint256 s0, uint256 u0,,) = pools.pools(address(stocks[0]));
+        (uint256 s1, uint256 u1,,) = pools.pools(address(stocks[1]));
+        h = keccak256(abi.encode(h, s0, u0, s1, u1));
+        h = keccak256(abi.encode(h, perps.totalMargin(), perps.insurance(), perps.coverReserved(), book.totalBacking()));
+    }
+
+    /// @dev Invariant 6 (launch guard): no deposit or approval got past an active allowlist, every refusal was the
+    ///      guard's and expected, no valid exit reverted, the admin never moved funds; while caps are active the
+    ///      vault's net deposits equal the ghost copy and stay within the account cap, and holdings within the global
+    ///      cap; a guard admin exists exactly while some part of the guard is active.
+    function checkLaunchGuard() external view {
+        assertFalse(guardBypassed, "the guard let a deposit or approval through");
+        assertFalse(guardMisfired, "the guard misfired: wrong refusal, or admin role out of step with the guard");
+        assertFalse(exitBlocked, "a withdrawal or exit was blocked");
+        assertFalse(guardAdminMovedFunds, "a guard-admin action moved funds");
+        assertEq(vault.guardAdmin() != address(0), vault.guarded(), "admin iff guarded");
+        if (!vault.capsActive()) return;
+        for (uint256 k; k < 3; ++k) {
+            address t = address(_token(k));
+            assertLe(vault.totalInternal(t), vault.globalCap(t), "global cap exceeded");
+            for (uint256 i; i <= actors.length; ++i) {
+                address a = i == actors.length ? liquidator : actors[i];
+                assertEq(vault.netDeposited(a, t), ghostNet[a][t], "net deposits");
+                assertLe(ghostNet[a][t], vault.accountCap(t), "account cap exceeded");
+            }
+        }
+    }
+
+    /// @dev After the wind-down: every actor and the keeper withdraw everything they hold, whatever the guard's state.
+    function withdrawEverything() external {
+        for (uint256 k; k < 3; ++k) {
+            MockERC20 t = _token(k);
+            for (uint256 i; i <= actors.length; ++i) {
+                address a = i == actors.length ? liquidator : actors[i];
+                uint256 bal = vault.balanceOf(a, address(t));
+                if (bal != 0) _withdraw(a, t, bal);
+            }
+        }
+    }
+
     // ------------------------------------------------------------ market
 
     /// @dev Move one relayed price by up to ±5% and refresh both. Usually the move comes slowly enough for
@@ -600,7 +849,10 @@ contract Handler is Test {
                 uint256 sh = pools.sharesOf(address(stocks[s]), actors[a]);
                 if (sh == 0) continue;
                 vm.prank(actors[a]);
-                try pools.removeLiquidity(address(stocks[s]), sh, 1, 1, block.timestamp) {} catch {}
+                try pools.removeLiquidity(address(stocks[s]), sh, 1, 1, block.timestamp) {}
+                catch (bytes memory err) {
+                    if (_isGuardError(err)) exitBlocked = true;
+                }
             }
         }
         // Pay every outstanding cover claim once its epoch has ended.

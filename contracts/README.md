@@ -7,7 +7,9 @@ code that is not open source). OpenZeppelin 5.4.0 (MIT) is used only for `IERC20
 with their licenses, in `lib/` (see `lib/VENDORED.md`: versions, upstream commits, byte-identity check).
 
 **Testnet only.** `script/Deploy.s.sol` refuses Robinhood Chain mainnet (4663): mainnet needs the
-Phase 5 external audit of contracts and circuits.
+Phase 5 external audit of contracts and circuits. The vault has an optional launch guard (allowlist and deposit caps,
+off by default) for a later guarded beta; see [Guarded launch](#guarded-launch). Enabling mainnet in the script is a
+separate step the owner must confirm.
 
 The November 2026 internal audit (`docs/audit/2026-11-internal.md`) findings F-01 to F-08, F-10 to F-13
 and I-1 are fixed or mitigated here, and so are the second-round findings R2-01 to R2-07, the
@@ -34,7 +36,7 @@ extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuz
 
 | Contract | File | Responsibility |
 |---|---|---|
-| `VelumVault` | `src/VelumVault.sol` | Holds all tokens. `deposit` (fee-on-transfer safe) / `withdraw` from your own balance. Neither a deposit nor a withdrawal (FA-06) may go to an address that can never use it: a module, the vault itself, a listed token, or a protocol address fixed at setup (the oracle). Modules may only debit themselves or accounts that approved them. Tokens, modules and blocked recipients fixed by a one-time `setup`, then locked: no owner, no pause, no upgrade. |
+| `VelumVault` | `src/VelumVault.sol` | Holds all tokens. `deposit` (fee-on-transfer safe) / `withdraw` from your own balance. Neither a deposit nor a withdrawal (FA-06) may go to an address that can never use it: a module, the vault itself, a listed token, or a protocol address fixed at setup (the oracle). Modules may only debit themselves or accounts that approved them. Tokens, modules, blocked recipients and the optional launch guard fixed by a one-time `setup`, then locked: no owner, no pause, no upgrade. The launch guard (off unless a guard admin is given) limits deposits to allowlisted addresses and caps them until its admin switches it off for good; it never blocks a withdrawal ([Guarded launch](#guarded-launch)). |
 | `OracleAdapter` | `src/OracleAdapter.sol` | One source per token: Chainlink AggregatorV3 (decimals scaled to 1e18, answer > 0) guarded by the L2 sequencer-uptime feed, or a testnet price-relay address. Every source price is **clamped** to the token's fixed bounds and then **rate-limited** against the last recorded price: at most 5% × dt / 5 min per recording (dt capped at 5 minutes), so 1/6000 per second, 1% per minute, and never more than 5% at once. dt is measured on the rate-limit clock, which only moves when a recording brings a new source value or changes the price (FA-01, [below](#the-rate-limit-clock-fa-01)). `price()` reverts if older than 60 s or missing; `read()` and `poke()` also record the reading (new last price, `lastValidAt`). The price is "lagging" when the reported price differs from the source (outside the rate limit or outside the bounds); `atBound()` says the source is outside the bounds and the reported price has reached the bound. Any positive answer is a valid reading, inside the bounds or not (IA-06); a failed or zero read is stale; `isDead()` only after 14 days without any valid price. `liveClock()` is the clock funding runs on: block time minus every gap of more than 14 days between valid prices (FA-02, FA-03). `sequencerStatus()` returns (up, ready = up for more than the 1 h grace). Feeds are read with a length-checked staticcall: a feed without code or with malformed data reads as stale (sequencer: down) and `poke` never reverts; `setup` refuses such a feed, and a sequencer feed whose answer is not 0 or 1 (FA-07). Relay updates: at most one per token per second, any positive price up to `uint128`. |
 | `SpotPools` | `src/SpotPools.sol` | Constant-product Stock/USDG pools. A 30 bps fee stays in the pool, and a stock→stock swap routes through USDG in one call, paying two fees. LP shares are tracked internally. The first deposit locks 1,000 shares against inflation attacks. Reserves are state variables, so donations can't skew them. `minOut`, `minShares`, `minStock` and `minUsdg` must be non-zero (FA-05). |
 | `MakerBook` | `src/MakerBook.sol` | Standing offers: backing (USDG), largest single fill (≤ backing), open spread (2 bps to 5%) and close spread (≤ 5%), expiry. The maker can withdraw unused backing at any time. Only `PerpsMarkets` can allocate backing to a fill. Backing caps the maker's **margin**, not its exposure (see [Maker offers](#maker-offers)). |
@@ -69,7 +71,7 @@ extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuz
 
 | Contract | Events |
 |---|---|
-| `VelumVault` | `Deposited`, `Withdrawn`, `ModuleApproval`, `InternalTransfer` |
+| `VelumVault` | `Deposited`, `Withdrawn`, `ModuleApproval`, `InternalTransfer`; launch guard: `GuardSetup` (admin zero = unguarded; caps in `Setup.tokens` order), `Allowlisted`, `CapsRaised`, `OpenedToPublic`, `CapsLifted`, `GuardAdminTransferStarted`, `GuardAdminTransferred` (also with the new admin zero when the guard retires) |
 | `SpotPools` | `PoolChanged` (after every reserve change), `LiquidityAdded`, `LiquidityRemoved`, `Swapped` |
 | `MakerBook` | `OfferPosted`, `OfferFilled`, `OfferWithdrawn` |
 | `PerpsMarkets` | `PositionChanged` (`Action`: Open, Close, AddMargin, RemoveMargin, Liquidate, ForcedExit), `PositionSettled` (`exitPrice` = spread-adjusted exit on a close and on a taker-requested forced exit; `fee` = close fee on both, 0 on a maker-requested forced exit, the penalty on liquidation), `Liquidated` (`shortfall` = amount claimed), `FundingAdvanced` (only when the index is current; since IA-02 also after a dead-oracle forced exit, with the index frozen over the dead period), `InsuranceFunded`, `ForcedExitRequested`, `ForcedExitSettled` (`price` = oracle, entry or bound), `BondRefundDeferred`, `BondClaimed`, `CloseOnlySet`, `CoverClaimFiled`, `CoverEpochSettled` (the budget fixed while the epoch ran), `CoverPaid` |
@@ -82,10 +84,13 @@ extended invariants in `test/audit/Round3ExtInvariants.t.sol`, the auditor's fuz
 3. A liquidation never pays more than the posted margins plus the insurance fund; shortfall cover is never paid at liquidation (only the ≤ 1 USDG keeper top-up), and no epoch's top-ups plus cover exceed 10% of the fund as it stood at the epoch's first draw.
 4. Closing the whole book returns every unit. After all positions close, every cover claim is paid, offers are withdrawn and liquidity is removed, only insurance and the locked pool dust remain outside user balances.
 5. Reserved cover equals the unpaid budgets of epochs with unpaid claims, outstanding claims equal the claims recorded, settling never changes a budget, and guardian actions never move funds.
+6. Launch guard: no deposit or module approval gets past an active allowlist; while caps are active, every account's net deposits (checked against an independent ghost copy) stay within its cap and the vault's holdings within the global cap; no valid withdrawal reverts and no exit (close, forced exit, liquidity removal) reverts with a guard error; guard-admin actions never change any balance, reserve, margin, the fund or offer backing; a guard admin exists exactly while part of the guard is active. After the wind-down every account withdraws everything and only module balances (insurance, locked pool dust) remain.
 
 Each run also checks that open interest equals the sum of open positions. The handler opens, closes, liquidates and force-exits positions, moves prices (mostly slowly enough for the rate limit, a quarter of the time in one second so the price lags), simulates keeper-free gaps of 15-40% (shortfall claims), pays cover claims, toggles close-only as the guardian, jumps time, swaps and adds or removes liquidity. Since the final audit the oracle has an L2 sequencer-uptime feed that the handler moves between down, grace and up; invariant 3 is checked for every settlement that can liquidate (`liquidate`, `close`, `settleForcedExit`, and the wind-down closes), and a dedicated action has takers close liquidatable positions.
 
 The extended suite (`test/audit/Round3ExtInvariants.t.sol`, from the independent audit) runs the same invariants with a handler that also removes taker margin, donates to insurance, pokes the oracle, advances funding, lets the relay go quiet for 15 days so requested forced exits settle at the entry price, and pushes prices outside the oracle bounds (clamped and lagging, with keepers liquidating on the way). It adds two invariants: margin removal never leaves a taker below the initial margin at the price used, and the recorded effective price always stays within the bounds.
+
+Both suites run with the launch guard on (actors 0-3 allowlisted, actor 4 and the keeper not; caps that bind now and then), deposits credited to other accounts, and one action that allowlists, raises caps, hands the admin role over, has an actor re-grant an approval, or opens to the public / lifts the caps (so roughly half the CI runs end public or uncapped). `test/invariant/GuardInvariants.t.sol` focuses on the guard: tight caps that bind often, every guard action as its own selector, trading, liquidity, liquidations and forced exits in between, invariant 6 plus the vault accounting, and the final withdraw-everything check. `test/LaunchGuard.t.sol` has the unit tests (every function and revert), the deploy-script checks and two fuzz tests: a random 40-step sequence of deposits (to self and to others), withdrawals, cap raises, allowlisting and the one-way switches by allowlisted and other accounts, and admin actions against a snapshot of every balance.
 
 ## Commands
 
@@ -94,7 +99,7 @@ Foundry 1.5.1 and solc 0.8.28 are required. Use `--offline` if `binaries.solidit
 ```bash
 cd contracts
 forge build
-forge test                      # 176 tests: unit, fuzz (512 runs), invariants (64 × 128)
+forge test                      # 215 tests: unit, fuzz (512 runs), invariants (64 × 128)
 FOUNDRY_PROFILE=ci forge test   # fuzz 4096 runs, invariants 256 × 256
 forge lint src script           # test/ is excluded in foundry.toml
 forge coverage --report summary --no-match-path "test/invariant/*"
@@ -106,8 +111,8 @@ forge snapshot                  # writes .gas-snapshot
 `setup()` function as a test contract. Measure them with
 `forge inspect <Contract> deployedBytecode` or from `out/<Contract>.sol/<Contract>.json` after `forge build --force`
 (`forge inspect` can leave abi-only artifacts in `out/`; run `forge build --force` before `forge script` afterwards)
-(runtime sizes: PerpsMarkets 17,640 bytes, about 17.2 KB of the 24 KB limit; OracleAdapter 8,112; SpotPools 5,711;
-VelumVault 4,291; MakerBook 3,918).
+(runtime sizes: PerpsMarkets 17,640 bytes, about 17.2 KB of the 24 KB limit; VelumVault 8,633 with the launch guard,
+4,291 before; OracleAdapter 8,112; SpotPools 5,711; MakerBook 3,918).
 
 To deploy locally on anvil (mock USDG with 6 decimals, TSLA and AMZN with 18, starting prices pushed):
 
@@ -126,21 +131,24 @@ forge script script/Deploy.s.sol --rpc-url https://rpc.testnet.chain.robinhood.c
 
 `PRICE_RELAYER` is required on testnet and must be a dedicated key, not the deployer: the script refuses
 otherwise (audit F-04). The oracle is set up relay-only, with no sequencer feed. This writes
-`deployments/46630.json` with the chain ID, contract addresses, tokens, relayer, guardian and start block.
-Optional settings: `GUARDIAN` (close-only switch, default none; see [Emergency controls](#emergency-controls)),
+`deployments/46630.json` with the chain ID, contract addresses, tokens, relayer, guardian, guard admin and start
+block. Optional settings: `GUARDIAN` (close-only switch, default none; see [Emergency controls](#emergency-controls)),
 `OI_CAP_TOKENS` (default 10,000 per side), `PRICE_MIN_USD` and `PRICE_MAX_USD` (default 1 and 100,000),
-and `USDG_ADDRESS` + `STOCK_ADDRESSES` + `STOCK_SYMBOLS` to override the token list. Without `GUARDIAN`
+`USDG_ADDRESS` + `STOCK_ADDRESSES` + `STOCK_SYMBOLS` to override the token list, and the launch guard:
+`GUARD_ADMIN` plus `GUARD_ACCOUNT_CAP_<SYMBOL>` / `GUARD_GLOBAL_CAP_<SYMBOL>` for USDG and every stock (see
+[Guarded launch](#guarded-launch); off by default). Without `GUARDIAN`
 the script prints a warning, before deploying and again as its last line, that no market can be put in
-close-only and the split/dividend procedure is therefore unavailable for that deployment. Every contract
-locks itself during the script; apart from the optional guardian's close-only switch there is nothing to
-administer afterwards.
+close-only and the split/dividend procedure is therefore unavailable for that deployment; it also prints the launch
+guard configuration (off, or the admin and every cap) before deploying and after the addresses. Every contract
+locks itself during the script; apart from the optional guardian's close-only switch and the optional launch-guard
+admin (until it switches the guard off) there is nothing to administer afterwards.
 
 ## Intentional simplifications vs docs/04 (Phase 3)
 
 - **Matching is atomic.** A taker opens directly against a chosen standing offer. There is no lock-then-fill step, so the 15-minute maker fill window and refund (a Phase 4 coordinator flow) don't apply yet.
 - **Maker margin per fill is S/maxL** (initial margin). Taker profit on a single position is therefore capped by that margin; beyond about a 10% move the maker side becomes liquidatable and the taker realises the profit through liquidation.
 - **Shortfall cover is per hourly epoch, pro rata and capped** at 10% of the fund at the epoch's first draw, shared with keeper top-ups (docs/04 says "pro rata after next funding"; the epoch is the hour, and the cap is new).
-- **Fees go to the insurance fund.** There is no treasury and no admin.
+- **Fees go to the insurance fund.** There is no treasury and no admin over funds (the optional launch-guard admin only decides who may deposit and how much, until it switches the guard off).
 - **Funding runs within the hour by construction.** "Funding must have run within the last hour" holds because every open accrues funding first; there is no separate staleness gate.
 - **Forced exit is available to both sides,** so a maker can't be stuck if the taker never closes.
 - **Testnet prices are relay-sourced.** The Chainlink testnet feed addresses haven't been verified, so the deploy script configures every stock as relay-sourced, bounded and rate-limited.
@@ -412,6 +420,123 @@ Pushing more often does not help: every pushed value restarts the clock at its o
 never more than 10 s behind an open), so frequent small pushes each get little allowance. With pushes every 8-10 s at
 TSLA-like volatility, at most 1-2% of seconds lag, busy or not; pushes must stay at most 10 s apart for opens.
 
+## Guarded launch
+
+An optional launch guard in `VelumVault` lets the owner run a beta limited to approved wallets and small amounts
+before the external audit opens the protocol to everyone. It is fixed at deploy and **off by default** (the testnet
+deployment is unguarded). It does not change the mainnet refusal in `script/Deploy.s.sol`: enabling mainnet is a
+separate step the owner must confirm.
+
+**Where it sits.** `VelumVault.deposit` is the only way tokens enter the protocol: the spot pools, the maker book and
+perps never transfer ERC-20s, they only move internal vault balances (`transferInternal`), and the forced-exit bond is
+ETH held by perps. So the guard checks `deposit` (and `setApproval`, below) and nothing else; `PerpsMarkets`,
+`SpotPools`, `MakerBook` and `OracleAdapter` are unchanged.
+
+| Part | While active | Switched off by |
+|---|---|---|
+| Allowlist | `deposit` needs both the payer (`msg.sender`) and the credited account (`to`) on the allowlist, and only an allowlisted address can **grant** a module approval (revoking always works). Without an approval no module can debit an account, so an address outside the allowlist cannot open, post offers, add liquidity, swap, add margin or fund insurance. | `openToPublic()`, one-way |
+| Caps (per token, base units: USDG 6 decimals, stock tokens 18) | After a deposit, the credited account's `netDeposited` must be at most `accountCap[token]` and the vault's holdings `totalInternal[token]` at most `globalCap[token]`. A cap of zero blocks that token until it is raised. | `liftCaps()`, one-way |
+
+**Withdrawals are never checked.** `withdraw` has no allowlist or cap check (while caps are active it only lowers the
+caller's `netDeposited`, saturating, so it cannot revert), and nothing a module does goes through the guard: closes,
+liquidations (by anyone, allowlisted or not), forced exits, offer withdrawals, liquidity removal, cover and bond claims
+work for everyone, always. There is no removal from the allowlist (below), so nobody who could deposit can later be
+stopped from adding funds by the allowlist, and caps can only go up.
+
+**Used-amount accounting: net of withdrawals, never below zero.**
+
+- Per account: `netDeposited[account][token]` = deposits credited to the account minus its withdrawals, floored at
+  zero. A deposit adds what arrived, a withdrawal subtracts what left. Cycling deposit, withdraw, deposit never takes an
+  account above its cap: at every moment the count is at most the cap.
+- It counts deposits, not the free balance: funds locked in offers, margin or liquidity still count, so an account
+  cannot deposit, lock and deposit again.
+- Profits or keeper rewards withdrawn beyond what was deposited set the count to zero, never below: an account can
+  never bring in more than its cap of new money at once, even after taking out winnings. Value moved between accounts
+  by trading is not a deposit; allowlisted accounts acting together hold at most the sum of their caps of their own new
+  money, and the global cap bounds everything.
+- Global: the vault's holdings `totalInternal[token]`, which is exactly all deposits minus all withdrawals; no
+  separate counter. A withdrawal frees global room at once.
+- Not chosen: gross counting (deposits only, never decreasing). It would stop a tester who withdraws from ever coming
+  back, and a global gross cap measures history, not what is at risk.
+- Once caps are lifted nothing is tracked any more (`netDeposited` stays frozen and unused).
+
+**The guard admin** (one address fixed at setup: the owner's wallet or multisig) can only:
+
+| Function | Effect |
+|---|---|
+| `addToAllowlist(address[] accounts)` | Add addresses (batch; already listed ones are skipped, the zero address reverts the batch). |
+| `raiseCaps(token, accountCap, globalCap)` | New caps in base units; neither may go down, and the account cap may not exceed the global cap. |
+| `openToPublic()` | Remove the allowlist forever. Caps, if still active, keep applying. |
+| `liftCaps()` | Remove the caps forever. The allowlist, if still active, keeps applying. |
+| `transferGuardAdmin(newAdmin)`, then `acceptGuardAdmin()` from `newAdmin` | Two-step handover; proposing zero cancels a pending one. |
+
+Once both switches are off the role is cleared (`guardAdmin` becomes zero, `GuardAdminTransferred(admin, 0)`) and the
+vault behaves exactly like an unguarded deployment.
+
+**What the guard admin cannot do:** move, freeze or redirect funds (no function of it touches a balance); block or
+delay any withdrawal, close, forced exit, liquidation or claim; remove an address; lower a cap; switch the allowlist or
+the caps back on; pause anything; change prices, parameters, tokens, modules or any other contract. A stolen admin key
+can at most allowlist anyone and raise caps without limit, which is the state the protocol is meant to reach anyway
+(`openToPublic` + `liftCaps`), not a loss of funds. Keep the key cold (a multisig); the deploy script refuses the
+price-relay key as admin.
+
+**Why there is no removal.** Removing an address cannot take anything back (withdrawals stay open), so it could only
+stop that user's future deposits, including a deposit they need to add margin and save a position from liquidation: a
+selective power over one user's positions. The allowlist is therefore add-only: to keep someone out, do not add them.
+Sanctions screening stays a frontend measure (docs/04 §4); an on-chain blocklist would need an owner decision and a new
+review.
+
+**Deploying with the guard** (whole tokens; the script multiplies by each token's `decimals()`):
+
+```bash
+GUARD_ADMIN=<owner multisig> \
+GUARD_ACCOUNT_CAP_USDG=1000 GUARD_GLOBAL_CAP_USDG=50000 \
+GUARD_ACCOUNT_CAP_TSLA=2 GUARD_GLOBAL_CAP_TSLA=100 \
+...one pair per listed stock symbol... \
+PRICE_RELAYER=<relay key address> forge script script/Deploy.s.sol --rpc-url <rpc> --broadcast --private-key <key>
+```
+
+With `GUARD_ADMIN` set every listed token needs both caps; caps without `GUARD_ADMIN`, an account cap above its global
+cap, or the price-relay key as admin are refused. The script prints the guard configuration (admin, powers, every cap
+in whole tokens and base units) before deploying and again after the addresses, and writes `guardAdmin` to the
+deployments JSON. Without `GUARD_ADMIN` it prints that the guard is off.
+
+**Operating it** (from the guard admin; caps in base units):
+
+```bash
+cast send $VAULT "addToAllowlist(address[])" "[0xAlice,0xBob]"
+cast send $VAULT "raiseCaps(address,uint256,uint256)" $USDG 5000000000 200000000000   # 5,000 / 200,000 USDG
+cast send $VAULT "openToPublic()"    # irreversible: everyone may deposit (caps still apply)
+cast send $VAULT "liftCaps()"        # irreversible: no caps (after both, the admin role is cleared)
+cast send $VAULT "transferGuardAdmin(address)" $NEW_ADMIN   # then, from $NEW_ADMIN: acceptGuardAdmin()
+```
+
+Open to the public and lift the caps after the external audit (in either order, or one now and the other later).
+
+**Views for the UI, keepers and monitoring:** `guarded()`, `allowlistActive()`, `capsActive()`, `guardAdmin()`,
+`pendingGuardAdmin()`, `isAllowlisted(account)`, `isAllowed(account)` (true once public), `accountCap(token)`,
+`globalCap(token)`, `netDeposited(account, token)`, `totalInternal(token)` (the global amount used) and
+`depositLimit(account, token)`: the most `account` can deposit for itself right now (zero when not allowed,
+`type(uint256).max` once caps are lifted). A deposit credited to someone else needs both addresses allowlisted and
+counts against the recipient's cap. Refusals: `NotAllowlisted(account)`, `AccountCapExceeded(account, token,
+netDepositedAfter, cap)`, `GlobalCapExceeded(token, totalAfter, cap)`.
+
+**Gas.** An unguarded or switched-off guard costs about 0.4k gas per deposit (the guard flags share the storage slot
+of `locked`, which `deposit` already reads), 2.1k per withdrawal and per approval (one cold read of that slot); module
+calls (`transferInternal`) are unchanged. While caps are active a first deposit costs about 36k more (the
+`netDeposited` write and the cap reads).
+
+**Limitations.**
+
+- Caps are per address: one person with several allowlisted addresses has several caps. The global cap is the real
+  bound on what is at risk.
+- An account at its cap (or with the global cap full) cannot deposit more to add margin. Funds already in the vault
+  still can be moved (withdraw an offer, remove liquidity, close another position), and the admin can raise caps; beta
+  users should keep a buffer under the cap.
+- Keepers outside the allowlist can liquidate and settle forced exits and receive the rewards. They can withdraw them
+  but, without an approval, not use them in a module while the allowlist is active.
+- The guard is fixed at setup: turning it on for an existing deployment means redeploying (like the guardian).
+
 ## Emergency controls
 
 `PerpsMarkets.setup(markets, oiCaps, guardian)` takes an optional **guardian** (zero = none, which is
@@ -465,3 +590,4 @@ must be empty first.
 - **`startBlock` in the deployments JSON** is the block the script simulated against. The indexer should start from the deployment receipts in `broadcast/` if exact.
 - **License and EVM target.** Owner decision: first-party code is proprietary, marked `SPDX-License-Identifier: UNLICENSED` (the SPDX marker for code that is not open source; select "No License (None)" when verifying on an explorer). The vendored OpenZeppelin (MIT) and forge-std (MIT/Apache-2.0) keep their licenses in `lib/`. `evm_version = cancun`: Robinhood Chain runs a recent Arbitrum Nitro (v3.11 per the docs), but confirm with a first testnet deployment.
 - **Token mechanics.** See [Token requirements](#token-requirements): only non-rebasing tokens, no sweep, issuer powers (freeze, upgrade) to confirm before listing.
+- **Launch guard.** When enabled, a capped account cannot deposit more to save a position, caps are per address, and keepers outside the allowlist can earn (and withdraw, not reuse) rewards. See [Guarded launch](#guarded-launch).

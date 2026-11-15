@@ -18,7 +18,11 @@ import {MockAggregator} from "../mocks/MockAggregator.sol";
 ///   4. Closing the whole book returns every unit: nothing is stuck and nothing is created.
 ///   5. Cover bookkeeping: reserved cover equals the unpaid budgets of epochs with unpaid claims,
 ///      outstanding claims equal the claims recorded, and the guardian never moves funds (audit F-07).
-/// The oracle has an L2 sequencer-uptime feed that the handler moves between down, grace and up (final audit).
+///   6. Launch guard: nobody outside an active allowlist adds funds or approves a module, active caps hold (net
+///      deposits per account, holdings per token), no valid withdrawal or exit is ever blocked, and the guard admin
+///      never moves funds. After the wind-down everyone withdraws everything.
+/// The oracle has an L2 sequencer-uptime feed that the handler moves between down, grace and up (final audit). The
+/// vault has a launch guard (actors 0-3 allowlisted) that the handler's guard admin raises, opens and lifts.
 contract InvariantsTest is StdInvariant, VelumBase {
     Handler internal handler;
     MockAggregator internal seq;
@@ -29,11 +33,16 @@ contract InvariantsTest is StdInvariant, VelumBase {
         return address(seq);
     }
 
+    /// @dev Caps that bind now and then at the handler's deposit sizes (100-200,000 USDG, up to 500 tokens).
+    function _guardConfig() internal override returns (address, uint256[] memory, uint256[] memory) {
+        return _guardCaps(makeAddr("guard-admin"), 600_000e6, 2_000_000e6, 1500e18, 5000e18);
+    }
+
     function setUp() public override {
         super.setUp();
         handler = new Handler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian, seq);
         targetContract(address(handler));
-        bytes4[] memory selectors = new bytes4[](33);
+        bytes4[] memory selectors = new bytes4[](35);
         selectors[0] = Handler.deposit.selector;
         selectors[1] = Handler.deposit.selector; // weighted: more deposits
         selectors[2] = Handler.withdraw.selector;
@@ -67,6 +76,8 @@ contract InvariantsTest is StdInvariant, VelumBase {
         selectors[30] = Handler.sequencer.selector;
         selectors[31] = Handler.sequencer.selector;
         selectors[32] = Handler.closeLiquidatable.selector;
+        selectors[33] = Handler.depositFor.selector;
+        selectors[34] = Handler.guardAction.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
@@ -147,6 +158,11 @@ contract InvariantsTest is StdInvariant, VelumBase {
         assertFalse(handler.guardianMovedFunds(), "guardian moved funds");
     }
 
+    /// 6. Launch guard (see Handler.checkLaunchGuard).
+    function invariant_launchGuard() public view {
+        handler.checkLaunchGuard();
+    }
+
     /// Open interest equals the sum of open positions per side.
     function invariant_openInterestMatchesPositions() public view {
         uint256[2] memory longQ;
@@ -198,6 +214,7 @@ contract InvariantsTest is StdInvariant, VelumBase {
             " seqGrace=",
             vm.toString(handler.sequencerGraces())
         );
+        line = string.concat(line, _guardStats());
         if (vm.envOr("VELUM_INV_STATS", false)) vm.writeLine("deployments/inv-stats.txt", line);
         emit log_named_string(
             "run",
@@ -249,6 +266,35 @@ contract InvariantsTest is StdInvariant, VelumBase {
                 totalShares == 0 || totalShares == pools.MIN_LIQUIDITY() || _hasOutsideLp(st), "only dust shares"
             );
         }
+        _withdrawEverything();
+    }
+
+    /// @dev 6. Nothing is trapped by the guard: every actor and the keeper withdraw everything, whatever the guard's
+    ///      state; what stays in the vault belongs to the modules (insurance, locked pool dust).
+    function _withdrawEverything() internal {
+        handler.withdrawEverything();
+        assertFalse(handler.exitBlocked(), "a final withdrawal reverted");
+        MockERC20[3] memory t = _tokens();
+        for (uint256 i; i < 3; ++i) {
+            address a = address(t[i]);
+            uint256 modules = vault.balanceOf(address(pools), a) + vault.balanceOf(address(perps), a)
+                + vault.balanceOf(address(book), a);
+            assertEq(t[i].balanceOf(address(vault)), modules, "only module balances remain");
+            assertEq(vault.totalInternal(a), modules, "total internal after withdrawals");
+        }
+    }
+
+    function _guardStats() internal view returns (string memory) {
+        return string.concat(
+            " guardRefusals=",
+            vm.toString(handler.guardRefusals()),
+            " guardAdminActions=",
+            vm.toString(handler.guardAdminActions()),
+            " allowlist=",
+            vault.allowlistActive() ? "on" : "off",
+            " caps=",
+            vault.capsActive() ? "on" : "off"
+        );
     }
 
     function _hasOutsideLp(address st) internal view returns (bool) {

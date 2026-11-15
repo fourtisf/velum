@@ -30,6 +30,17 @@ interface IDecimals {
 ///   USDG_ADDRESS + STOCK_ADDRESSES + STOCK_SYMBOLS (comma lists) to override the config file.
 /// Anvil with no env: deploys mock USDG (6 dp), TSLA and AMZN (18 dp), uses the deployer as relayer and
 ///   pushes starting prices.
+///
+/// Optional launch guard (contracts/README.md, Guarded launch). Off unless GUARD_ADMIN is set; off is the
+/// testnet default. With GUARD_ADMIN set, every listed token needs both caps, in WHOLE tokens (the script
+/// multiplies by the token's decimals(): USDG 6, stock tokens 18); 0 blocks that token until the admin raises
+/// it. Caps without GUARD_ADMIN are refused, so a deployment is never believed to be guarded when it is not.
+///   # GUARD_ADMIN=                  owner wallet or multisig: allowlists addresses, raises caps, calls
+///   #                               openToPublic() / liftCaps() (one-way), hands the role over in two steps.
+///   #                               Must not be PRICE_RELAYER.
+///   # GUARD_ACCOUNT_CAP_<SYMBOL>=   per-account cap on net deposits, whole tokens, for USDG and every stock symbol
+///   # GUARD_GLOBAL_CAP_<SYMBOL>=    cap on the vault's total holdings of the token, whole tokens (>= account cap)
+///   # e.g. GUARD_ACCOUNT_CAP_USDG=1000 GUARD_GLOBAL_CAP_USDG=50000 GUARD_ACCOUNT_CAP_TSLA=2 GUARD_GLOBAL_CAP_TSLA=100
 contract Deploy is Script {
     uint256 internal constant MAINNET = 4663;
     uint256 internal constant TESTNET = 46_630;
@@ -40,6 +51,16 @@ contract Deploy is Script {
         address usdg;
         address[] stocks;
         string[] symbols;
+    }
+
+    /// @dev Launch guard. Symbols, decimals and caps follow the vault's token order: USDG, then the stocks.
+    ///      Caps are in base units; both arrays are empty when `admin` is zero (unguarded).
+    struct Guard {
+        address admin;
+        string[] symbols;
+        uint8[] decimals;
+        uint256[] accountCaps;
+        uint256[] globalCaps;
     }
 
     struct Deployed {
@@ -69,15 +90,119 @@ contract Deploy is Script {
         address guardian = vm.envOr("GUARDIAN", address(0));
         console2.log(guardianNotice(guardian));
         Tokens memory t = _tokens();
+        Guard memory g = _guard(t);
+        checkGuard(g.admin, relayer, g.accountCaps, g.globalCaps);
+        console2.log(guardNotice(g.admin, g.symbols, g.decimals, g.accountCaps, g.globalCaps));
         uint256 startBlock = block.number;
         Deployed memory d = _deploy(t);
-        _wire(d, t, relayer, guardian);
+        _wire(d, t, relayer, guardian, g);
         if (block.chainid == ANVIL && relayer == deployer) _seedPrices(d.oracle, t.stocks);
         vm.stopBroadcast();
 
-        _write(t, d, relayer, guardian, startBlock);
+        _write(t, d, relayer, guardian, g.admin, startBlock);
+        console2.log(guardNotice(g.admin, g.symbols, g.decimals, g.accountCaps, g.globalCaps));
         // Repeated after the addresses so it is the last thing the operator sees (internal audit F-07).
         console2.log(guardianNotice(guardian));
+    }
+
+    /// @notice What the operator must know about the launch guard: who holds it, what it can and cannot do, and
+    ///         the caps per token (whole tokens and base units).
+    function guardNotice(
+        address admin,
+        string[] memory symbols,
+        uint8[] memory decimals,
+        uint256[] memory accountCaps,
+        uint256[] memory globalCaps
+    ) public pure returns (string memory out) {
+        if (admin == address(0)) {
+            return string.concat(
+                "Velum: launch guard OFF (GUARD_ADMIN not set): anyone can deposit, with no caps, from the start. ",
+                "That is the testnet default; a guarded beta needs GUARD_ADMIN and caps (contracts/README.md, Guarded launch)."
+            );
+        }
+        out = string.concat(
+            "\nVelum: launch guard ON. Guard admin ",
+            vm.toString(admin),
+            " can only allowlist addresses, raise caps, call openToPublic() / liftCaps() (one-way) and hand the role",
+            " over in two steps. It cannot move, freeze or redirect funds, block withdrawals, remove an address or",
+            " lower a cap. Until openToPublic() only allowlisted addresses can deposit or approve modules;",
+            " withdrawals, closes, liquidations and forced exits are never blocked.\nCaps until liftCaps()",
+            " (per account on net deposits / global on the vault's holdings):"
+        );
+        for (uint256 i; i < symbols.length; ++i) {
+            uint256 one = 10 ** uint256(decimals[i]);
+            out = string.concat(
+                out,
+                "\n  ",
+                symbols[i],
+                ": ",
+                vm.toString(accountCaps[i] / one),
+                " / ",
+                vm.toString(globalCaps[i] / one),
+                " tokens (base units ",
+                vm.toString(accountCaps[i]),
+                " / ",
+                vm.toString(globalCaps[i]),
+                ")"
+            );
+        }
+        out = string.concat(out, "\n");
+    }
+
+    /// @notice The launch-guard admin is a cold owner key, never the hot price-relay key. Caps must be consistent
+    ///         (the vault refuses them too, with a less helpful error), and none may be given without an admin.
+    function checkGuard(address admin, address relayer, uint256[] memory accountCaps, uint256[] memory globalCaps)
+        public
+        pure
+    {
+        require(accountCaps.length == globalCaps.length, "Velum: guard caps differ in length");
+        if (admin == address(0)) {
+            require(accountCaps.length == 0, "Velum: guard caps given but GUARD_ADMIN is not set");
+            return;
+        }
+        require(admin != relayer, "Velum: GUARD_ADMIN must not be the price-relay key");
+        for (uint256 i; i < accountCaps.length; ++i) {
+            require(accountCaps[i] <= globalCaps[i], "Velum: a GUARD_ACCOUNT_CAP is above its GUARD_GLOBAL_CAP");
+        }
+    }
+
+    /// @dev Reads GUARD_ADMIN and, when it is set, GUARD_ACCOUNT_CAP_<SYMBOL> / GUARD_GLOBAL_CAP_<SYMBOL> (whole
+    ///      tokens) for USDG and every stock. Without GUARD_ADMIN any of those variables is refused.
+    function _guard(Tokens memory t) internal view returns (Guard memory g) {
+        g.admin = vm.envOr("GUARD_ADMIN", address(0));
+        uint256 n = t.stocks.length + 1;
+        g.symbols = new string[](n);
+        g.decimals = new uint8[](n);
+        g.symbols[0] = "USDG";
+        g.decimals[0] = IDecimals(t.usdg).decimals();
+        for (uint256 i; i < t.stocks.length; ++i) {
+            g.symbols[i + 1] = t.symbols[i];
+            g.decimals[i + 1] = IDecimals(t.stocks[i]).decimals();
+        }
+        if (g.admin == address(0)) {
+            for (uint256 i; i < n; ++i) {
+                require(
+                    !vm.envExists(string.concat("GUARD_ACCOUNT_CAP_", g.symbols[i]))
+                        && !vm.envExists(string.concat("GUARD_GLOBAL_CAP_", g.symbols[i])),
+                    "Velum: a GUARD_*_CAP_* variable is set but GUARD_ADMIN is not; set GUARD_ADMIN or unset the caps"
+                );
+            }
+            return g;
+        }
+        g.accountCaps = new uint256[](n);
+        g.globalCaps = new uint256[](n);
+        for (uint256 i; i < n; ++i) {
+            uint256 one = 10 ** uint256(g.decimals[i]);
+            g.accountCaps[i] = _wholeTokens(string.concat("GUARD_ACCOUNT_CAP_", g.symbols[i])) * one;
+            g.globalCaps[i] = _wholeTokens(string.concat("GUARD_GLOBAL_CAP_", g.symbols[i])) * one;
+        }
+    }
+
+    function _wholeTokens(string memory name) internal view returns (uint256) {
+        require(
+            vm.envExists(name), string.concat("Velum: GUARD_ADMIN is set, so ", name, " (whole tokens) is required")
+        );
+        return vm.envUint(name);
     }
 
     /// @notice What the operator must know about the guardian (internal audit F-07). The guardian stays
@@ -122,8 +247,8 @@ contract Deploy is Script {
     }
 
     /// @dev One-time setup of every contract; each locks itself permanently afterwards.
-    function _wire(Deployed memory d, Tokens memory t, address relayer, address guardian) internal {
-        _wireVault(d, t);
+    function _wire(Deployed memory d, Tokens memory t, address relayer, address guardian, Guard memory g) internal {
+        _wireVault(d, t, g);
         uint256 n = t.stocks.length;
         // Chainlink feeds for testnet are not verified yet, so every stock is relay-sourced.
         uint128[] memory mins = new uint128[](n);
@@ -146,8 +271,9 @@ contract Deploy is Script {
         d.perps.setup(t.stocks, caps, guardian);
     }
 
-    /// @dev Vault: tokens, modules, and the protocol contracts that can never withdraw (R2-05).
-    function _wireVault(Deployed memory d, Tokens memory t) internal {
+    /// @dev Vault: tokens, modules, the protocol contracts that can never withdraw (R2-05) and the launch guard
+    ///      (caps in the vault's token order: USDG, then the stocks).
+    function _wireVault(Deployed memory d, Tokens memory t, Guard memory g) internal {
         uint256 n = t.stocks.length;
         address[] memory vaultTokens = new address[](n + 1);
         vaultTokens[0] = t.usdg;
@@ -160,7 +286,7 @@ contract Deploy is Script {
         modules[2] = address(d.perps);
         address[] memory blocked = new address[](1);
         blocked[0] = address(d.oracle);
-        d.vault.setup(vaultTokens, modules, blocked);
+        d.vault.setup(vaultTokens, modules, blocked, g.admin, g.accountCaps, g.globalCaps);
     }
 
     function _seedPrices(OracleAdapter oracle, address[] memory stocks) internal {
@@ -201,9 +327,14 @@ contract Deploy is Script {
         }
     }
 
-    function _write(Tokens memory t, Deployed memory d, address relayer, address guardian, uint256 startBlock)
-        internal
-    {
+    function _write(
+        Tokens memory t,
+        Deployed memory d,
+        address relayer,
+        address guardian,
+        address guardAdmin,
+        uint256 startBlock
+    ) internal {
         string memory tok = "tokens";
         vm.serializeAddress(tok, "USDG", t.usdg);
         string memory tokensJson;
@@ -222,6 +353,7 @@ contract Deploy is Script {
         vm.serializeUint(root, "startBlock", startBlock);
         vm.serializeAddress(root, "priceRelayer", relayer);
         vm.serializeAddress(root, "guardian", guardian);
+        vm.serializeAddress(root, "guardAdmin", guardAdmin);
         vm.serializeString(root, "tokens", tokensJson);
         string memory out = vm.serializeString(root, "contracts", contractsJson);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");

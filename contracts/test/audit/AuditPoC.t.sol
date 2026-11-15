@@ -712,7 +712,7 @@ contract AuditChainlinkPoC is Test {
         modules[1] = address(perps);
         address[] memory blocked = new address[](1);
         blocked[0] = address(oracle);
-        vault.setup(tokens, modules, blocked);
+        vault.setup(tokens, modules, blocked, address(0), new uint256[](0), new uint256[](0));
 
         address[] memory stocks = new address[](1);
         stocks[0] = address(tsla);

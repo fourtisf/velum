@@ -8,11 +8,13 @@ Foundry project in `contracts/`; `contracts/README.md` has the full model, event
 limitations. Solidity ^0.8.28, OpenZeppelin 5.4.0 (MIT, vendored unmodified) for ERC20 helpers and
 ReentrancyGuard only. First-party code is proprietary (`SPDX-License-Identifier: UNLICENSED`).
 **Testnet only** until the Phase 5 external audit: the deploy script refuses Robinhood Chain mainnet (4663).
-No owner, no pause, no upgrade: every contract is wired by a one-time `setup` and then locked.
+No owner, no pause, no upgrade: every contract is wired by a one-time `setup` and then locked. The only roles are
+the optional guardian (close-only switch) and the optional launch-guard admin (who may deposit and how much, until it
+switches the guard off for good); neither can move funds or block an exit.
 
 | Contract | Responsibility |
 |---|---|
-| `VelumVault` | Holds all tokens. Deposits (credits what actually arrived), withdrawals from your own balance only, internal balances per (account, token). Neither a deposit nor a withdrawal may go to an address that can never use it: a module, the vault itself, a listed token or a protocol address fixed at setup (the oracle). Modules move internal balances, never tokens. No admin, no pause, no sweep. |
+| `VelumVault` | Holds all tokens. Deposits (credits what actually arrived), withdrawals from your own balance only, internal balances per (account, token). Neither a deposit nor a withdrawal may go to an address that can never use it: a module, the vault itself, a listed token or a protocol address fixed at setup (the oracle). Modules move internal balances, never tokens, so `deposit` is the only way tokens enter. No admin over funds, no pause, no sweep; optional launch guard below. |
 | `SpotPools` | Constant-product pools (Stock/USDG), 30 bps fee kept in the pool, LP shares, 2-hop routing through USDG in one call (two fees). Pools and fees fixed at deploy. Swaps and liquidity changes need a non-zero minimum out (slippage protection) and a deadline. |
 | `PerpsMarkets` | Isolated-margin pairs between one taker and one maker. IM 1/maxL (20%), MM 0.5/maxL (10%), leverage 1x–5x in 0.5 steps, taker fee 6 bps on open and on close (to insurance), penalty 1%, max 100 tokens/position, minimum position 10 USDG, per-market OI cap per side. Maker margin per fill = S/maxL. Opens need an oracle price ≤ **10 s** old that is not lagging, the sequencer past its grace hour and a market not in close-only; closes a price ≤ 60 s old that is not lagging. Opens and closes need a non-zero price limit (slippage protection). Margin removal keeps the claim ≥ IM and needs the open freshness (10 s). |
 | `MakerBook` | Standing offers: backing, largest fill, open spread (2 bps–5%), close spread (≤ 5%), expiry. Phase 3 matching is atomic (a taker opens directly against a chosen offer; the 15-minute fill window is a Phase 4 coordinator flow). A fill takes the maker margin S/maxL out of the backing, so backing caps the maker's margin, not its exposure (up to 5 × backing of notional, on either side). Close spread is binding: the taker can close any time without maker signature. |
@@ -21,6 +23,7 @@ No owner, no pause, no upgrade: every contract is wired by a one-time `setup` an
 | `Liquidation` | Anyone (risk workers in Phase 4) can liquidate a side below maintenance at a price ≤ 60 s old (a lagging price is accepted); penalty 1% of notional split 50/50 worker/insurance; if the loser cannot pay it, insurance tops the worker up to half the penalty, ≤ 1 USDG. Sequencer: no liquidations while the L2 sequencer is down; during the 1-hour grace period after it returns, only positions below half the maintenance margin (MM/2); after that, all below MM. A shortfall becomes an insurance cover claim, paid pro rata after the hourly epoch from a budget capped at 10% of the insurance fund as it stood at the epoch's first draw (keeper top-ups included); the rest is a haircut. |
 | `ForcedExit` | Either side requests with a 0.001 ETH refundable bond; after 7 days anyone settles. Price: the oracle price, at most 10 s old (the settler picks the moment); the entry price if the oracle is dead; the bound if the source is outside the oracle bounds and the reported price has reached it. A forced exit the **taker** requested costs exactly a plain close (committed close spread and close fee, capped at the taker's claim, also at the entry price); one the **maker** requested settles with no spread and no fee. A position that is liquidatable at settlement is liquidated instead (penalty applies). |
 | Guardian | Optional, fixed at setup (off by default; the deploy script warns when unset): can only switch a market into or out of close-only, for the stock split / dividend procedure. It cannot move, freeze or redirect funds or change prices or parameters. |
+| Launch guard | Optional, in `VelumVault`, fixed at setup (off by default, the testnet setting; it does not lift the deploy script's mainnet refusal). For a beta limited to approved wallets and small amounts before the external audit. While the **allowlist** is on, only allowlisted addresses can deposit (payer and credited account) or grant module approvals, so nobody else can open, post offers, add liquidity or swap. While **caps** are on, per token (base units): each account's net deposits (deposits minus withdrawals, never below zero, funds locked in modules included) stay within the account cap and the vault's holdings within the global cap. The guard admin (owner wallet or multisig) can only add addresses (no removal), raise caps, call the one-way `openToPublic()` and `liftCaps()`, and hand the role over in two steps; once both are off the role is cleared and the guard is inert. It cannot move, freeze or redirect funds, lower a cap or block anything: withdrawals, closes, liquidations, forced exits and claims never pass the guard. Details: `contracts/README.md`, Guarded launch. |
 
 Insurance fund: open and close fees plus half of each liquidation penalty; anyone can add to it.
 
@@ -33,7 +36,9 @@ upgrade control, freeze/wipe powers, transfer fees; checklist in `contracts/READ
 Tests: Foundry unit, fuzz and invariant tests (no token can leave the vault except via valid
 withdraw/close/liquidate; sum of balances == vault holdings; liquidation, whether through liquidate, close or
 forced exit, never pays more than posted margins + insurance; cover is deferred and capped; the suites run with
-an L2 sequencer feed moving between down, grace and up), audit regressions for every finding, and a test tying
+an L2 sequencer feed moving between down, grace and up, and with the launch guard on: nobody outside an active
+allowlist adds funds, active caps hold, no withdrawal or exit is blocked, the guard admin never changes a balance),
+audit regressions for every finding, and a test tying
 the contract constants to `packages/config/robinhood-testnet.json` (it fails with a clear message when
 `packages/config` is missing).
 

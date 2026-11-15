@@ -150,13 +150,18 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
         return address(seq);
     }
 
+    /// @dev Launch guard (actors 0-3 allowlisted), as in the main suite: invariant 6 runs here too.
+    function _guardConfig() internal override returns (address, uint256[] memory, uint256[] memory) {
+        return _guardCaps(makeAddr("guard-admin"), 600_000e6, 2_000_000e6, 1500e18, 5000e18);
+    }
+
     function setUp() public override {
         super.setUp();
         Round3ExtHandler h =
             new Round3ExtHandler(vault, oracle, pools, book, perps, usdg, tsla, amzn, relayer, guardian, seq);
         handler = h;
         targetContract(address(h));
-        bytes4[] memory s = new bytes4[](37);
+        bytes4[] memory s = new bytes4[](39);
         s[0] = Handler.deposit.selector;
         s[1] = Handler.deposit.selector;
         s[2] = Handler.withdraw.selector;
@@ -194,6 +199,8 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
         s[34] = Handler.sequencer.selector;
         s[35] = Handler.sequencer.selector;
         s[36] = Handler.closeLiquidatable.selector;
+        s[37] = Handler.depositFor.selector;
+        s[38] = Handler.guardAction.selector;
         targetSelector(FuzzSelector({addr: address(h), selectors: s}));
     }
 
@@ -278,6 +285,11 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
         assertFalse(handler.guardianMovedFunds(), "guardian moved funds");
     }
 
+    /// 6. Launch guard (see Handler.checkLaunchGuard).
+    function invariant_launchGuard() public view {
+        handler.checkLaunchGuard();
+    }
+
     /// Open interest equals the sum of open positions per side.
     function invariant_openInterestMatchesPositions() public view {
         uint256[2] memory longQ;
@@ -345,6 +357,13 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
             " seqGrace=",
             vm.toString(handler.sequencerGraces())
         );
+        line = string.concat(
+            line,
+            " guardRefusals=",
+            vm.toString(handler.guardRefusals()),
+            " guardAdminActions=",
+            vm.toString(handler.guardAdminActions())
+        );
         if (vm.envOr("VELUM_INV_STATS", false)) vm.writeLine("deployments/inv-stats.txt", string.concat("ext ", line));
         emit log_named_string("ext run", line);
         handler.windDown();
@@ -377,6 +396,16 @@ contract Round3ExtInvariantsTest is StdInvariant, VelumBase {
             assertTrue(
                 totalShares == 0 || totalShares == pools.MIN_LIQUIDITY() || _hasOutsideLp(st), "only dust shares"
             );
+        }
+        // 6. Nothing is trapped by the guard: everyone withdraws everything; only module balances remain.
+        handler.withdrawEverything();
+        assertFalse(handler.exitBlocked(), "a final withdrawal reverted");
+        for (uint256 i; i < 3; ++i) {
+            address a = address(t[i]);
+            uint256 modules = vault.balanceOf(address(pools), a) + vault.balanceOf(address(perps), a)
+                + vault.balanceOf(address(book), a);
+            assertEq(t[i].balanceOf(address(vault)), modules, "only module balances remain");
+            assertEq(vault.totalInternal(a), modules, "total internal after withdrawals");
         }
     }
 

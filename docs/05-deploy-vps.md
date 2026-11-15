@@ -275,14 +275,28 @@ address (derived as `velum`, isolated like every other user command). A valid ex
 any other existing value (or a duplicated line) is refused, never replaced. Run a release afterwards so
 the workers get it.
 
-## Dedicated Redis for Velum (recommended on a shared server)
+## Dedicated Redis for Velum (strongly recommended on a shared server)
 
 By default Velum shares the server's Redis (`REDIS_DB`, default 5) and its `requirepass`. Every other
 program that knows that password can select Velum's database and read or write its keys: queue jobs,
-price snapshots, rate-limit counters (backend audit M-2). The apps validate everything they read back
-and never trust a queued job's payload, but only a separate Redis keeps other tenants out entirely.
-`deploy/redis-velum.sh` (root, idempotent, under the deploy lock) runs one just for Velum and leaves
-the system Redis, its config and its data untouched:
+price snapshots, candle caches, heartbeats, rate-limit counters (backend audit M-2, F-2).
+
+What the apps do about it, so the shared Redis stays usable (an upgraded release keeps working on it):
+- Price snapshots, candle caches and heartbeats are authenticated with an HMAC under a key the API and
+  the workers derive from `DATABASE_URL`, which other tenants do not have (packages/config
+  `cache-mac.ts`, docs/02). A forged or tampered value reads as missing: a forged price is never shown as
+  live or quoted, a forged heartbeat never makes dead workers look alive to `deploy.sh`. Values written
+  by a release older than this one also read as missing; the workers rewrite them at start.
+- Changing the database password (`DATABASE_URL`) rotates that key: run `deploy.sh` (or restart api and
+  workers together); until the workers have rewritten the values (a few seconds) prices read as missing.
+  The API and the workers must always get the same `DATABASE_URL`, as they do from `.env`.
+- Every value is validated after its MAC, and a queued job's payload is never trusted.
+
+What stays possible for another tenant of a shared Redis (denial of service, never a false price):
+deleting Velum's keys or putting back an older genuine value (prices read as missing or stale), filling
+or deleting queue jobs, and changing rate-limit counters, which can lock visitors out (429) or lift the
+limits. Only a separate Redis removes these. `deploy/redis-velum.sh` (root, idempotent, under the deploy
+lock) runs one just for Velum and leaves the system Redis, its config and its data untouched:
 
 | What | Where | Owner, mode |
 |---|---|---|
@@ -307,8 +321,9 @@ The script starts `velum-redis`, checks that it answers on the socket with no TC
 `noeviction`, that `velum` can reach the socket and `velum-web` cannot, and only then sets
 `REDIS_URL=unix://:<password>@/run/velum-redis/redis.sock` in `.env` (backed up first). Nothing has to be
 copied: prices, candle caches, queues and heartbeats are rebuilt by the workers on start (candles live
-in Postgres); rate-limit counters start from zero. Re-running it keeps the password and the data and
-restarts `velum-redis` only when its config or unit changed.
+in Postgres; the MAC key comes from `DATABASE_URL`, so it does not change with the Redis); rate-limit
+counters start from zero. Re-running it keeps the password and the data and restarts `velum-redis` only
+when its config or unit changed.
 
 Verify:
 ```bash

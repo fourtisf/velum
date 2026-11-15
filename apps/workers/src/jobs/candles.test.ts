@@ -7,6 +7,7 @@ import type { PrismaClient } from '@velum/db';
 import { parseWad } from '@velum/math';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
+import { openJson, testMac } from '../__fixtures__/mac';
 import { loadLastTickAt } from '../bootstrap';
 import { seriesKey, type CandleJobData, type WorkerContext } from '../context';
 import { bucketStart, toCandle, type WadCandle } from '../lib/candles';
@@ -67,6 +68,7 @@ async function ctxAfterRestart(series: Map<string, WadCandle[]>, newestTick: Map
     lastOpenRefresh: 0,
     series,
     lastTickAt: await loadLastTickAt(prisma, marketIds),
+    mac: testMac,
     enqueueCandles: async () => {},
   } as WorkerContext;
   return { ctx, sql, cache };
@@ -93,7 +95,8 @@ describe('R2-L1: a retried candle job delivered after a restart never rewinds th
     expect(sql[0]).not.toContain('EXCLUDED."c"');
     for (const tf of TIMEFRAMES) {
       expect(ctx.series.get(seriesKey('TSLA', tf))!.map(toCandle).at(-1)).toEqual({ t: bucketStart(T0, tf), o: '100', h: '105', l: '90', c: '105' });
-      expect(JSON.parse(cache.get(cacheKeys.candles('TSLA', tf))!).at(-1).c).toBe('105');
+      const k = cacheKeys.candles('TSLA', tf);
+      expect(openJson<{ source: string; candles: Array<{ c: string }> }>(cache.get(k), k)).toMatchObject({ source: 'robinhood', candles: [{ c: '105' }] });
     }
     expect(ctx.lastTickAt.get('TSLA')).toBe(T0 + 5000);
   });

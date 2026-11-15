@@ -1,11 +1,15 @@
-import type { Candle, MarketSnapshot, Timeframe } from '@velum/config';
+import type { Candle, CandleCache, MarketSnapshot, Timeframe } from '@velum/config';
 import type { ApiEnv } from '../env';
 
-/** Reads what the workers write to Redis (see packages/config/src/cache.ts). */
+/**
+ * Reads what the workers write to Redis (see packages/config/src/cache.ts). Every value is authenticated
+ * (audit F-2): one with a bad or missing MAC reads as missing.
+ */
 export interface CacheReader {
   ping(): Promise<boolean>;
   snapshots(symbols: readonly string[]): Promise<Map<string, MarketSnapshot>>;
-  candles(symbol: string, tf: Timeframe): Promise<Candle[] | null>;
+  /** The cached series with the source it was built from (audit F-3), or null. */
+  candles(symbol: string, tf: Timeframe): Promise<CandleCache | null>;
   heartbeat(worker: string): Promise<number | null>;
 }
 
@@ -20,7 +24,10 @@ export interface PublishedPool {
 export interface CandleQuery {
   /** Ignore buckets that start after this time (Unix ms): future rows are never served (audit L-1). */
   until?: number;
-  /** Only candles built from a real price source (Candle.source not "demo"), used on mainnet (audit I-7). */
+  /**
+   * Only candles tagged with a real price source (robinhood or chainlink), used on mainnet (audit I-7):
+   * demo candles and candles of unknown source (NULL, audit F-1, F-4) are never served as real history.
+   */
   realOnly?: boolean;
 }
 

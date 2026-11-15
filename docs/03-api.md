@@ -18,16 +18,20 @@ today.
 every 2 s, so one tab uses 30 and several users behind one NAT address would starve each other at 120),
 30 on `/v1/quote`, 60 on `/v1/health`, 10 on `/v1/relay/*` (planned). The client is Nginx's `X-Real-IP`,
 trusted only on requests carrying `X-Velum-Proxy-Secret` when `PROXY_SECRET` is set; IPv6 clients count
-per /64 (one subscriber usually holds a whole /64), IPv4-mapped IPv6 as the IPv4 address. Counters live
-in Redis, shared by every API instance; while Redis is unreachable each instance counts in memory, so the
-limits stay on.
+per /64 (one subscriber usually holds a whole /64), IPv4-mapped IPv6 as the IPv4 address. `HEAD` on a
+route counts against the same budget as `GET` on it, and `OPTIONS` (CORS preflight) against the read
+budget. Counters live in Redis, shared by every API instance; while Redis is unreachable each instance
+counts in memory, so the limits stay on.
 
-**Redis is not trusted.** On a shared server another tenant may write Velum's keys. The API validates
-every value it reads (shape, decimal strings, prices in (0, 1e9), at most 60 spark points, no time more
-than 30 s ahead) and treats anything else as missing. When Redis is down or slow (reads time out after
-250 ms), answers are degraded rather than failing: markets come from the last values the instance saw
-(or the seed price), all `stale: true` with `staleReason: "unavailable"`; `/v1/quote` answers 503
-`UNAVAILABLE`; candles come from Postgres.
+**Redis is not trusted.** On a shared server another tenant may write Velum's keys. Price snapshots,
+candle caches and heartbeats carry an HMAC under a key the API and the workers derive from
+`DATABASE_URL` (docs/02); a value without a valid MAC, or written for the other network, counts as
+missing, so a forged price shows as `noPrice` (seed price, stale) and is never quoted. The API also
+validates every value it reads (shape, decimal strings, prices in (0, 1e9), at most 60 spark points, no
+time more than 30 s ahead). When Redis is down or slow (reads time out after 250 ms), answers are
+degraded rather than failing: markets come from the last values the instance saw (or the seed price),
+all `stale: true` with `staleReason: "unavailable"`; `/v1/quote` answers 503 `UNAVAILABLE`; candles come
+from Postgres.
 
 ## Read
 
@@ -90,7 +94,7 @@ Contract addresses and public keys the client needs.
 | `outdated` | the workers have not confirmed the quote with the source for over 60 s |
 | `demoSource` | a simulated price on mainnet (never live there) |
 | `marketClosed` | real price source, session closed (weekend or US holiday) |
-| `quoteFrozen` | real price source, session open, but the quote has not changed for 15 minutes |
+| `quoteFrozen` | real price source, session open, but the quote has not changed for 15 minutes, or the workers started without a snapshot of it and have not yet seen it change (its quote time is unknown) |
 
   Simulated prices on testnet ignore the calendar (`marketOpen` can be `false` while `stale` is `false`).
 - Answers come from a 1 s in-process cache per API instance.
@@ -101,14 +105,21 @@ quote (not adjusted for corporate actions); the response also carries `tokenBid`
 undocumented and equal `bid`/`ask` × `currentMultiplier` (checked on 2026-11-15 against
 `/rhj/assets`). The workers use `tokenBid`/`tokenAsk` and, when a quote lacks them, compute
 `bid`/`ask` × `currentMultiplier` from `/rhj/assets` (matched by the exact token address). A quote with
-neither is skipped.
+neither is skipped, and so is the multiplier fallback while `/rhj/assets` has not been read for over a
+day, or while it announces a multiplier change (`pendingMultiplier` set and different from
+`currentMultiplier`: a corporate action whose effective time the API does not give; `""` on every asset
+when checked on 2026-11-15). After a restart without a snapshot, the first quote of a market must also
+pass the jump guard (a move over 25% needs three agreeing quotes) against the newest stored tick.
 
 ### `GET /v1/markets/:symbol/candles?tf=15m|1h|4h|1D&limit=120`
 `[{ "t": 1794646800000, "o": "390.02", "h": "391.10", "l": "389.25", "c": "390.88" }]`
 
-From the workers' cache when it validates (aligned, increasing bucket times, none in the future, low/high
-bracketing open/close), otherwise from Postgres: never a bucket dated ahead of now, and on mainnet only
-candles built from a real price source (each candle records its source).
+From the workers' cache when it is authenticated and validates (aligned, increasing bucket times, none
+in the future, low/high bracketing open/close, written for this network), otherwise from Postgres: never
+a bucket dated ahead of now. On mainnet only real history: the cache only when it was built from a real
+price source (it records its source and network), Postgres only candles tagged `robinhood` or
+`chainlink`. Candles of unknown source (older than the source column and not proven by stored ticks,
+docs/02) are kept but not served on mainnet; testnet serves every candle.
 
 ### `GET /v1/markets/:symbol/funding?limit=48` *(planned, Phase 3)*
 `[{ "t": 1794646800000, "rate": "0.0042", "index": "…" }]`

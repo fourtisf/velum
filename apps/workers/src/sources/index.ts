@@ -229,21 +229,47 @@ export function jumpGuard() {
 export const RH_ASSETS_REFRESH_MS = 10 * 60_000;
 /** After a failed /rhj/assets read, wait this long before trying again. */
 export const RH_ASSETS_RETRY_MS = 60_000;
+/**
+ * A multiplier table older than this is never used (audit F-5): while /rhj/assets keeps failing, a
+ * corporate action (a split) would otherwise be priced with the old multiplier indefinitely. The quote
+ * is then unusable and the market goes stale until the table is read again.
+ */
+export const RH_MULTIPLIER_MAX_AGE_MS = 24 * 3_600_000;
 
 interface RhAsset {
   tokenSymbol?: string;
   deployments?: Array<{ contractAddress?: string; chainId?: number }>;
   currentMultiplier?: string;
+  /**
+   * Checked 2026-11-15 (one read of /rhj/assets): present on every asset, "" on all 203. A non-empty value
+   * announces a multiplier change (a corporate action) whose effective time the API does not give.
+   */
+  pendingMultiplier?: string | null;
+}
+
+/** True when an asset announces a multiplier change: anything but "", absent, or the current multiplier. */
+function multiplierPending(a: RhAsset): boolean {
+  const p = a.pendingMultiplier;
+  if (p === undefined || p === null || p === '') return false;
+  if (typeof p !== 'string' || !STRICT_DECIMAL.test(p)) return true;
+  return parseWad(p) !== parseWad(a.currentMultiplier!);
 }
 
 /**
  * currentMultiplier per symbol from /rhj/assets, matched by the exact mainnet token address (CC-05).
- * Read lazily (only when a quote lacks tokenBid/tokenAsk) and cached for RH_ASSETS_REFRESH_MS.
+ * Read lazily (only when a quote lacks tokenBid/tokenAsk) and cached for RH_ASSETS_REFRESH_MS. Returns
+ * null (the quote is unusable) when the table is older than RH_MULTIPLIER_MAX_AGE_MS because reads keep
+ * failing, and for an asset with a pending multiplier change (audit F-5): around a corporate action the
+ * raw bid/ask may already be on the new basis while currentMultiplier is still the old one, or the other
+ * way round, and the API does not say when it switches. tokenBid/tokenAsk, which Robinhood adjusts
+ * itself, are used whenever present and do not depend on this table.
  */
 export function rhMultipliers(log: Logger, fetchImpl: typeof fetch = fetch) {
   let table = new Map<string, string>();
+  let pending = new Set<string>();
   let fetchedAt = -Infinity;
   let failedAt = -Infinity;
+  let warnedExpiredAt = -Infinity;
   let inflight: Promise<void> | null = null;
   const load = async (now: number) => {
     try {
@@ -251,13 +277,18 @@ export function rhMultipliers(log: Logger, fetchImpl: typeof fetch = fetch) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { assets?: RhAsset[] };
       const next = new Map<string, string>();
+      const nextPending = new Set<string>();
       for (const a of body.assets ?? []) {
         const want = a.tokenSymbol ? MAINNET_TOKEN_ADDRESSES[a.tokenSymbol] : undefined;
         if (!want || !a.currentMultiplier || !STRICT_DECIMAL.test(a.currentMultiplier)) continue;
-        if (a.deployments?.some((d) => d.chainId === MAINNET_CHAIN_ID && d.contractAddress?.toLowerCase() === want)) next.set(a.tokenSymbol!, a.currentMultiplier);
+        if (!a.deployments?.some((d) => d.chainId === MAINNET_CHAIN_ID && d.contractAddress?.toLowerCase() === want)) continue;
+        next.set(a.tokenSymbol!, a.currentMultiplier);
+        if (multiplierPending(a)) nextPending.add(a.tokenSymbol!);
       }
       table = next;
+      pending = nextPending;
       fetchedAt = now;
+      if (nextPending.size) log.warn('robinhood assets announce a multiplier change; quotes without tokenBid/tokenAsk are skipped for', { symbols: [...nextPending].join(',') });
     } catch (err) {
       failedAt = now;
       log.warn('robinhood assets read failed', { err: redactUrls(err instanceof Error ? err.message : String(err)) });
@@ -268,6 +299,14 @@ export function rhMultipliers(log: Logger, fetchImpl: typeof fetch = fetch) {
       inflight ??= load(now).finally(() => (inflight = null));
       await inflight;
     }
+    if (now - fetchedAt > RH_MULTIPLIER_MAX_AGE_MS) {
+      if (fetchedAt > -Infinity && now - warnedExpiredAt > RH_ASSETS_REFRESH_MS) {
+        warnedExpiredAt = now;
+        log.warn('robinhood multipliers are over a day old; quotes without tokenBid/tokenAsk are skipped', { ageHours: Math.floor((now - fetchedAt) / 3_600_000) });
+      }
+      return null;
+    }
+    if (pending.has(symbol)) return null;
     return table.get(symbol) ?? null;
   };
 }

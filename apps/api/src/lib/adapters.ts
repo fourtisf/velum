@@ -1,5 +1,19 @@
 /** Production implementations of the readers in deps.ts (Redis, Prisma, viem). */
-import { TIMEFRAME_MS, cacheKeys, parseCandles, parseHeartbeat, parseSnapshot, type Candle, type MarketSnapshot, type Timeframe } from '@velum/config';
+import {
+  MAX_CANDLES_BYTES,
+  MAX_HEARTBEAT_BYTES,
+  MAX_SNAPSHOT_BYTES,
+  REAL_PRICE_SOURCES,
+  TIMEFRAME_MS,
+  cacheKeys,
+  parseCandleCache,
+  parseHeartbeat,
+  parseSnapshot,
+  type Candle,
+  type MarketSnapshot,
+  type Timeframe,
+} from '@velum/config';
+import type { CacheMac } from '@velum/config/src/cache-mac';
 import { Prisma, type PrismaClient } from '@velum/db';
 import type { Redis } from 'ioredis';
 import { createPublicClient, http } from 'viem';
@@ -15,13 +29,15 @@ export const REDIS_READ_TIMEOUT_MS = 250;
 export const REDIS_BREAKER_MS = 2000;
 
 /**
- * Reads what the workers wrote. Redis may be shared with other tenants (audit M-2), so every value is
- * validated with the parsers in packages/config (cache.ts): malformed, oversized or future-dated values
- * count as missing. Reads time out after REDIS_READ_TIMEOUT_MS (rejecting) instead of waiting for the
- * client's reconnects, and after a failure they fail at once for REDIS_BREAKER_MS (ping is exempt:
- * /v1/health must see the truth).
+ * Reads what the workers wrote. Redis may be shared with other tenants (audit M-2, F-2): every value
+ * must carry a valid MAC (`mac`, keyed from DATABASE_URL, bound to the network and the Redis key) and is
+ * then validated with the parsers in packages/config (cache.ts). Unauthenticated, malformed, oversized
+ * or future-dated values, and candle caches written for another network, count as missing. Reads time
+ * out after REDIS_READ_TIMEOUT_MS (rejecting) instead of waiting for the client's reconnects, and after a
+ * failure they fail at once for REDIS_BREAKER_MS (ping is exempt: /v1/health must see the truth).
  */
-export function redisCache(redis: Redis, opts: { now?: () => number; timeoutMs?: number } = {}): CacheReader {
+export function redisCache(redis: Redis, opts: { mac: CacheMac; now?: () => number; timeoutMs?: number }): CacheReader {
+  const { mac } = opts;
   const now = opts.now ?? Date.now;
   const ms = opts.timeoutMs ?? REDIS_READ_TIMEOUT_MS;
   const guarded = circuit(REDIS_BREAKER_MS);
@@ -37,20 +53,24 @@ export function redisCache(redis: Redis, opts: { now?: () => number; timeoutMs?:
     async snapshots(symbols) {
       const out = new Map<string, MarketSnapshot>();
       if (!symbols.length) return out;
-      const raws = await read(() => redis.mget(...symbols.map((s) => cacheKeys.price(s))));
+      const keys = symbols.map((s) => cacheKeys.price(s));
+      const raws = await read(() => redis.mget(...keys));
       const t = now();
       raws.forEach((raw, i) => {
-        const snap = parseSnapshot(raw, symbols[i]!, t);
+        const snap = parseSnapshot(mac.open(keys[i]!, raw, MAX_SNAPSHOT_BYTES), symbols[i]!, t);
         if (snap) out.set(symbols[i]!, snap);
       });
       return out;
     },
     async candles(symbol, tf) {
-      const raw = await read(() => redis.get(cacheKeys.candles(symbol, tf)));
-      return parseCandles(raw, TIMEFRAME_MS[tf], now());
+      const key = cacheKeys.candles(symbol, tf);
+      const raw = await read(() => redis.get(key));
+      const cached = parseCandleCache(mac.open(key, raw, MAX_CANDLES_BYTES), TIMEFRAME_MS[tf], now());
+      return cached && cached.network === mac.network ? cached : null;
     },
     async heartbeat(worker) {
-      return parseHeartbeat(await read(() => redis.get(cacheKeys.heartbeat(worker))), now());
+      const key = cacheKeys.heartbeat(worker);
+      return parseHeartbeat(mac.open(key, await read(() => redis.get(key)), MAX_HEARTBEAT_BYTES), now());
     },
   };
 }
@@ -98,7 +118,8 @@ export function prismaDb(prisma: PrismaClient): DbReader {
           tf,
           market: { symbol },
           ...(query.until !== undefined ? { t: { lte: new Date(query.until) } } : {}),
-          ...(query.realOnly ? { source: { not: 'demo' } } : {}),
+          // Positive tags only: a NULL (unknown) source is never served as real (audit F-1, F-4).
+          ...(query.realOnly ? { source: { in: [...REAL_PRICE_SOURCES] } } : {}),
         },
         orderBy: { t: 'desc' },
         take: limit,

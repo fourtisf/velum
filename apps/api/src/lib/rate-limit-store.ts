@@ -82,6 +82,8 @@ export function fallbackStore(opts: FallbackStoreOptions) {
     redis.defineCommand('velumRateIncr', { numberOfKeys: 1, lua: INCR_LUA });
     redis.defineCommand('velumRateRead', { numberOfKeys: 1, lua: READ_LUA });
   }
+  // One in-memory window set per route budget, shared by every child() for that budget (HEAD and GET).
+  const routeWindows = new Map<string, MemoryWindows>();
   let lastWarn = 0;
   const failed = (err: unknown) => {
     const now = Date.now();
@@ -125,9 +127,18 @@ export function fallbackStore(opts: FallbackStoreOptions) {
         () => cb(null, this.memory.read(key, timeWindow)),
       );
     }
+    /**
+     * The counters of one route with its own limit. Fastify adds a HEAD route for every GET route, and
+     * the plugin gives it a limiter of its own; HEAD is counted as GET here, so both share one budget
+     * (audit F-7), in Redis and in memory.
+     */
     child(route: RouteOptions): FallbackStore {
       const info = route.routeInfo ?? {};
-      return new FallbackStore(undefined, `${this.prefix}${String(info.method)}${String(info.url)}-`, new MemoryWindows());
+      const method = String(info.method).toUpperCase() === 'HEAD' ? 'GET' : String(info.method);
+      const prefix = `${this.prefix}${method}${String(info.url)}-`;
+      let memory = routeWindows.get(prefix);
+      if (!memory) routeWindows.set(prefix, (memory = new MemoryWindows()));
+      return new FallbackStore(undefined, prefix, memory);
     }
   };
 }

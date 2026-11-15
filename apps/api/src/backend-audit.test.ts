@@ -12,6 +12,7 @@ import { MARKETS, QUOTE_FROZEN_AFTER_MS, cacheKeys, easternOffsetMs, nyseHoliday
 import type { FastifyInstance } from 'fastify';
 import type { Redis } from 'ioredis';
 import { afterEach, describe, expect, it } from 'vitest';
+import { sealedCandles, sealedHeartbeat, sealedSnapshot, testMac } from './__fixtures__/mac';
 import { buildApp } from './app';
 import { loadEnv, type ApiEnv } from './env';
 import { redisCache } from './lib/adapters';
@@ -164,35 +165,36 @@ function fakeRedis(store: Map<string, string>, opts: { hang?: boolean; fail?: bo
 
 describe('M-2: snapshots, candles and heartbeats from Redis are validated', () => {
   it('a snapshot dated ten years ahead (P3) is ignored: seed price, stale, quote refused', async () => {
-    const store = new Map([[cacheKeys.price('TSLA'), JSON.stringify(snap('TSLA', { price: '0.01', updatedAt: OPEN + 10 * 365 * 86_400_000, checkedAt: undefined }))]]);
-    const a = await make({ cache: redisCache(fakeRedis(store), { now: () => OPEN }) });
+    const store = new Map([sealedSnapshot(snap('TSLA', { price: '0.01', updatedAt: OPEN + 10 * 365 * 86_400_000, checkedAt: undefined }))]);
+    const a = await make({ cache: redisCache(fakeRedis(store), { mac: testMac, now: () => OPEN }) });
     expect((await a.inject('/v1/markets/TSLA')).json()).toMatchObject({ price: '391.65', stale: true, staleReason: 'noPrice', source: null });
     expect((await a.inject({ method: 'POST', url: '/v1/quote', payload: { from: 'USDG', to: 'TSLA', amount: '1000' } })).statusCode).toBe(503);
   });
   it('a 200k-point spark (P3b) is ignored, so /v1/markets stays small', async () => {
-    const store = new Map([[cacheKeys.price('TSLA'), JSON.stringify(snap('TSLA', { spark: Array.from({ length: 200_000 }, () => '391.65') }))]]);
-    const a = await make({ cache: redisCache(fakeRedis(store), { now: () => OPEN }) });
+    const big = snap('TSLA', { spark: Array.from({ length: 200_000 }, () => '391.65') });
+    const store = new Map([[cacheKeys.price('TSLA'), testMac.seal(cacheKeys.price('TSLA'), JSON.stringify(big))]]);
+    const a = await make({ cache: redisCache(fakeRedis(store), { mac: testMac, now: () => OPEN }) });
     const res = await a.inject('/v1/markets');
     expect(res.body.length).toBeLessThan(20_000);
     expect((res.json() as Array<{ symbol: string; stale: boolean }>).find((m) => m.symbol === 'TSLA')!.stale).toBe(true);
   });
   it('rejects bad prices, unknown sources, mislabelled symbols and >60 spark points; accepts a good one', async () => {
     const store = new Map<string, string>([
-      [cacheKeys.price('TSLA'), JSON.stringify(snap('TSLA'))],
-      [cacheKeys.price('AMZN'), JSON.stringify(snap('AMZN', { price: '-1' }))],
-      [cacheKeys.price('PLTR'), JSON.stringify(snap('PLTR', { source: 'binance' as never }))],
-      [cacheKeys.price('NFLX'), JSON.stringify(snap('TSLA'))],
-      [cacheKeys.price('AMD'), JSON.stringify(snap('AMD', { spark: Array.from({ length: 61 }, () => '1') }))],
-      [cacheKeys.price('AAPL'), JSON.stringify(snap('AAPL', { price: '1000000000' }))],
+      sealedSnapshot(snap('TSLA')),
+      sealedSnapshot(snap('AMZN', { price: '-1' })),
+      sealedSnapshot(snap('PLTR', { source: 'binance' as never })),
+      [cacheKeys.price('NFLX'), testMac.seal(cacheKeys.price('NFLX'), JSON.stringify(snap('TSLA')))],
+      sealedSnapshot(snap('AMD', { spark: Array.from({ length: 61 }, () => '1') })),
+      sealedSnapshot(snap('AAPL', { price: '1000000000' })),
     ]);
-    const out = await redisCache(fakeRedis(store), { now: () => OPEN }).snapshots(MARKETS.map((m) => m.symbol));
+    const out = await redisCache(fakeRedis(store), { mac: testMac, now: () => OPEN }).snapshots(MARKETS.map((m) => m.symbol));
     expect([...out.keys()]).toEqual(['TSLA']);
   });
   it('a cached candle series with a future, misaligned or inconsistent bucket is ignored; Postgres never serves future buckets (L-1)', async () => {
     const h = Math.floor(OPEN / 3_600_000) * 3_600_000;
     const c = (t: number, over: Partial<Candle> = {}): Candle => ({ t, o: '1', h: '2', l: '0.5', c: '1.5', ...over });
-    const reader = (series: Candle[]) => redisCache(fakeRedis(new Map([[cacheKeys.candles('TSLA', '1h'), JSON.stringify(series)]])), { now: () => OPEN });
-    expect(await reader([c(h - 3_600_000), c(h)]).candles('TSLA', '1h')).toHaveLength(2);
+    const reader = (series: Candle[]) => redisCache(fakeRedis(new Map([sealedCandles('TSLA', '1h', series)])), { mac: testMac, now: () => OPEN });
+    expect((await reader([c(h - 3_600_000), c(h)]).candles('TSLA', '1h'))?.candles).toHaveLength(2);
     expect(await reader([c(h), c(h + 365 * 86_400_000)]).candles('TSLA', '1h')).toBeNull();
     expect(await reader([c(h + 1)]).candles('TSLA', '1h')).toBeNull();
     expect(await reader([c(h, { l: '3' })]).candles('TSLA', '1h')).toBeNull();
@@ -203,8 +205,8 @@ describe('M-2: snapshots, candles and heartbeats from Redis are validated', () =
     expect(queries).toEqual([['TSLA', '1h', 5, { until: OPEN + 30_000, realOnly: false }]]);
   });
   it('a heartbeat dated ahead does not make dead workers look alive', async () => {
-    const store = new Map([[cacheKeys.heartbeat('workers'), String(OPEN + 86_400_000)]]);
-    expect(await redisCache(fakeRedis(store), { now: () => OPEN }).heartbeat('workers')).toBeNull();
+    const store = new Map([sealedHeartbeat('workers', OPEN + 86_400_000)]);
+    expect(await redisCache(fakeRedis(store), { mac: testMac, now: () => OPEN }).heartbeat('workers')).toBeNull();
   });
 });
 
@@ -266,7 +268,7 @@ describe('L-3: API_SOCKET needs PROXY_SECRET, and the key generator never fails 
 
 describe('L-4: a Redis outage degrades instead of failing', () => {
   it('markets answer fast from the last known values, all stale "unavailable"; quote answers 503 UNAVAILABLE', async () => {
-    const store = new Map([[cacheKeys.price('TSLA'), JSON.stringify(snap('TSLA', { price: '392.10' }))]]);
+    const store = new Map([sealedSnapshot(snap('TSLA', { price: '392.10' }))]);
     const live = { down: false };
     const r = {
       ping: () => (live.down ? new Promise(() => undefined) : Promise.resolve('PONG')),
@@ -274,7 +276,7 @@ describe('L-4: a Redis outage degrades instead of failing', () => {
       get: () => (live.down ? new Promise(() => undefined) : Promise.resolve(null)),
     } as unknown as Redis;
     let t = OPEN;
-    const a = await make({ cache: redisCache(r, { now: () => t }), now: () => t });
+    const a = await make({ cache: redisCache(r, { mac: testMac, now: () => t }), now: () => t });
     expect(((await a.inject('/v1/markets')).json() as Array<{ symbol: string; stale: boolean }>).find((m) => m.symbol === 'TSLA')!.stale).toBe(false);
     live.down = true;
     t += 5000; // past the 1 s markets cache

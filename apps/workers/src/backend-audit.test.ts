@@ -6,9 +6,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MAX_FUTURE_SKEW_MS, TIMEFRAMES, cacheKeys, type MarketSnapshot } from '@velum/config';
+import { createCacheMac } from '@velum/config/src/cache-mac';
 import type { PrismaClient } from '@velum/db';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
+import { mainnetTestMac, openJson, testMac } from './__fixtures__/mac';
 import { dropFutureHistory, loadLastTickAt, loadSeries, loadSnapshots } from './bootstrap';
 import { seriesKey, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
@@ -75,6 +77,7 @@ describe('M-1: snapshots are stamped with the quote time, not the poll time', ()
         lastOpenRefresh: 0,
         series: new Map(),
         lastTickAt: new Map(),
+        mac: testMac,
         enqueueCandles: async () => {},
       } as WorkerContext,
     };
@@ -90,10 +93,11 @@ describe('M-1: snapshots are stamped with the quote time, not the poll time', ()
     const { ctx, redis } = relayCtx(fetchImpl);
     for (now = t0; now < t0 + 48 * 3_600_000; now += 60_000) await runPriceRelay(ctx, now);
     const last = now - 60_000;
-    const snap = JSON.parse(redis.store.get(cacheKeys.price('TSLA'))!) as MarketSnapshot;
+    const snap = openJson<MarketSnapshot>(redis.store.get(cacheKeys.price('TSLA')), cacheKeys.price('TSLA'))!;
     expect(snap.price).toBe('390.915');
     expect(snap.updatedAt).toBe(t0); // quote time: 48 h old, so the API reports it stale
     expect(snap.checkedAt).toBe(last); // the pipeline itself is alive
+    expect(snap.unconfirmed).toBe(true); // started without a snapshot and never seen to change (F-6)
   });
 
   it('a quote that moves gets a new quote time; a restart keeps the old one while the price is unchanged', () => {
@@ -208,6 +212,7 @@ function candleCtx(ticks: Array<{ marketId: string; price: string; source: strin
     lastOpenRefresh: 0,
     series: new Map<string, WadCandle[]>(),
     lastTickAt: new Map<string, number>(),
+    mac: testMac,
     enqueueCandles: async () => {},
   } as WorkerContext;
   return { ctx, sql, redis };
@@ -271,7 +276,10 @@ describe('M-2: a queued candle job is never trusted', () => {
     expect(forged).toEqual(real);
     await runCandles(ctx, forged!, T + 1000);
     expect(view()).toBe(before);
-    for (const tf of TIMEFRAMES) expect(JSON.parse(redis.store.get(cacheKeys.candles('TSLA', tf))!).at(-1)).toMatchObject({ l: '391.5', c: '391.5' });
+    for (const tf of TIMEFRAMES) {
+      const k = cacheKeys.candles('TSLA', tf);
+      expect(openJson<{ candles: unknown[] }>(redis.store.get(k), k)!.candles.at(-1)).toMatchObject({ l: '391.5', c: '391.5' });
+    }
   });
 });
 
@@ -280,13 +288,27 @@ describe('M-2: snapshots read back from Redis are validated', () => {
   const good: MarketSnapshot = { symbol: 'TSLA', price: '391.65', mark: '391.8', open24h: '390', spark: ['391.65'], source: 'robinhood', updatedAt: now - 1000, checkedAt: now - 500 };
   it('ignores future-dated, oversized, mislabelled or malformed entries', async () => {
     const r = fakeRedis();
-    r.store.set(cacheKeys.price('TSLA'), JSON.stringify(good));
-    r.store.set(cacheKeys.price('AMZN'), JSON.stringify({ ...good, symbol: 'AMZN', updatedAt: now + 10 * 365 * 86_400_000 }));
-    r.store.set(cacheKeys.price('PLTR'), JSON.stringify({ ...good, symbol: 'PLTR', spark: Array.from({ length: 200_000 }, () => '1') }));
-    r.store.set(cacheKeys.price('NFLX'), JSON.stringify({ ...good, symbol: 'TSLA' }));
-    r.store.set(cacheKeys.price('AMD'), '{"price": "1"}');
-    r.store.set(cacheKeys.price('NVDA'), JSON.stringify({ ...good, symbol: 'NVDA', price: '0' }));
-    const out = await loadSnapshots(r as unknown as Redis, now);
+    const put = (symbol: string, payload: string) => r.store.set(cacheKeys.price(symbol), testMac.seal(cacheKeys.price(symbol), payload));
+    put('TSLA', JSON.stringify(good));
+    put('AMZN', JSON.stringify({ ...good, symbol: 'AMZN', updatedAt: now + 10 * 365 * 86_400_000 }));
+    put('PLTR', JSON.stringify({ ...good, symbol: 'PLTR', spark: Array.from({ length: 200_000 }, () => '1') }));
+    put('NFLX', JSON.stringify({ ...good, symbol: 'TSLA' }));
+    put('AMD', '{"price": "1"}');
+    put('NVDA', JSON.stringify({ ...good, symbol: 'NVDA', price: '0' }));
+    const out = await loadSnapshots(r as unknown as Redis, testMac, now);
+    expect([...out.keys()]).toEqual(['TSLA']);
+  });
+  it('ignores snapshots without a valid MAC: unauthenticated, another key, another network or DATABASE_URL (F-2)', async () => {
+    const r = fakeRedis();
+    const snap = (symbol: string) => JSON.stringify({ ...good, symbol });
+    r.store.set(cacheKeys.price('TSLA'), testMac.seal(cacheKeys.price('TSLA'), snap('TSLA')));
+    r.store.set(cacheKeys.price('AMZN'), snap('AMZN')); // the pre-F-2 format, or a co-tenant's forgery
+    r.store.set(cacheKeys.price('PLTR'), testMac.seal(cacheKeys.price('NVDA'), snap('PLTR'))); // moved from another key
+    r.store.set(cacheKeys.price('NFLX'), mainnetTestMac.seal(cacheKeys.price('NFLX'), snap('NFLX'))); // written on mainnet
+    r.store.set(cacheKeys.price('AMD'), createCacheMac('postgresql://velum:other@127.0.0.1/velum', 'testnet').seal(cacheKeys.price('AMD'), snap('AMD')));
+    const sealed = testMac.seal(cacheKeys.price('AAPL'), snap('AAPL'));
+    r.store.set(cacheKeys.price('AAPL'), sealed.replace('"391.65"', '"0.01"')); // tampered payload
+    const out = await loadSnapshots(r as unknown as Redis, testMac, now);
     expect([...out.keys()]).toEqual(['TSLA']);
   });
 });

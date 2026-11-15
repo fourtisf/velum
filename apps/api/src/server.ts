@@ -1,4 +1,5 @@
 import { once } from 'node:events';
+import { createCacheMac } from '@velum/config/src/cache-mac';
 import { PrismaClient } from '@velum/db';
 import { Redis } from 'ioredis';
 import { buildApp } from './app';
@@ -36,10 +37,13 @@ async function main(): Promise<void> {
   await Promise.race([once(redis, 'ready'), new Promise((r) => setTimeout(r, 2000).unref())]).catch(() => undefined);
 
   const chain = viemChain(env.rpcUrl);
+  // Cached values are authenticated with a key derived from DATABASE_URL, which the workers also have
+  // and a tenant of a shared Redis does not (audit F-2).
+  const mac = createCacheMac(env.databaseUrl, env.network);
   const app = await buildApp(
     {
       env,
-      cache: redisCache(redis),
+      cache: redisCache(redis, { mac }),
       db: prismaDb(prisma),
       chain,
       rateLimitRedis: redis,

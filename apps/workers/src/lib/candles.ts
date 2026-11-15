@@ -74,6 +74,8 @@ export interface CandleUpsertOptions {
  * tick's price source; existing buckets keep their open (and tag) and extend high/low, close follows the
  * tick (unless `keepClose`, used for retried ticks older than the last one applied). Values are
  * parameters. Buckets of another kind of source never meet here: resetHistoryOnSourceChange removes them.
+ * A bucket of unknown source (NULL, audit F-1) keeps its NULL tag: a tick landing in it does not prove
+ * where its open came from (retagUnknownCandles decides that from the stored ticks on the next start).
  */
 export function candleUpsertSql(rows: CandleUpsert[], opts: CandleUpsertOptions): Prisma.Sql {
   const values = rows.map(

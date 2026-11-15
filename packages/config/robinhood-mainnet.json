@@ -7,7 +7,7 @@
     "explorer": "docs.robinhood.com/chain/connecting: robinhoodchain.blockscout.com.",
     "multicall3": "eth_getCode at the canonical Multicall3 address returned deployed bytecode.",
     "tokens": "Stock token addresses from https://api.robinhood.com/rhj/assets (the source docs.robinhood.com/chain/contracts renders), each confirmed on-chain via name()/symbol()/decimals(). USDG and WETH from docs.robinhood.com/chain/contracts, confirmed on-chain.",
-    "priceFeeds": "NOT verified. Chainlink feed proxies are listed on data.chain.link, which was not reachable. Prices stay PRICE_SOURCE=demo until confirmed."
+    "priceFeeds": "Chainlink feed proxies NOT verified (data.chain.link was not reachable), so priceFeeds below is empty and PRICE_SOURCE=chainlink refuses to start. Mainnet prices come from Robinhood's official Stock Token API instead (api.robinhood.com/rhj/prices and /rhj/assets, docs.robinhood.com/chain/stock-token-apis; checked 2026-11-15): PRICE_SOURCE=robinhood is required with VELUM_NETWORK=mainnet and PRICE_SOURCE=demo is refused there (apps/workers/src/env.ts)."
   },
   "network": {
     "name": "Robinhood Chain",

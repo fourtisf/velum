@@ -1,4 +1,5 @@
 import type { MarketSnapshot, Timeframe } from '@velum/config';
+import type { CacheMac } from '@velum/config/src/cache-mac';
 import type { PrismaClient } from '@velum/db';
 import type { Redis } from 'ioredis';
 import type { WorkerEnv } from './env';
@@ -39,6 +40,13 @@ export interface WorkerContext {
   series: Map<string, WadCandle[]>;
   /** symbol -> time of the newest tick folded into candles (a retried older tick must not move the close back). */
   lastTickAt: Map<string, number>;
+  /**
+   * symbol -> price of the newest stored tick of the current source, read on start: the jump guard's
+   * reference for a market without a snapshot (audit F-6).
+   */
+  lastTickPrice?: Map<string, string>;
+  /** Authenticates what the workers write to Redis and what they read back (audit F-2). */
+  mac: CacheMac;
   /** When runPriceRelay last ran (it skips runs closer than half a poll interval, audit M-2). */
   lastRelayAt?: number;
   enqueueCandles(data: CandleJobData): Promise<void>;

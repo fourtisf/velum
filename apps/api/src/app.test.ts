@@ -45,7 +45,7 @@ function fakeCache(snaps: MarketSnapshot[], candles: Record<string, Candle[]> = 
   return {
     ping: async () => up,
     snapshots: async (syms) => new Map(syms.filter((s) => map.has(s)).map((s) => [s, map.get(s)!])),
-    candles: async (sym, tf) => candles[`${sym}:${tf}`] ?? null,
+    candles: async (sym, tf) => (candles[`${sym}:${tf}`] ? { network: 'testnet', source: 'demo', candles: candles[`${sym}:${tf}`]! } : null),
     heartbeat: async () => NOW - 3000,
   };
 }

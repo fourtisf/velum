@@ -4,6 +4,7 @@ import type { PrismaClient } from '@velum/db';
 import { parseWad } from '@velum/math';
 import type { Redis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
+import { openJson, testMac } from './__fixtures__/mac';
 import { seriesKey, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
 import { CANDLE_JOB_OPTIONS, runCandles } from './jobs/candles';
@@ -98,6 +99,7 @@ function fakeCtx(): Fake {
     lastOpenRefresh: 0,
     series: new Map<string, WadCandle[]>(),
     lastTickAt: new Map<string, number>(),
+    mac: testMac,
     enqueueCandles: async () => {},
   } as WorkerContext;
   return {
@@ -112,7 +114,7 @@ function fakeCtx(): Fake {
 }
 
 const tick = (at: number, price: string): CandleJobData => ({ at, prices: { TSLA: price } });
-const cached = (f: Fake, tf: Timeframe) => JSON.parse(f.cache.get(cacheKeys.candles('TSLA', tf)) ?? 'null');
+const cached = (f: Fake, tf: Timeframe) => openJson<{ candles: unknown[] }>(f.cache.get(cacheKeys.candles('TSLA', tf)), cacheKeys.candles('TSLA', tf))!.candles;
 const snapshot = (ctx: WorkerContext) => JSON.stringify([...ctx.series].map(([k, s]) => [k, s.map(toCandle)]));
 
 describe('L9: candle cache follows Postgres, failed jobs are retried', () => {

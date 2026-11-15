@@ -1,5 +1,5 @@
 import { cacheKeys, type PriceSource } from '@velum/config';
-import { buildSnapshot, quoteTime } from '../lib/snapshot';
+import { buildSnapshot, quoteConfirmed, quoteTime } from '../lib/snapshot';
 import { PRICE_WORKER, type CandleJobData, type WorkerContext } from '../context';
 
 const DAY = 86_400_000;
@@ -42,6 +42,9 @@ export async function runPriceRelay(ctx: WorkerContext, now = Date.now()): Promi
   if (ctx.lastRelayAt !== undefined && now >= ctx.lastRelayAt && now - ctx.lastRelayAt < minGap) return null;
   ctx.lastRelayAt = now;
   const last = new Map([...ctx.snapshots].map(([k, v]) => [k, v.price]));
+  // A market without a snapshot is checked against its newest stored tick (audit F-6): the jump guard
+  // would otherwise accept any first quote after a lost snapshot.
+  for (const [symbol, price] of ctx.lastTickPrice ?? []) if (!last.has(symbol)) last.set(symbol, price);
   const prices = await ctx.source.read(last, now);
   if (prices.size === 0) return null;
 
@@ -53,15 +56,18 @@ export async function runPriceRelay(ctx: WorkerContext, now = Date.now()): Promi
   for (const [symbol, price] of prices) {
     const prev = ctx.snapshots.get(symbol);
     const open = ctx.open24h.get(symbol) ?? prev?.open24h ?? price;
-    // Stamped with the quote time, not the poll time (audit M-1): a frozen quote keeps aging.
-    const quoteAt = quoteTime(prev, price, ctx.source.name, now, ctx.source.quoteTimes?.get(symbol));
-    const snap = buildSnapshot(prev, symbol, price, open, ctx.source.name, now, quoteAt);
+    // Stamped with the quote time, not the poll time (audit M-1): a frozen quote keeps aging. Without a
+    // previous snapshot the quote time is unknown: not live until the quote changes (audit F-6).
+    const sourceTime = ctx.source.quoteTimes?.get(symbol);
+    const quoteAt = quoteTime(prev, price, ctx.source.name, now, sourceTime);
+    const confirmed = quoteConfirmed(prev, price, ctx.source.name, sourceTime);
+    const snap = buildSnapshot(prev, symbol, price, open, ctx.source.name, now, quoteAt, confirmed);
     ctx.snapshots.set(symbol, snap);
-    pipe.set(cacheKeys.price(symbol), JSON.stringify(snap));
+    pipe.set(cacheKeys.price(symbol), ctx.mac.seal(cacheKeys.price(symbol), JSON.stringify(snap)));
     const marketId = ctx.marketIds.get(symbol);
     if (marketId) ticks.push({ marketId, price, source: tickSource, at: new Date(now) });
   }
-  pipe.set(cacheKeys.heartbeat(PRICE_WORKER), String(now));
+  pipe.set(cacheKeys.heartbeat(PRICE_WORKER), ctx.mac.seal(cacheKeys.heartbeat(PRICE_WORKER), String(now)));
   await pipe.exec();
   if (ticks.length) await ctx.prisma.priceTick.createMany({ data: ticks });
 

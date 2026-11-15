@@ -44,12 +44,6 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
     return reply.code(500).send(errorBody('INTERNAL', 'Something went wrong on our side. Try again in a moment.'));
   });
 
-  await app.register(cors, {
-    origin: deps.env.corsOrigins,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    maxAge: 600,
-  });
-
   await app.register(rateLimit, {
     global: true,
     max: deps.env.rateReadPerMin,
@@ -70,6 +64,20 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
       e.code = 'RATE_LIMITED';
       return e;
     },
+  });
+
+  // OPTIONS (CORS preflight) counts against the read budget (audit F-7). @fastify/cors answers a
+  // preflight in its own onRequest hook, before any route's limiter runs, so this hook is added before
+  // cors is registered. The limiter marks the request, so a route limiter never counts it twice.
+  const limitOptions = app.rateLimit();
+  app.addHook('onRequest', async function (req, reply) {
+    if (req.method === 'OPTIONS') await limitOptions.call(this, req, reply);
+  });
+
+  await app.register(cors, {
+    origin: deps.env.corsOrigins,
+    methods: ['GET', 'POST', 'OPTIONS'],
+    maxAge: 600,
   });
 
   app.setNotFoundHandler({ preHandler: app.rateLimit() }, (req, reply) => {

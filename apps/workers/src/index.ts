@@ -2,10 +2,11 @@
  * Velum workers (Phase 2): price-relay and candles on BullMQ, plus an hourly tick prune.
  * Runs as a single PM2 fork process (deploy/ecosystem.config.cjs).
  */
+import { createCacheMac } from '@velum/config/src/cache-mac';
 import { PrismaClient } from '@velum/db';
 import { Queue, Worker, type Job } from 'bullmq';
 import { Redis } from 'ioredis';
-import { demoBackfill, dropFutureHistory, loadLastTickAt, loadSeries, loadSnapshots, resetHistoryOnSourceChange, upsertMarkets } from './bootstrap';
+import { demoBackfill, loadLastTickAt, loadLastTickPrices, loadSeries, loadSnapshots, prepareHistory, upsertMarkets } from './bootstrap';
 import { CANDLES_WORKER, PRICE_WORKER, type CandleJobData, type WorkerContext } from './context';
 import { loadEnv } from './env';
 import { CANDLE_JOB_OPTIONS, candleJobFromTicks, runCandles, writeCandleCaches } from './jobs/candles';
@@ -34,6 +35,9 @@ async function main(): Promise<void> {
   // may name a TCP Redis or a unix socket (deploy/redis-velum.sh): env.redis holds the parsed options.
   const redis = new Redis({ ...env.redis, maxRetriesPerRequest: null, connectTimeout: 5000 });
   redis.on('error', (err) => log.warn('redis error', { err: err.message }));
+  // Snapshots, candle caches and heartbeats are authenticated with a key derived from DATABASE_URL,
+  // which the API also has and a tenant of a shared Redis does not (audit F-2).
+  const mac = createCacheMac(env.databaseUrl, env.network);
 
   // A signal during start-up (while waiting for Postgres or Redis) exits at once; replaced below.
   let shutdown = async (signal: string): Promise<void> => {
@@ -54,21 +58,23 @@ async function main(): Promise<void> {
   await retry('PostgreSQL', () => prisma.$queryRaw`SELECT 1`);
   const chain = startChainCheck(env.rpcUrl, env.chainId, log, { signal: stop.signal });
 
-  const { marketIds, snapshots, series, lastTickAt } = await retry('start-up (PostgreSQL and Redis)', async () => {
+  const { marketIds, snapshots, series, lastTickAt, lastTickPrice } = await retry('start-up (PostgreSQL and Redis)', async () => {
     const marketIds = await upsertMarkets(prisma);
-    // Never mix simulated and real price history (see resetHistoryOnSourceChange).
-    await resetHistoryOnSourceChange(prisma, redis, env.priceSource, log);
-    await dropFutureHistory(prisma, log);
-    const snapshots = await loadSnapshots(redis);
+    // Never mix simulated and real price history, never delete it on a guess: only positive evidence of
+    // the other kind of source resets, candles of unknown source never count and are tagged where their
+    // stored ticks prove the source (audit F-1, F-4). Rows dated ahead are dropped (audit L-1).
+    await prepareHistory(prisma, redis, env.priceSource, log);
+    const snapshots = await loadSnapshots(redis, mac);
     let series = await loadSeries(prisma, marketIds, env.priceSource);
     if (env.priceSource === 'demo') {
-      const seeded = await demoBackfill(prisma, redis, marketIds, snapshots, series, env.pricePollMs, log);
+      const seeded = await demoBackfill(prisma, redis, mac, marketIds, snapshots, series, env.pricePollMs, log);
       if (seeded.candlesInserted) series = await loadSeries(prisma, marketIds, env.priceSource);
     }
-    await writeCandleCaches(redis, series);
+    await writeCandleCaches(redis, mac, env.priceSource, series);
     // After the reset above, so ticks of a cleared source never count (audit R2-L1).
     const lastTickAt = await loadLastTickAt(prisma, marketIds);
-    return { marketIds, snapshots, series, lastTickAt };
+    const lastTickPrice = await loadLastTickPrices(prisma, marketIds, env.priceSource);
+    return { marketIds, snapshots, series, lastTickAt, lastTickPrice };
   });
 
   const defaultJobOptions = { removeOnComplete: true, removeOnFail: 200 } as const;
@@ -88,6 +94,8 @@ async function main(): Promise<void> {
     lastOpenRefresh: 0,
     series,
     lastTickAt,
+    lastTickPrice,
+    mac,
     // A failed candle write is retried (audit L9); runCandles keeps retries from rewinding closes.
     enqueueCandles: async (data) => {
       await candles.add('tick', data, CANDLE_JOB_OPTIONS);
@@ -118,7 +126,7 @@ async function main(): Promise<void> {
   }
 
   // Liveness for /v1/health and deploy.sh's post-release check (audit R2-L5): only once start-up worked.
-  const stopLiveness = await startLiveness(redis, log);
+  const stopLiveness = await startLiveness(redis, mac, log);
 
   log.info('workers started', {
     workers: [PRICE_WORKER, CANDLES_WORKER, 'prune'],

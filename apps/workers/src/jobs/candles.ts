@@ -1,18 +1,23 @@
-import { CANDLE_CACHE_SIZE, MAX_FUTURE_SKEW_MS, TIMEFRAMES, cacheKeys, isPriceString, type Timeframe } from '@velum/config';
+import { CANDLE_CACHE_SIZE, MAX_FUTURE_SKEW_MS, TIMEFRAMES, cacheKeys, candleCachePayload, isPriceString, type PriceSource, type Timeframe } from '@velum/config';
+import type { CacheMac } from '@velum/config/src/cache-mac';
 import { parseWad } from '@velum/math';
 import type { Redis } from 'ioredis';
 import { applyTick, bucketStart, candleUpsertSql, toCandle, type CandleUpsert, type WadCandle } from '../lib/candles';
 import { CANDLES_WORKER, seriesKey, type CandleJobData, type WorkerContext } from '../context';
 import { tickSourceOf } from './price-relay';
 
-/** Write the cached series for the given keys (all when omitted) to Redis. */
-export async function writeCandleCaches(redis: Redis, series: Map<string, WadCandle[]>, keys?: Iterable<string>): Promise<void> {
+/**
+ * Write the cached series for the given keys (all when omitted) to Redis, each authenticated and tagged
+ * with the price source it was built from and the network (audit F-2, F-3).
+ */
+export async function writeCandleCaches(redis: Redis, mac: CacheMac, source: PriceSource, series: Map<string, WadCandle[]>, keys?: Iterable<string>): Promise<void> {
   const pipe = redis.pipeline();
   for (const key of keys ?? series.keys()) {
     const s = series.get(key);
     if (!s) continue;
     const [symbol, tf] = key.split(':') as [string, Timeframe];
-    pipe.set(cacheKeys.candles(symbol, tf), JSON.stringify(s.map(toCandle)));
+    const k = cacheKeys.candles(symbol, tf);
+    pipe.set(k, mac.seal(k, candleCachePayload({ network: mac.network, source, candles: s.map(toCandle) })));
   }
   await pipe.exec();
 }
@@ -105,7 +110,7 @@ export async function runCandles(ctx: WorkerContext, data: CandleJobData, now = 
   // Committed in Postgres: now (and only now) update memory and the cache.
   for (const [key, s] of drafts) ctx.series.set(key, s);
   for (const symbol of advanced) ctx.lastTickAt.set(symbol, Math.max(data.at, ctx.lastTickAt.get(symbol) ?? -Infinity));
-  await writeCandleCaches(ctx.redis, ctx.series, drafts.keys());
-  await ctx.redis.set(cacheKeys.heartbeat(CANDLES_WORKER), String(Date.now()));
+  await writeCandleCaches(ctx.redis, ctx.mac, source, ctx.series, drafts.keys());
+  await ctx.redis.set(cacheKeys.heartbeat(CANDLES_WORKER), ctx.mac.seal(cacheKeys.heartbeat(CANDLES_WORKER), String(Date.now())));
   return fresh.length + late.length;
 }

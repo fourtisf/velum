@@ -10,7 +10,9 @@ export const MAX_PRICE_AGE_MS = PROTOCOL.oracleMaxAgeSeconds * 1000;
  *  - outdated     the workers have not confirmed the quote with the source for over MAX_PRICE_AGE_MS
  *  - demoSource   a simulated price on mainnet (never live there)
  *  - marketClosed the US-equity session for Stock Tokens is closed (weekend or US market holiday)
- *  - quoteFrozen  the source keeps repeating a quote that has not changed for QUOTE_FROZEN_AFTER_MS
+ *  - quoteFrozen  the source keeps repeating a quote that has not changed for QUOTE_FROZEN_AFTER_MS, or
+ *                 price-relay started without a previous snapshot and has not yet seen the quote change
+ *                 (snapshot `unconfirmed`, audit F-6: its quote time is unknown)
  * Simulated (demo) prices on testnet ignore the session calendar: they keep moving while closed.
  */
 export type StaleReason = 'noPrice' | 'unavailable' | 'outdated' | 'demoSource' | 'marketClosed' | 'quoteFrozen';
@@ -35,7 +37,7 @@ export function priceState(snap: MarketSnapshot | undefined, now: number, networ
   if (now - (snap.checkedAt ?? snap.updatedAt) > MAX_PRICE_AGE_MS) return stale('outdated');
   if (snap.source === 'demo') return stale(null);
   if (!marketOpen) return stale('marketClosed');
-  if (now - snap.updatedAt > QUOTE_FROZEN_AFTER_MS) return stale('quoteFrozen');
+  if (snap.unconfirmed || now - snap.updatedAt > QUOTE_FROZEN_AFTER_MS) return stale('quoteFrozen');
   return stale(null);
 }
 

@@ -1,4 +1,4 @@
-import { CANDLE_CACHE_SIZE, MAX_FUTURE_SKEW_MS, TIMEFRAMES, getMarket, type Timeframe } from '@velum/config';
+import { CANDLE_CACHE_SIZE, MAX_FUTURE_SKEW_MS, REAL_PRICE_SOURCES, TIMEFRAMES, getMarket, type Timeframe } from '@velum/config';
 import type { FastifyPluginAsync } from 'fastify';
 import type { AppDeps } from '../lib/deps';
 import { notFound } from '../lib/errors';
@@ -10,14 +10,17 @@ interface CandlesRoute {
 }
 
 /**
- * GET /v1/markets/:symbol/candles. The workers' Redis cache first (validated: shape, bounds, no future
- * buckets); otherwise Postgres, where concurrent requests for the same series share one query (audit
- * I-4). Postgres never returns buckets dated ahead of now (audit L-1) and, on mainnet, only candles built
- * from a real price source (audit I-7).
+ * GET /v1/markets/:symbol/candles. The workers' Redis cache first (authenticated and validated: shape,
+ * bounds, no future buckets, written for this network); otherwise Postgres, where concurrent requests
+ * for the same series share one query (audit I-4). Postgres never returns buckets dated ahead of now
+ * (audit L-1). On mainnet only real history is served, from either: a cache built from a simulated
+ * source is skipped (audit F-3: an earlier testnet run may have left one in Redis), and Postgres returns
+ * only candles tagged with a real source (audit I-7, F-4).
  */
 export function candlesRoutes(deps: AppDeps): FastifyPluginAsync {
   const now = deps.now ?? Date.now;
   const memo = createMemo(now);
+  const mainnet = deps.env.network === 'mainnet';
   return async (app) => {
     app.get<CandlesRoute>(
       '/v1/markets/:symbol/candles',
@@ -38,10 +41,9 @@ export function candlesRoutes(deps: AppDeps): FastifyPluginAsync {
         if (!seed) throw notFound(`No market called ${req.params.symbol.toUpperCase()}.`);
         const { tf, limit } = req.query;
         const cached = await deps.cache.candles(seed.symbol, tf).catch(() => null);
-        if (cached && cached.length) return cached.slice(-limit);
-        return memo(`${seed.symbol}:${tf}:${limit}`, 0, () =>
-          deps.db.candles(seed.symbol, tf, limit, { until: now() + MAX_FUTURE_SKEW_MS, realOnly: deps.env.network === 'mainnet' }),
-        );
+        const usable = cached && cached.network === deps.env.network && (!mainnet || REAL_PRICE_SOURCES.includes(cached.source));
+        if (usable && cached.candles.length) return cached.candles.slice(-limit);
+        return memo(`${seed.symbol}:${tf}:${limit}`, 0, () => deps.db.candles(seed.symbol, tf, limit, { until: now() + MAX_FUTURE_SKEW_MS, realOnly: mainnet }));
       },
     );
   };

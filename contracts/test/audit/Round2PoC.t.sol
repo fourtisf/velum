@@ -233,7 +233,7 @@ contract Round2PoC is VelumBase {
         _fund(mallory2, usdg, 2100 * USD);
         uint256 start = _bal(mallory2, usdg);
         vm.prank(mallory2);
-        uint256 id = perps.open(offer, address(tsla), true, 10_000 * USD, 10, 0);
+        uint256 id = perps.open(offer, address(tsla), true, 10_000 * USD, 10, type(uint256).max);
         uint256 makerMargin = perps.getPosition(id).makerMargin;
         uint256 t0 = block.timestamp;
         for (uint256 i; i < 60; ++i) {
@@ -283,12 +283,12 @@ contract Round2PoC is VelumBase {
             assertGe(_effectivePrice(address(tsla)), (TSLA_PRICE * 9990) / 10_000);
             vm.prank(mallory2);
             vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-            perps.open(offer, address(tsla), true, 10_000 * USD, 10, 0);
+            perps.open(offer, address(tsla), true, 10_000 * USD, 10, type(uint256).max);
             // to open at all, the relayer must report the effective price itself
             (uint256 last,) = _band();
             _pushPrice(address(tsla), last);
             vm.prank(mallory2);
-            uint256 id = perps.open(offer, address(tsla), true, 10_000 * USD, 10, 0);
+            uint256 id = perps.open(offer, address(tsla), true, 10_000 * USD, 10, type(uint256).max);
 
             _pushPrice(address(tsla), hi); // +22% vs the old bottom
             assertTrue(oracle.lagging(address(tsla)));
@@ -297,14 +297,14 @@ contract Round2PoC is VelumBase {
             assertFalse(perps.isLiquidatable(id));
             vm.prank(mallory2);
             vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-            perps.close(id, 0);
+            perps.close(id, 1);
             vm.prank(mallory2);
             vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotLiquidatable.selector, id));
             perps.liquidate(id);
             (last,) = _band();
             _pushPrice(address(tsla), last);
             vm.prank(mallory2);
-            perps.close(id, 0);
+            perps.close(id, 1);
         }
 
         assertLt(block.timestamp - t0, 30);
@@ -357,7 +357,7 @@ contract Round2PoC is VelumBase {
         _fund(mallory2, usdg, 5000 * USD);
         uint256 start = _total(mallory, mallory2) + book.totalBacking();
         vm.prank(mallory2);
-        uint256 id = perps.open(offer, address(tsla), true, 20_000 * USD, 10, 0);
+        uint256 id = perps.open(offer, address(tsla), true, 20_000 * USD, 10, type(uint256).max);
         uint256 gap = (TSLA_PRICE * 13) / 10;
 
         (, uint256 at) = _band();
@@ -371,7 +371,7 @@ contract Round2PoC is VelumBase {
         vm.warp(block.timestamp + 1);
         vm.prank(mallory2);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-        perps.close(id, 0);
+        perps.close(id, 1);
         vm.prank(mallory2);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotLiquidatable.selector, id));
         perps.liquidate(id);
@@ -421,7 +421,7 @@ contract Round2PoC is VelumBase {
         uint256[] memory ids = new uint256[](n);
         vm.startPrank(mallory2);
         for (uint256 i; i < n; ++i) {
-            ids[i] = perps.open(offer, address(tsla), true, 200 * USD, 10, 0); // fee 0.12 each
+            ids[i] = perps.open(offer, address(tsla), true, 200 * USD, 10, type(uint256).max); // fee 0.12 each
         }
         vm.stopPrank();
 
@@ -431,7 +431,7 @@ contract Round2PoC is VelumBase {
         uint256 epoch = perps.currentCoverEpoch();
         vm.startPrank(mallory2);
         for (uint256 i; i < n; ++i) {
-            perps.close(ids[i], 0); // each insolvent: liquidation, attacker is the keeper
+            perps.close(ids[i], 1); // each insolvent: liquidation, attacker is the keeper
         }
         vm.stopPrank();
         (,, uint256 budget,, uint256 cap, uint256 drawn,,) = perps.coverEpochs(epoch);
@@ -529,7 +529,7 @@ contract Round2PoC is VelumBase {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-        perps.close(id, 0);
+        perps.close(id, type(uint256).max);
 
         uint256 qty = perps.getPosition(id).qty;
         uint256 before = _bal(alice, usdg);
@@ -555,7 +555,7 @@ contract Round2PoC is VelumBase {
         assertTrue(oracle.lagging(address(tsla)));
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-        perps.close(id, 0);
+        perps.close(id, 1);
         perps.advanceFunding(address(tsla));
         int256 claim = perps.takerClaimAt(id, _effectivePrice(address(tsla)));
         uint256 epoch = perps.currentCoverEpoch();

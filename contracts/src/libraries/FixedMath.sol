@@ -52,10 +52,14 @@ library FixedMath {
     }
 
     /// @notice Integer square root (floor), Newton's method.
+    /// @dev Starts from z = x and takes the first Newton step exactly: (x + x / x) / 2 = ceil(x / 2), written
+    ///      without the `x + 1` overflow. Every later step stays at or above floor(sqrt(x)) and decreases until
+    ///      it reaches it, so the loop stops on the floor for every x (independent audit IA-04: the old first
+    ///      step x / 2 + 1 equals x for x = 2, so sqrt(2) returned 2).
     function sqrt(uint256 x) internal pure returns (uint256 z) {
         if (x == 0) return 0;
         z = x;
-        uint256 y = x / 2 + 1;
+        uint256 y = x / 2 + (x & 1);
         while (y < z) {
             z = y;
             y = (x / y + y) / 2;

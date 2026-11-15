@@ -158,7 +158,7 @@ abstract contract VelumBase is Test {
         returns (uint256 id)
     {
         vm.prank(who);
-        id = perps.open(offerId, address(tsla), isLong, size, levHalf, 0);
+        id = perps.open(offerId, address(tsla), isLong, size, levHalf, isLong ? type(uint256).max : 1);
     }
 
     /// @dev Total USDG held by the perps engine must equal open margins, insurance and reserved cover.

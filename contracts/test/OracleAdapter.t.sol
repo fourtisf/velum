@@ -107,7 +107,11 @@ contract OracleAdapterTest is VelumBase {
         assertEq(p, TSLA_PRICE);
         assertEq(at, block.timestamp - 1); // setUp pushes TSLA one second before AMZN
         assertFalse(oracle.lagging(address(tsla)));
+        assertFalse(oracle.atBound(address(tsla)));
         assertEq(oracle.lastValidAt(address(tsla)), at);
+        (uint256 lastPrice, uint256 validAt) = oracle.lastRecorded(address(tsla));
+        assertEq(lastPrice, TSLA_PRICE);
+        assertEq(validAt, at);
     }
 
     function test_relay_guards() public {
@@ -128,9 +132,13 @@ contract OracleAdapterTest is VelumBase {
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.TooSoon.selector, address(amzn)));
         oracle.pushPrices(t, v); // AMZN was pushed in this same second
 
+        // Out-of-bounds prices are accepted and clamped when recorded (IA-06); zero and > uint128 are malformed.
         t[0] = address(tsla);
-        v[0] = 0.5e18;
-        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), 0.5e18));
+        v[0] = 0;
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), 0));
+        oracle.pushPrices(t, v);
+        v[0] = uint256(type(uint128).max) + 1;
+        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), v[0]));
         oracle.pushPrices(t, v);
 
         t[0] = address(usdg);
@@ -362,10 +370,17 @@ contract OracleAdapterTest is VelumBase {
         feed.setBroken(true);
         assertFalse(cl.poke(address(tsla)));
         feed.setBroken(false);
-        feed.set(5_000_000, block.timestamp); // out of bounds
+        vm.warp(t0 + 1);
+        feed.set(0, block.timestamp); // zero answer
         assertFalse(cl.poke(address(tsla)));
         assertFalse(cl.poke(address(usdg))); // unknown token
         assertEq(cl.lastValidAt(address(tsla)), t0);
+        // an out-of-bounds answer is a valid reading, recorded clamped and rate-limited (IA-06)
+        feed.set(5_000_000, block.timestamp); // 0.05 < the 1 USDG floor
+        assertTrue(cl.poke(address(tsla)));
+        assertEq(cl.lastValidAt(address(tsla)), t0 + 1);
+        assertEq(cl.price(address(tsla)), 391.65e18 - 391.65e18 / 6000, "one second toward the floor");
+        assertTrue(cl.lagging(address(tsla)));
     }
 
     function test_isDead_failedReadsAreStaleUntilFourteenDays() public {
@@ -390,7 +405,9 @@ contract OracleAdapterTest is VelumBase {
         vm.warp(block.timestamp + 20 days);
         feed.set(39_165_000_000, block.timestamp - 1 days);
         assertFalse(cl.isDead(address(tsla)));
-        feed.set(5_000_000, block.timestamp); // out of bounds now: falls back to lastValidAt / setup
+        feed.set(5_000_000, block.timestamp); // out of bounds now: still a live reading (IA-06)
+        assertFalse(cl.isDead(address(tsla)));
+        feed.set(0, block.timestamp); // invalid now: falls back to lastValidAt / setup
         assertTrue(cl.isDead(address(tsla)));
     }
 
@@ -411,9 +428,10 @@ contract OracleAdapterTest is VelumBase {
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.NoPrice.selector, address(tsla)));
         cl.price(address(tsla));
 
-        feed.set(5_000_000, block.timestamp); // 0.05 < min bound
-        vm.expectRevert(abi.encodeWithSelector(OracleAdapter.PriceOutOfBounds.selector, address(tsla), 0.05e18));
-        cl.price(address(tsla));
+        feed.set(5_000_000, block.timestamp); // 0.05 < min bound: clamped to the bound (IA-06), lagging
+        assertEq(cl.price(address(tsla)), 1e18, "first recording: the clamped price as is");
+        assertTrue(cl.lagging(address(tsla)));
+        assertTrue(cl.atBound(address(tsla)));
         assertFalse(cl.isDead(address(tsla)));
 
         feed.set(39_165_000_000, block.timestamp);
@@ -448,10 +466,18 @@ contract OracleAdapterTest is VelumBase {
         assertTrue(cl.sequencerReady());
         sequencer.set(1, block.timestamp - 3 hours); // down
         assertFalse(cl.sequencerReady());
+        (bool up, bool ready) = cl.sequencerStatus();
+        assertFalse(up || ready, "down: neither");
         sequencer.set(0, block.timestamp - 1 hours); // back up exactly one hour ago: still in grace
         assertFalse(cl.sequencerReady());
+        (up, ready) = cl.sequencerStatus();
+        assertTrue(up && !ready, "grace: up, not ready (IA-07)");
         sequencer.set(0, block.timestamp - 1 hours - 1);
         assertTrue(cl.sequencerReady());
+        (up, ready) = cl.sequencerStatus();
+        assertTrue(up && ready);
+        (up, ready) = oracle.sequencerStatus();
+        assertTrue(up && ready, "no feed: always up and ready");
         sequencer.set(0, 0); // round not initialised
         assertFalse(cl.sequencerReady());
         sequencer.set(0, block.timestamp + 1); // from the future
@@ -459,5 +485,7 @@ contract OracleAdapterTest is VelumBase {
         sequencer.set(0, block.timestamp - 2 hours);
         sequencer.setBroken(true); // unreadable: fail closed
         assertFalse(cl.sequencerReady());
+        (up, ready) = cl.sequencerStatus();
+        assertFalse(up || ready);
     }
 }

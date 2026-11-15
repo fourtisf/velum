@@ -4,23 +4,36 @@ Write all contracts and circuits from scratch. Do not copy any other protocol's 
 
 ## 1. Phase 3: public contracts (no privacy yet)
 
-Foundry project in `contracts/`. Solidity ^0.8.28, OpenZeppelin for ERC20 helpers and
-ReentrancyGuard only.
+Foundry project in `contracts/`; `contracts/README.md` has the full model, events, tests and known
+limitations. Solidity ^0.8.28, OpenZeppelin 5.4.0 (MIT, vendored unmodified) for ERC20 helpers and
+ReentrancyGuard only. First-party code is proprietary (`SPDX-License-Identifier: UNLICENSED`).
+**Testnet only** until the Phase 5 external audit: the deploy script refuses Robinhood Chain mainnet (4663).
+No owner, no pause, no upgrade: every contract is wired by a one-time `setup` and then locked.
 
 | Contract | Responsibility |
 |---|---|
-| `VelumVault` | Holds all tokens. Deposits, withdrawals, internal balances. No admin, no pause on balances. |
-| `SpotPools` | Constant-product pools (Stock/USDG), 30 bps fee kept in pool, LP shares, 2-hop routing through USDG in one call. Pools and fees fixed at deploy. |
-| `PerpsMarkets` | Per-market params (IM 1/maxL, MM 0.5/maxL, taker fee 6 bps, penalty 1%, OI cap, max 100 tokens/position), isolated margin. |
-| `MakerBook` | Standing offers: backing, largest fill, open spread, close spread, expiry. Taker lock filled against an offer. Close spread is binding: taker can close any time without maker signature. |
-| `OracleAdapter` | Accepts a price only if fresh (≤ 60 s), within bounds, from the approved feed per token. Dead after 14 days without a fresh price. |
-| `Funding` | Hourly funding index per market, capped at 0.01%/h; matching requires funding ran in the last hour. |
-| `Liquidation` | Anyone (risk workers in Phase 4) can liquidate below maintenance at a fresh price; penalty split 50/50 worker/insurance. Shortfall → insurance claim paid pro rata after next funding. |
-| `ForcedExit` | Request with 0.001 ETH refundable bond; after 7 days settles at oracle price, no spread, no penalty. With a dead oracle: settles at entry price. |
+| `VelumVault` | Holds all tokens. Deposits (credits what actually arrived), withdrawals from your own balance only, internal balances per (account, token). Modules move internal balances, never tokens. No admin, no pause, no sweep. |
+| `SpotPools` | Constant-product pools (Stock/USDG), 30 bps fee kept in the pool, LP shares, 2-hop routing through USDG in one call (two fees). Pools and fees fixed at deploy. |
+| `PerpsMarkets` | Isolated-margin pairs between one taker and one maker. IM 1/maxL (20%), MM 0.5/maxL (10%), leverage 1x–5x in 0.5 steps, taker fee 6 bps on open and on close (to insurance), penalty 1%, max 100 tokens/position, minimum position 10 USDG, per-market OI cap per side. Maker margin per fill = S/maxL. Opens need an oracle price ≤ **10 s** old that is not lagging, the sequencer past its grace hour and a market not in close-only; closes a price ≤ 60 s old that is not lagging. Opens and closes need a non-zero price limit (slippage protection). Margin removal keeps the claim ≥ IM and needs the open freshness (10 s). |
+| `MakerBook` | Standing offers: backing, largest fill, open spread (2 bps–5%), close spread (≤ 5%), expiry. Phase 3 matching is atomic (a taker opens directly against a chosen offer; the 15-minute fill window is a Phase 4 coordinator flow). A fill takes the maker margin S/maxL out of the backing, so backing caps the maker's margin, not its exposure (up to 5 × backing of notional, on either side). Close spread is binding: the taker can close any time without maker signature. |
+| `OracleAdapter` | One source per token, fixed at setup: a Chainlink feed guarded by the L2 sequencer-uptime feed (production), or the testnet price relay, a trusted key that must be a dedicated address (not the deployer). Every source price is clamped to fixed bounds, then rate-limited against the last recorded price (≤ 1/6000 per second, 1% per minute, ≤ 5% per recording), which bounds what a compromised relay key can do. The price is *lagging* when the reported price differs from the source. Max age 60 s (10 s for opens and margin removal). Dead after 14 days without a valid (positive) answer; out-of-bounds answers count as live, failed or zero reads do not. |
+| `Funding` | Funding index per market, accrued per second at rate = 0.01%/h × (longOI − shortOI) / (longOI + shortOI) (capped at 0.01%/h). Every open accrues first, so "funding ran in the last hour" holds for every match by construction. A dead-oracle exit accrues only up to the token's last valid price. |
+| `Liquidation` | Anyone (risk workers in Phase 4) can liquidate a side below maintenance at a price ≤ 60 s old (a lagging price is accepted); penalty 1% of notional split 50/50 worker/insurance; if the loser cannot pay it, insurance tops the worker up to half the penalty, ≤ 1 USDG. Sequencer: no liquidations while the L2 sequencer is down; during the 1-hour grace period after it returns, only positions below half the maintenance margin (MM/2); after that, all below MM. A shortfall becomes an insurance cover claim, paid pro rata after the hourly epoch from a budget capped at 10% of the insurance fund as it stood at the epoch's first draw (keeper top-ups included); the rest is a haircut. |
+| `ForcedExit` | Either side requests with a 0.001 ETH refundable bond; after 7 days anyone settles. Price: the oracle price; the entry price if the oracle is dead; the bound if the source is outside the oracle bounds and the reported price has reached it. A forced exit the **taker** requested costs exactly a plain close (committed close spread and close fee, capped at the taker's claim, also at the entry price); one the **maker** requested settles with no spread and no fee. A position that is liquidatable at settlement is liquidated instead (penalty applies). |
+| Guardian | Optional, fixed at setup (off by default; the deploy script warns when unset): can only switch a market into or out of close-only, for the stock split / dividend procedure. It cannot move, freeze or redirect funds or change prices or parameters. |
 
-Tests: Foundry unit + invariant tests (no token can leave the vault except via valid
+Insurance fund: open and close fees plus half of each liquidation penalty; anyone can add to it.
+
+Token requirements: only non-rebasing tokens without transfer fees can be listed. Tokens that reach the
+vault outside `deposit` (airdrops, rebases) are stranded, by design (no sweep). The Robinhood Chain stock
+tokens are reported to be beacon proxies with `uiMultiplier()` (splits change a multiplier, not balances) and
+USDG has 6 decimals and an issuer freeze power; confirm with the issuers before listing (rebasing, dividends,
+upgrade control, freeze/wipe powers, transfer fees; checklist in `contracts/README.md`).
+
+Tests: Foundry unit, fuzz and invariant tests (no token can leave the vault except via valid
 withdraw/close/liquidate; sum of balances == vault holdings; liquidation never pays more
-than posted margins + insurance).
+than posted margins + insurance; cover is deferred and capped), audit regressions for every finding, and
+a test tying the contract constants to `packages/config/robinhood-testnet.json`.
 
 ## 2. Phase 4: privacy layer
 

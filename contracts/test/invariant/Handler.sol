@@ -279,8 +279,14 @@ contract Handler is Test {
         if (maxSize < 10e6) return; // minimum position size (audit F-10)
         size = bound(size, 10e6, maxSize);
         openAttempts++;
+        _tryOpen(a, id, market, isLong, size, lev);
+    }
+
+    /// @dev The widest non-zero price limit for the side (IA-10: zero is refused).
+    function _tryOpen(address a, uint256 id, address market, bool isLong, uint256 size, uint8 lev) internal {
+        uint256 limit = isLong ? type(uint256).max : 1;
         vm.prank(a);
-        try perps.open(id, market, isLong, size, lev, 0) returns (uint256 pid) {
+        try perps.open(id, market, isLong, size, lev, limit) returns (uint256 pid) {
             positionIds.push(pid);
             opens++;
         } catch (bytes memory err) {
@@ -307,7 +313,7 @@ contract Handler is Test {
         if (!p.open) return;
         bool capWasSet = _capSet();
         vm.prank(p.taker);
-        try perps.close(id, 0) {
+        try perps.close(id, p.isLong ? 1 : type(uint256).max) {
             closes++;
             _trackClaims(p, capWasSet);
         } catch {}
@@ -469,7 +475,11 @@ contract Handler is Test {
 
     // ------------------------------------------------------------ wind down (afterInvariant)
 
-    function windDown() external {
+    function windDown() external virtual {
+        _windDown();
+    }
+
+    function _windDown() internal {
         // Closes refuse a lagging price: let the rate-limited price catch up with the relayed prices.
         for (uint256 i; i < 400; ++i) {
             if (!oracle.lagging(address(stocks[0])) && !oracle.lagging(address(stocks[1]))) break;
@@ -482,7 +492,7 @@ contract Handler is Test {
             if (!p.open) continue;
             bool capWasSet = _capSet();
             vm.prank(p.taker);
-            perps.close(positionIds[i], 0);
+            perps.close(positionIds[i], p.isLong ? 1 : type(uint256).max);
             _trackClaims(p, capWasSet);
         }
         for (uint256 i; i < offerIds.length; ++i) {

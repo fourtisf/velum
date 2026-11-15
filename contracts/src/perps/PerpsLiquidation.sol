@@ -22,8 +22,13 @@ import {FixedMath} from "../libraries/FixedMath.sol";
 ///         liquidatable, so its claim there is under 10% of notional: it keeps less than 9% of notional
 ///         (claim minus the 1% penalty) that it would lose at the source price, and the winner's cover
 ///         claim is smaller by the same amount (R2-04, documented bound).
-/// @dev Liquidations are blocked while the L2 sequencer is down or in its grace period (F-05). Closing
-///      or force-exiting a liquidatable position settles it through this same path (F-08, F-12).
+///         Sequencer (F-05, independent audit IA-07): no liquidation while the L2 sequencer is down. During
+///         its grace hour after it comes back, only a position whose liquidated side is below HALF the
+///         maintenance margin (MM / 2 = 5% of notional at 5x) may be liquidated, so a position walking toward
+///         insolvency is not left alone for the whole hour; positions between MM / 2 and MM stay protected until
+///         the hour is over. Outside grace the rule is unchanged.
+/// @dev Closing or force-exiting a liquidatable position settles it through this same path, under the same
+///      sequencer rule (F-08, F-12).
 abstract contract PerpsLiquidation is PerpsFunding {
     using FixedMath for uint256;
 
@@ -36,25 +41,41 @@ abstract contract PerpsLiquidation is PerpsFunding {
         uint256 makerOut;
     }
 
+    /// @notice Liquidate a position below maintenance. Reverts NotLiquidatable if neither side is, and
+    ///         SequencerDown if the sequencer rule forbids it now (down, or grace and not below MM / 2).
     function liquidate(uint256 id) external nonReentrant returns (uint256 reward) {
         Position storage p = _position(id);
-        _requireSequencer();
         (uint256 price,) = _accrue(p.market, MAX_PRICE_AGE);
-        if (!_liquidatable(p, price)) revert NotLiquidatable(id);
+        (bool liquidatable, bool allowed) = _liquidationState(p, price);
+        if (!liquidatable) revert NotLiquidatable(id);
+        if (!allowed) revert SequencerDown();
         (, reward) = _liquidateAt(id, p, price, msg.sender);
     }
 
     /// @notice Whether `liquidate(id)` would succeed now (view helper for keepers).
     function isLiquidatable(uint256 id) external view returns (bool liquidatable) {
         Position storage p = _positions[id];
-        if (!p.open || !oracle.sequencerReady()) return false;
+        if (!p.open) return false;
+        (bool up, bool ready) = oracle.sequencerStatus();
+        if (!up) return false;
         uint256 price = oracle.price(p.market);
-        (liquidatable,,,) = _liquidationSide(p, price, _pendingIndex(p.market, price));
+        bool deep;
+        (liquidatable,,,, deep) = _liquidationSide(p, price, _pendingIndex(p.market, price));
+        liquidatable = liquidatable && (ready || deep);
     }
 
-    /// @dev After `_accrue`: is either side below maintenance at `price`?
-    function _liquidatable(Position storage p, uint256 price) internal view returns (bool liquidatable) {
-        (liquidatable,,,) = _liquidationSide(p, price, markets[p.market].fundingIndex);
+    /// @dev After `_accrue`: is either side below maintenance at `price`, and may it be liquidated now? Never
+    ///      while the sequencer is down; during its grace hour only below half the maintenance margin (IA-07).
+    function _liquidationState(Position storage p, uint256 price)
+        internal
+        view
+        returns (bool liquidatable, bool allowed)
+    {
+        bool deep;
+        (liquidatable,,,, deep) = _liquidationSide(p, price, markets[p.market].fundingIndex);
+        if (!liquidatable) return (false, false);
+        (bool up, bool ready) = oracle.sequencerStatus();
+        allowed = ready || (up && deep);
     }
 
     /// @dev Settle a liquidatable position (after `_accrue`) and pay `keeper` its reward.
@@ -85,7 +106,7 @@ abstract contract PerpsLiquidation is PerpsFunding {
     function _liquidationSplit(Position storage p, uint256 price) internal view returns (LiquidationResult memory r) {
         int256 takerClaim;
         uint256 notional;
-        (, r.takerSide, takerClaim, notional) = _liquidationSide(p, price, markets[p.market].fundingIndex);
+        (, r.takerSide, takerClaim, notional,) = _liquidationSide(p, price, markets[p.market].fundingIndex);
         uint256 pool = p.takerMargin + p.makerMargin;
         int256 loserClaim = r.takerSide ? takerClaim : FixedMath.toInt(pool) - takerClaim;
         uint256 loserOut;

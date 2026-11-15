@@ -70,7 +70,7 @@ contract AuditPoC is VelumBase {
         _fund(address(evil), usdg, 1000 * USD);
         vm.deal(address(evil), 1 ether);
         vm.prank(address(evil));
-        uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, 0);
+        uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, type(uint256).max);
         vm.prank(address(evil));
         perps.requestForcedExit{value: 0.001 ether}(id);
         evil.setArmed(true);
@@ -96,7 +96,7 @@ contract AuditPoC is VelumBase {
         perps.requestForcedExit{value: 0.001 ether}(id);
         evilMaker.setArmed(true);
 
-        assertTrue(_try(alice, 30_000_000, abi.encodeCall(perps.close, (id, 0))), "taker closes");
+        assertTrue(_try(alice, 30_000_000, abi.encodeCall(perps.close, (id, 1))), "taker closes");
         assertFalse(_pos(id).open);
     }
 
@@ -112,7 +112,7 @@ contract AuditPoC is VelumBase {
         _fund(mallory2, usdg, 5000 * USD);
         uint256 start = _total(mallory, mallory2) + book.totalBacking();
         vm.prank(mallory2);
-        uint256 id = perps.open(offer, address(tsla), true, 20_000 * USD, 10, 0);
+        uint256 id = perps.open(offer, address(tsla), true, 20_000 * USD, 10, type(uint256).max);
         fee = 20_000 * USD * 6 / 10_000;
 
         vm.warp(block.timestamp + 16 hours); // market closed overnight, relay silent
@@ -129,7 +129,7 @@ contract AuditPoC is VelumBase {
             perps.liquidate(id);
             vm.prank(mallory2);
             vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-            perps.close(id, 0);
+            perps.close(id, 1);
         }
         // The price walks 5% per window; the first liquidatable step is solvent (one recording moves at most
         // 5%, half the 10% maintenance cushion) and pays the 1% penalty.
@@ -183,7 +183,7 @@ contract AuditPoC is VelumBase {
         uint256 evilOffer = _offerAs(mallory, 20_000 * USD, 2, 0);
         _fund(mallory2, usdg, 5000 * USD);
         vm.prank(mallory2);
-        uint256 evil = perps.open(evilOffer, address(tsla), true, 20_000 * USD, 10, 0);
+        uint256 evil = perps.open(evilOffer, address(tsla), true, 20_000 * USD, 10, type(uint256).max);
 
         vm.warp(block.timestamp + 16 hours);
         _movePriceTo(address(tsla), (TSLA_PRICE * 70) / 100); // walks 7 windows, nobody liquidates
@@ -267,7 +267,7 @@ contract AuditPoC is VelumBase {
         uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
         _fund(mallory2, usdg, 1000 * USD);
         vm.prank(mallory2);
-        uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, 0);
+        uint256 id = perps.open(offer, address(tsla), true, 1000 * USD, 10, type(uint256).max);
         uint256 p = TSLA_PRICE;
         for (uint256 i; i < 8; ++i) {
             p = (p * 110) / 100;
@@ -281,7 +281,7 @@ contract AuditPoC is VelumBase {
         perps.liquidate(id);
         vm.prank(mallory2);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLagging.selector, address(tsla)));
-        perps.close(id, 0);
+        perps.close(id, 1);
         assertEq(perps.insurance(), ins, "no insurance paid out");
         assertEq(perps.coverClaims(perps.currentCoverEpoch(), mallory2), 0);
 
@@ -305,10 +305,10 @@ contract AuditPoC is VelumBase {
         vm.warp(at + 11);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(OracleAdapter.StalePrice.selector, address(tsla), at));
-        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, type(uint256).max);
         vm.warp(at + 60);
         vm.prank(alice);
-        perps.close(id, 0); // a 60 s old price is still fine for closing
+        perps.close(id, 1); // a 60 s old price is still fine for closing
         assertFalse(_pos(id).open);
     }
 
@@ -351,9 +351,9 @@ contract AuditPoC is VelumBase {
 
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.CloseOnly.selector, address(tsla)));
-        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, type(uint256).max);
         vm.prank(alice);
-        perps.close(b, 0);
+        perps.close(b, 1);
         vm.prank(alice);
         perps.addMargin(c, 10 * USD);
         vm.prank(alice);
@@ -429,7 +429,7 @@ contract AuditPoC is VelumBase {
         _fund(mallory2, usdg, 10_000 * USD);
         uint256 lockedBefore = perps.totalMargin();
         vm.prank(mallory2);
-        perps.open(m, address(tsla), true, 30_000 * USD, 10, 0);
+        perps.open(m, address(tsla), true, 30_000 * USD, 10, type(uint256).max);
         assertGt(_fundingRate(), 0, "longs pay after the wash");
         assertLe(_fundingRate(), perps.MAX_FUNDING_RATE_PER_HOUR(), "within the cap");
         assertEq(perps.totalMargin() - lockedBefore, 12_000 * USD, "attacker locks 40% of the wash size");
@@ -443,9 +443,9 @@ contract AuditPoC is VelumBase {
         _fund(mallory2, usdg, 100 * USD);
         vm.prank(mallory2);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PositionTooSmall.selector, 9_999_999, 10 * USD));
-        perps.open(offer, address(tsla), true, 9_999_999, 10, 0);
+        perps.open(offer, address(tsla), true, 9_999_999, 10, type(uint256).max);
         vm.prank(mallory2);
-        perps.open(offer, address(tsla), true, 10 * USD, 10, 0);
+        perps.open(offer, address(tsla), true, 10 * USD, 10, type(uint256).max);
     }
 
     /// @notice F-11: an insolvent position (nothing left for a penalty) still pays its liquidator a
@@ -499,7 +499,7 @@ contract AuditPoC is VelumBase {
         assertGt(claim, int256(pool));
         uint256 epoch = perps.currentCoverEpoch();
         vm.prank(alice);
-        assertEq(perps.close(id, 0), pool);
+        assertEq(perps.close(id, 1), pool);
         assertEq(perps.coverClaims(epoch, alice), uint256(claim) - pool);
         vm.warp((epoch + 1) * 1 hours);
         uint256 before = _bal(alice, usdg);
@@ -519,7 +519,7 @@ contract AuditPoC is VelumBase {
         assertLt(claim, 0);
         uint256 bobBefore = _bal(bob, usdg);
         vm.prank(alice);
-        assertEq(perps.close(id, 0), 0);
+        assertEq(perps.close(id, 1), 0);
         assertEq(_bal(bob, usdg) - bobBefore, 400 * USD);
         assertEq(perps.coverClaims(perps.currentCoverEpoch(), bob), uint256(-claim));
     }
@@ -560,9 +560,11 @@ contract AuditPoC is VelumBase {
         assertEq(fee, penalty);
     }
 
-    /// @notice A dead-oracle forced exit resets the rate without accruing, and no longer emits a
-    ///         FundingAdvanced that claims the index was brought up to now.
-    function test_nit_fixed_deadOracleSettlementEmitsNoFundingAdvanced() public {
+    /// @notice A dead-oracle forced exit used to reset the rate without accruing (and the round-1 nit removed the
+    ///         FundingAdvanced that claimed the index was current). Since IA-02 the dead exit settles funding up to
+    ///         the last valid time and nothing over the dead period, so the index IS current: FundingAdvanced
+    ///         reports it unchanged over the dead period, with the reset rate.
+    function test_nit_IA02_fixed_deadOracleSettlementReportsIndexFrozenOverDeadPeriod() public {
         uint256 offer = _offerAs(bob, 10_000 * USD, 5, 5);
         _fund(alice, usdg, 1000 * USD);
         vm.deal(alice, 1 ether);
@@ -571,13 +573,12 @@ contract AuditPoC is VelumBase {
         perps.requestForcedExit{value: 0.001 ether}(id);
         vm.warp(block.timestamp + 15 days);
         assertTrue(oracle.isDead(address(tsla)));
-        vm.recordLogs();
+        int256 idx = _fundingIndex();
+        vm.expectEmit(address(perps));
+        emit PerpsBase.FundingAdvanced(address(tsla), 0, idx, block.timestamp);
         perps.settleForcedExit(id);
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        for (uint256 i; i < logs.length; ++i) {
-            assertTrue(logs[i].topics[0] != PerpsBase.FundingAdvanced.selector, "no FundingAdvanced");
-        }
-        assertEq(_fundingRate(), 0, "rate still reset");
+        assertEq(_fundingIndex(), idx, "no accrual over the dead period");
+        assertEq(_fundingRate(), 0, "rate reset");
     }
 
     function test_nit_fixed_removeMarginOversizeError() public {
@@ -607,8 +608,8 @@ contract AuditOiCapPoC is VelumBase {
             book.postOffer(address(tsla), 60_000 * USD, 60_000 * USD, 2, 0, uint64(block.timestamp + 1 days));
         _fund(m2, usdg, 20_000 * USD);
         vm.startPrank(m2);
-        perps.open(offer, address(tsla), true, 39_000 * USD, 10, 0); // ~99.6 TSLA
-        perps.open(offer, address(tsla), true, 19_500 * USD, 10, 0); // ~49.8 TSLA
+        perps.open(offer, address(tsla), true, 39_000 * USD, 10, type(uint256).max); // ~99.6 TSLA
+        perps.open(offer, address(tsla), true, 19_500 * USD, 10, type(uint256).max); // ~49.8 TSLA
         vm.stopPrank();
         assertEq(perps.totalMargin(), (39_000 + 19_500) * USD * 2 / 5, "40% of the notional locked");
         assertEq(perps.insurance(), (39_000 + 19_500) * USD * 6 / 10_000, "fees paid");
@@ -617,7 +618,7 @@ contract AuditOiCapPoC is VelumBase {
         uint256 honest = _postOffer(10_000 * USD, 10_000 * USD, 5, 5);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.OpenInterestCap.selector, address(tsla)));
-        perps.open(honest, address(tsla), true, 500 * USD, 4, 0);
+        perps.open(honest, address(tsla), true, 500 * USD, 4, type(uint256).max);
     }
 }
 
@@ -741,7 +742,7 @@ contract AuditChainlinkPoC is Test {
     function _openLong(address who, uint256 offer, uint8 levHalf) internal returns (uint256 id) {
         _fund(who, 1000 * USD);
         vm.prank(who);
-        id = perps.open(offer, address(tsla), true, 1000 * USD, levHalf, 0);
+        id = perps.open(offer, address(tsla), true, 1000 * USD, levHalf, type(uint256).max);
     }
 
     // ------------------------------------------------------------ F-03
@@ -776,28 +777,37 @@ contract AuditChainlinkPoC is Test {
         feed.setBroken(false);
         feed.set(360.3e8, block.timestamp);
         perps.advanceFunding(address(tsla));
-        int256 claimAtOracle = perps.takerClaimAt(id, 360.3e18);
+        // alice requested the exit, so it settles like her plain close (IA-01): the 5 bps close spread and the fee
+        uint256 exit = (360.3e18 * (10_000 - 5)) / 10_000;
+        int256 claimAtExit = perps.takerClaimAt(id, exit);
+        uint256 fee = (perps.getPosition(id).qty * exit * 6 + 1e34 - 1) / 1e34;
         uint256 before = vault.balanceOf(alice, address(usdg));
         vm.prank(alice);
         perps.settleForcedExit(id);
         uint256 got = vault.balanceOf(alice, address(usdg)) - before;
-        assertEq(got, uint256(claimAtOracle), "settled at the oracle");
+        assertEq(got, uint256(claimAtExit) - fee, "settled at the oracle");
         assertLt(got + 75 * USD, atEntry, "not at the entry price");
     }
 
-    /// @notice F-03 regression: out-of-bounds or zero answers are stale; dead only 14 days after the last
-    ///         valid price.
-    function test_F03_fixed_outOfBoundsAnswerIsStaleNotDead() public {
+    /// @notice F-03 regression: a zero answer is stale, not dead; dead only 14 days after the last valid price.
+    ///         IA-06 refined what is valid: an out-of-bounds answer is a live reading (clamped to the bound), so a
+    ///         feed that keeps publishing one keeps the token alive. A really dead feed is still dead.
+    function test_F03_fixed_invalidAnswerIsStaleNotDead() public {
         assertTrue(oracle.poke(address(tsla)));
-        uint256 t0 = block.timestamp;
         feed.set(0.5e8, block.timestamp); // below the 1 USDG bound (e.g. after a split or a bad round)
-        assertFalse(oracle.isDead(address(tsla)));
+        assertTrue(oracle.poke(address(tsla)), "IA-06: a live, clamped reading");
+        uint256 t0 = block.timestamp;
+        assertEq(oracle.lastValidAt(address(tsla)), t0);
         feed.set(0, block.timestamp);
         assertFalse(oracle.isDead(address(tsla)));
-        assertFalse(oracle.poke(address(tsla)));
+        assertFalse(oracle.poke(address(tsla)), "zero answer: invalid, records nothing");
         vm.warp(t0 + 14 days);
         assertFalse(oracle.isDead(address(tsla)));
         vm.warp(t0 + 14 days + 1);
+        assertTrue(oracle.isDead(address(tsla)), "a really dead feed still counts as dead");
+        feed.set(0.5e8, block.timestamp); // publishing again, even out of bounds: alive
+        assertFalse(oracle.isDead(address(tsla)));
+        feed.set(0.5e8, t0); // a stuck feed repeating an old round is not fresh: dead
         assertTrue(oracle.isDead(address(tsla)));
     }
 
@@ -826,14 +836,14 @@ contract AuditChainlinkPoC is Test {
         _fund(alice, 1000 * USD);
         vm.prank(alice);
         vm.expectRevert(PerpsBase.SequencerDown.selector);
-        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, type(uint256).max);
         vm.prank(alice);
         perps.addMargin(a, 1 * USD); // adding margin works
         vm.prank(alice);
         vm.expectRevert(PerpsBase.SequencerDown.selector); // removing it does not
         perps.removeMargin(a, 1 * USD);
         vm.prank(carol);
-        perps.close(b, 0); // closing works (a plain close: no liquidation while the sequencer is down)
+        perps.close(b, 1); // closing works (a plain close: no liquidation while the sequencer is down)
         assertFalse(perps.getPosition(b).open);
 
         vm.warp(block.timestamp + 30 minutes);
@@ -845,7 +855,7 @@ contract AuditChainlinkPoC is Test {
         perps.liquidate(a);
         vm.prank(alice);
         vm.expectRevert(PerpsBase.SequencerDown.selector);
-        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, type(uint256).max);
 
         vm.warp(block.timestamp + 1);
         feed.set(332.9e8, block.timestamp);
@@ -853,6 +863,6 @@ contract AuditChainlinkPoC is Test {
         vm.prank(keeper);
         perps.liquidate(a);
         vm.prank(alice);
-        perps.open(offer, address(tsla), true, 500 * USD, 4, 0);
+        perps.open(offer, address(tsla), true, 500 * USD, 4, type(uint256).max);
     }
 }

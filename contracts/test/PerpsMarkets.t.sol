@@ -191,44 +191,46 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
     function test_open_guards() public {
         vm.startPrank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.UnknownMarket.selector, address(usdg)));
-        perps.open(offerId, address(usdg), true, 1, 4, 0);
+        perps.open(offerId, address(usdg), true, 1, 4, type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PositionTooSmall.selector, 0, 10 * USD));
-        perps.open(offerId, address(tsla), true, 0, 4, 0);
+        perps.open(offerId, address(tsla), true, 0, 4, type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PositionTooSmall.selector, 10 * USD - 1, 10 * USD));
-        perps.open(offerId, address(tsla), true, 10 * USD - 1, 4, 0);
+        perps.open(offerId, address(tsla), true, 10 * USD - 1, 4, type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.BadLeverage.selector, 1));
-        perps.open(offerId, address(tsla), true, 100 * USD, 1, 0);
+        perps.open(offerId, address(tsla), true, 100 * USD, 1, type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.BadLeverage.selector, 11));
-        perps.open(offerId, address(tsla), true, 100 * USD, 11, 0);
+        perps.open(offerId, address(tsla), true, 100 * USD, 11, type(uint256).max);
+        vm.expectRevert(PerpsBase.NoPriceLimit.selector); // IA-10
+        perps.open(offerId, address(tsla), true, 100 * USD, 4, 0);
         uint256 entry = _refEntry(TSLA_PRICE, true, 5);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLimit.selector, entry, entry - 1));
         perps.open(offerId, address(tsla), true, 100 * USD, 4, entry - 1);
         // 50,000 USDG at ~392 is ~127 tokens > 100-token limit
         uint256 qty = uint256(50_000 * USD) * SCALE / entry;
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.BadQuantity.selector, qty));
-        perps.open(offerId, address(tsla), true, 50_000 * USD, 10, 0);
+        perps.open(offerId, address(tsla), true, 50_000 * USD, 10, type(uint256).max);
         vm.stopPrank();
 
         vm.prank(bob);
         vm.expectRevert(PerpsBase.SelfTrade.selector);
-        perps.open(offerId, address(tsla), true, 100 * USD, 4, 0);
+        perps.open(offerId, address(tsla), true, 100 * USD, 4, type(uint256).max);
 
         vm.warp(block.timestamp + 61);
         vm.prank(alice);
         vm.expectRevert(); // OracleAdapter.StalePrice
-        perps.open(offerId, address(tsla), true, 100 * USD, 4, 0);
+        perps.open(offerId, address(tsla), true, 100 * USD, 4, type(uint256).max);
     }
 
     function test_open_respectsOfferLimits() public {
         uint256 small = _postOffer(1000 * USD, 600 * USD, 2, 0);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(MakerBook.FillTooLarge.selector, 700 * USD, 600 * USD));
-        perps.open(small, address(tsla), true, 700 * USD, 4, 0);
+        perps.open(small, address(tsla), true, 700 * USD, 4, type(uint256).max);
         vm.prank(bob);
         book.withdrawOffer(small);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(MakerBook.OfferInactive.selector, small));
-        perps.open(small, address(tsla), true, 100 * USD, 4, 0);
+        perps.open(small, address(tsla), true, 100 * USD, 4, type(uint256).max);
     }
 
     // ------------------------------------------------------------ close
@@ -257,7 +259,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 bobBefore = _bal(bob, usdg);
         uint256 insBefore = perps.insurance();
         vm.prank(alice);
-        uint256 takerOut = perps.close(id, 0);
+        uint256 takerOut = perps.close(id, p.isLong ? 1 : type(uint256).max);
         (uint256 expTaker, uint256 feePaid, uint256 pool) = _refClose(p, price, _fundingIndex());
         assertEq(takerOut, expTaker, "taker out");
         assertEq(_bal(alice, usdg) - aliceBefore, expTaker);
@@ -304,7 +306,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 bobBefore = _bal(bob, usdg);
         uint256 aliceBefore = _bal(alice, usdg);
         vm.prank(alice);
-        uint256 out = perps.close(id, 0);
+        uint256 out = perps.close(id, 1);
         assertEq(out, pool, "whole pool to the taker");
         assertEq(_bal(bob, usdg), bobBefore, "insolvent maker gets nothing");
         // keeper top-up: min(half the 1% penalty, 1 USDG, the epoch's cap of 10% of the fund)
@@ -319,8 +321,11 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         uint256 id = _open(alice, offerId, true, 500 * USD, 4);
         vm.prank(carol);
         vm.expectRevert(PerpsBase.NotTaker.selector);
-        perps.close(id, 0);
+        perps.close(id, 1);
         uint256 exit = _refExit(TSLA_PRICE, true, 5);
+        vm.prank(alice);
+        vm.expectRevert(PerpsBase.NoPriceLimit.selector); // IA-10
+        perps.close(id, 0);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.PriceLimit.selector, exit, exit + 1));
         perps.close(id, exit + 1);
@@ -328,7 +333,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         perps.close(id, exit);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.NotOpen.selector, id));
-        perps.close(id, 0);
+        perps.close(id, 1);
     }
 
     function test_close_shortPriceLimit() public {
@@ -544,7 +549,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
     function test_isLiquidatable_closedIsFalse() public {
         uint256 id = _open(alice, offerId, true, 500 * USD, 4);
         vm.prank(alice);
-        perps.close(id, 0);
+        perps.close(id, 1);
         assertFalse(perps.isLiquidatable(id));
         assertEq(perps.takerClaimAt(id, TSLA_PRICE), 0); // closed positions have no claim
     }
@@ -572,6 +577,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         perps.settleForcedExit(id);
     }
 
+    /// @notice Maker's request: the oracle price with no spread and no fee (a taker's request pays both, IA-01).
     function test_forcedExit_settlesAtOracleWithoutSpreadOrFee() public {
         uint256 id = _open(alice, offerId, true, 1000 * USD, 4);
         vm.prank(bob); // the maker can request too
@@ -596,6 +602,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         _assertPerpsSolvent();
     }
 
+    /// @notice Dead oracle, taker's request: a plain close at the entry price (close spread and fee, IA-01).
     function test_forcedExit_deadOracleSettlesAtEntry() public {
         uint256 id = _open(alice, offerId, true, 1000 * USD, 4);
         vm.prank(alice);
@@ -603,14 +610,35 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         vm.warp(block.timestamp + 15 days); // no price for 15 days: dead
         assertTrue(oracle.isDead(address(tsla)));
         PerpsBase.Position memory p = _pos(id);
-        int256 funding = _refFunding(true, p.qty, _fundingIndex() - p.fundingIndexAtOpen);
         uint256 aliceBefore = _bal(alice, usdg);
+        uint256 insBefore = perps.insurance();
         perps.settleForcedExit(id);
-        assertEq(int256(_bal(alice, usdg) - aliceBefore), int256(p.takerMargin) - funding); // pnl 0 at entry
+        (uint256 expTaker, uint256 feePaid,) = _refClose(p, p.entry, _fundingIndex());
+        assertEq(_bal(alice, usdg) - aliceBefore, expTaker, "entry price minus the close spread, minus the fee");
+        assertEq(perps.insurance() - insBefore, feePaid);
+        assertGt(feePaid, 0);
         assertEq(perps.bondRefunds(alice), 0.001 ether);
         vm.prank(alice);
         perps.claimBond();
         assertEq(alice.balance, 1 ether);
+        _assertPerpsSolvent();
+    }
+
+    /// @notice Dead oracle, maker's request: at the entry price with no spread and no fee.
+    function test_forcedExit_deadOracleMakerRequestSettlesAtEntryWithoutSpread() public {
+        uint256 id = _open(alice, offerId, true, 1000 * USD, 4);
+        vm.prank(bob);
+        perps.requestForcedExit{value: 0.001 ether}(id);
+        vm.warp(block.timestamp + 15 days);
+        assertTrue(oracle.isDead(address(tsla)));
+        PerpsBase.Position memory p = _pos(id);
+        uint256 aliceBefore = _bal(alice, usdg);
+        uint256 insBefore = perps.insurance();
+        perps.settleForcedExit(id);
+        int256 funding = _refFunding(true, p.qty, _fundingIndex() - p.fundingIndexAtOpen);
+        assertEq(int256(_bal(alice, usdg) - aliceBefore), int256(p.takerMargin) - funding); // pnl 0 at entry
+        assertEq(perps.insurance(), insBefore, "no fee");
+        assertEq(perps.bondRefunds(bob), 0.001 ether);
     }
 
     function test_forcedExit_bondRefundedOnCloseAndDeferredIfRejected() public {
@@ -618,11 +646,11 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
         _fund(address(r), usdg, 10_000 * USD);
         vm.deal(address(r), 1 ether);
         vm.prank(address(r));
-        uint256 id = perps.open(offerId, address(tsla), true, 500 * USD, 4, 0);
+        uint256 id = perps.open(offerId, address(tsla), true, 500 * USD, 4, type(uint256).max);
         vm.prank(address(r));
         perps.requestForcedExit{value: 0.001 ether}(id);
         vm.prank(address(r));
-        perps.close(id, 0); // refund fails -> deferred
+        perps.close(id, 1); // refund fails -> deferred
         assertEq(perps.bondRefunds(address(r)), 0.001 ether);
         vm.prank(address(r));
         vm.expectRevert(PerpsBase.RefundFailed.selector);
@@ -664,7 +692,7 @@ contract PerpsMarketsTest is VelumBase, PerpsRef {
             perps.liquidate(id);
         } else {
             vm.prank(alice);
-            perps.close(id, 0);
+            perps.close(id, isLong ? 1 : type(uint256).max);
         }
         uint256 after_ =
             _bal(alice, usdg) + _bal(bob, usdg) + book.totalBacking() + perps.insurance() + _bal(liquidator, usdg);
@@ -687,7 +715,7 @@ contract PerpsOiCapTest is VelumBase {
         _open(alice, offer, true, 780 * USD, 4); // ~1.99 TSLA
         vm.prank(carol);
         vm.expectRevert(abi.encodeWithSelector(PerpsBase.OpenInterestCap.selector, address(tsla)));
-        perps.open(offer, address(tsla), true, 780 * USD, 4, 0);
+        perps.open(offer, address(tsla), true, 780 * USD, 4, type(uint256).max);
         _open(carol, offer, false, 780 * USD, 4); // the other side has its own cap
     }
 }

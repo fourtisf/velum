@@ -37,7 +37,8 @@ abstract contract PerpsBase is ReentrancyGuard {
     uint256 public constant FORCED_EXIT_BOND = 0.001 ether;
 
     // ---------------------------------------------------------------- audit hardening (2026-11)
-    /// @notice Opens need a price at most 10 s old (F-06); closes, liquidations and funding 60 s.
+    /// @notice Opens (F-06) and margin removal (independent audit IA-03) need a price at most 10 s old;
+    ///         closes, liquidations, forced exits and funding 60 s.
     uint256 public constant OPEN_MAX_AGE = 10;
     uint256 public constant MAX_PRICE_AGE = 60;
     /// @notice Shortfall cover is paid per hourly epoch (F-02)...
@@ -191,6 +192,8 @@ abstract contract PerpsBase is ReentrancyGuard {
     error SequencerDown();
     error EpochNotOver(uint256 epoch);
     error EpochSettled(uint256 epoch);
+    /// @notice `open` and `close` need a non-zero `priceLimit` (independent audit IA-10).
+    error NoPriceLimit();
 
     constructor(IVelumVault vault_, IOracleAdapter oracle_, IMakerBook book_, address usdg_, uint8 usdgDecimals) {
         if (address(vault_) == address(0) || address(oracle_) == address(0) || address(book_) == address(0)) {
@@ -256,18 +259,21 @@ abstract contract PerpsBase is ReentrancyGuard {
     }
 
     /// @dev Whether either side is below maintenance (10% of notional) at `price` with funding index
-    ///      `index`, and which: the side with the smaller claim is the one liquidated.
+    ///      `index`, and which: the side with the smaller claim is the one liquidated. `deep`: that side is
+    ///      also below half the maintenance margin (MM / 2, 5% of notional at 5x), the only positions that may
+    ///      be liquidated during the sequencer grace period (independent audit IA-07).
     function _liquidationSide(Position storage p, uint256 price, int256 index)
         internal
         view
-        returns (bool liquidatable, bool takerSide, int256 takerClaim, uint256 notional)
+        returns (bool liquidatable, bool takerSide, int256 takerClaim, uint256 notional, bool deep)
     {
         takerClaim = FixedMath.toInt(p.takerMargin) + _takerPnl(p, price) - _takerFundingAt(p, index);
         int256 makerClaim = FixedMath.toInt(p.takerMargin + p.makerMargin) - takerClaim;
         notional = _notionalUp(p.qty, price);
         int256 req = FixedMath.toInt(notional.mulDivUp(MM_BPS, BPS));
-        if (takerClaim < req && takerClaim <= makerClaim) return (true, true, takerClaim, notional);
-        if (makerClaim < req) return (true, false, takerClaim, notional);
+        int256 half = FixedMath.toInt(notional.mulDivUp(MM_BPS, 2 * BPS));
+        if (takerClaim < req && takerClaim <= makerClaim) return (true, true, takerClaim, notional, takerClaim < half);
+        if (makerClaim < req) return (true, false, takerClaim, notional, makerClaim < half);
     }
 
     function _requireSequencer() internal view {
@@ -277,6 +283,50 @@ abstract contract PerpsBase is ReentrancyGuard {
     /// @dev Notional value in USDG at `price`, rounded up (used for requirements and fees).
     function _notionalUp(uint256 qty, uint256 price) internal view returns (uint256) {
         return qty.mulDivUp(price, valueScale);
+    }
+
+    /// @dev Exit price of a close: oracle ∓ the maker's committed close spread, worse for the taker.
+    function _exitPrice(Position storage p, uint256 price) internal view returns (uint256) {
+        return p.isLong ? price.mulDivDown(BPS - p.closeSpreadBps, BPS) : price.mulDivUp(BPS + p.closeSpreadBps, BPS);
+    }
+
+    /// @dev Close fee: 0.06% of exit notional, rounded up.
+    function _closeFee(Position storage p, uint256 exit) internal view returns (uint256) {
+        return p.qty.mulDivUp(exit * TAKER_FEE_BPS, valueScale * BPS);
+    }
+
+    /// @dev Settle a position (after accrual) with the taker's P&L taken at `exit` and `fee` charged to the
+    ///      taker, capped at what its claim holds: a plain close (exit with spread, close fee), a forced exit on
+    ///      the taker's behalf (the same, IA-01) or one on the maker's behalf (exit = price, no fee). `price` is
+    ///      the oracle price reported in PositionChanged.
+    function _settleAt(uint256 id, Position storage p, Action action, uint256 price, uint256 exit, uint256 fee)
+        internal
+        returns (uint256 takerOut)
+    {
+        int256 pnl = _takerPnl(p, exit);
+        int256 funding = _takerFunding(p, markets[p.market]);
+        uint256 makerOut;
+        uint256 feePaid;
+        (takerOut, makerOut, feePaid) =
+            _split(FixedMath.toInt(p.takerMargin) + pnl - funding, p.takerMargin + p.makerMargin, fee);
+        insurance += feePaid;
+        _emitChange(id, p, action, price);
+        emit PositionSettled(id, exit, pnl, funding, feePaid, takerOut, makerOut);
+        _settle(p, takerOut, makerOut);
+    }
+
+    /// @dev Split a pool between taker, maker and fee. Always conserves: takerOut + makerOut + feePaid == pool.
+    ///      The fee is capped at the taker's claim (and the pool), so a small claim never makes it revert.
+    function _split(int256 takerGross, uint256 pool, uint256 fee)
+        internal
+        pure
+        returns (uint256 takerOut, uint256 makerOut, uint256 feePaid)
+    {
+        if (takerGross <= 0) return (0, pool, 0);
+        uint256 g = FixedMath.toUint(takerGross);
+        feePaid = FixedMath.min(FixedMath.min(fee, g), pool);
+        takerOut = FixedMath.min(g - feePaid, pool - feePaid);
+        makerOut = pool - feePaid - takerOut;
     }
 
     /// @dev Remove a position from the book and pay both sides from its pool. The caller emits

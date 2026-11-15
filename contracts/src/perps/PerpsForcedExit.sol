@@ -2,17 +2,30 @@
 pragma solidity ^0.8.28;
 
 import {PerpsLiquidation} from "./PerpsLiquidation.sol";
-import {FixedMath} from "../libraries/FixedMath.sol";
 
 /// @title PerpsForcedExit
-/// @notice Either side of a pair can request a forced exit with a refundable 0.001 ETH bond.
-///         Seven days later anyone may settle it at the oracle price with no spread, no fee and no
-///         penalty. If the oracle is dead (no valid price for 14 days) it settles at the entry
-///         price. The bond is refunded to the requester when the position closes for any reason.
-///         A position that is liquidatable at settlement is liquidated instead (internal audit F-08):
-///         the penalty applies and the settler receives the liquidator reward.
-/// @dev In Phase 3 a taker can always close directly; forced exit is the "services went quiet"
-///      escape hatch (for makers too, who otherwise depend on the taker closing).
+/// @notice Either side of a pair can request a forced exit with a refundable 0.001 ETH bond. Seven days later
+///         anyone may settle it. The bond is refunded to the requester when the position closes for any reason.
+///
+///         Settlement price: the oracle price (at most 60 s old). If the oracle is dead (no valid price for
+///         14 days) the entry price. If the source is outside the oracle's fixed bounds and the effective price
+///         has reached the bound, the bound (independent audit IA-06); any other lagging price is refused.
+///         A position that is liquidatable at settlement is liquidated instead (internal audit F-08): the
+///         penalty applies, the settler receives the liquidator reward, and the sequencer rule of
+///         `liquidate` applies.
+///
+///         Economics depend on whose request it is (independent audit IA-01):
+///           - taker's request: exactly what a plain close would cost, the maker's committed close spread and
+///             the 0.06% close fee on exit notional, both capped at the taker's claim (so it never reverts on a
+///             small margin), whoever calls settle. At the entry price (dead oracle) the spread and fee are
+///             losses for the taker, never gains. The escape hatch stays, the close-spread bypass is gone.
+///           - maker's request: the price with no spread and no fee (unchanged). Compared with the plain close
+///             only the taker can do, the maker gives up its close spread and the taker pays nothing extra, so
+///             the maker gains nothing over a close; the close fee is not charged to a taker who did not ask
+///             to leave.
+/// @dev In Phase 3 a taker can always close directly; forced exit is the "services went quiet" escape hatch
+///      (for makers too, who otherwise depend on the taker closing) and the way out of a dead or out-of-bounds
+///      market.
 abstract contract PerpsForcedExit is PerpsLiquidation {
     function requestForcedExit(uint256 id) external payable nonReentrant {
         Position storage p = _position(id);
@@ -32,25 +45,29 @@ abstract contract PerpsForcedExit is PerpsLiquidation {
         if (block.timestamp < settleAfter) revert TooEarly(settleAfter);
         bool atEntry = oracle.isDead(p.market);
         uint256 price = p.entry;
-        if (!atEntry) {
+        if (atEntry) {
+            _accrueDead(p.market); // IA-02: no funding over the dead period
+        } else {
             bool lagging;
             (price, lagging) = _accrue(p.market, MAX_PRICE_AGE);
-            if (_liquidatable(p, price)) {
-                _requireSequencer();
+            (bool liquidatable, bool allowed) = _liquidationState(p, price);
+            if (liquidatable) {
+                if (!allowed) revert SequencerDown();
                 emit ForcedExitSettled(id, price, false);
                 _liquidateAt(id, p, price, msg.sender);
                 return;
             }
-            if (lagging) revert PriceLagging(p.market);
+            // IA-06: a source outside the bounds keeps the price lagging for good; settle at the bound once the
+            // effective price has reached it. Any other lagging price is refused.
+            if (lagging && !oracle.atBound(p.market)) revert PriceLagging(p.market);
         }
-        int256 claim = _takerClaim(p, markets[p.market], price);
-        uint256 pool = p.takerMargin + p.makerMargin;
-        uint256 takerOut = claim <= 0 ? 0 : FixedMath.min(FixedMath.toUint(claim), pool);
-        uint256 makerOut = pool - takerOut;
         emit ForcedExitSettled(id, price, atEntry);
-        _emitChange(id, p, Action.ForcedExit, price);
-        emit PositionSettled(id, price, _takerPnl(p, price), _takerFunding(p, markets[p.market]), 0, takerOut, makerOut);
-        _settle(p, takerOut, makerOut);
+        if (p.exitRequester == p.taker) {
+            uint256 exit = _exitPrice(p, price);
+            _settleAt(id, p, Action.ForcedExit, price, exit, _closeFee(p, exit));
+        } else {
+            _settleAt(id, p, Action.ForcedExit, price, price, 0);
+        }
     }
 
     /// @notice Withdraw forced-exit bond refunds (refunds are never pushed during settlement).

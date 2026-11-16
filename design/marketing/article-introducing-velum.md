@@ -1,6 +1,7 @@
 # Article: Introducing Velum
 
-For X Articles, Medium, Mirror or the website blog. Cover images: `velum-article-cover-1500x600.png` (5:2, X Articles
+For X Articles, Medium, Mirror or the website blog. For X Articles, paste from the copy page
+(https://claude.ai/artifact/DBFZhhQWgsUHBvpHBdyHc9): X's editor does not read Markdown. Cover images: `velum-article-cover-1500x600.png` (5:2, X Articles
 and Mirror headers) and `velum-article-cover-1600x900.png` (16:9, Medium, blog, link previews), source
 `article-cover.html`. English first, then formal Bahasa Indonesia. Replace `[link]` with the site URL.
 
@@ -14,6 +15,13 @@ change the "Fees" section.
 # Introducing Velum: Stock Tokens, traded from accounts you control
 
 *How spot and perpetual trading work on Velum today, and where the privacy layer comes in.*
+
+## In short
+
+- Trade Stock Tokens such as TSLA, NVDA and AAPL from your own wallet. No account, no custody.
+- **Spot**, 24/7 through Uniswap, settled directly to your wallet.
+- **Perpetuals**, long or short up to 5x, from your own Hyperliquid account.
+- **Next:** private execution, with encrypted positions verified by zero-knowledge proofs.
 
 Stock markets keep office hours. They close in the evening and over the weekend, and access usually runs through a
 broker who holds your assets for you. Stock Tokens on Robinhood Chain change part of that equation: a stock exposure
@@ -130,6 +138,13 @@ is not investment advice.*
 # Mengenal Velum: Trading Stock Token dari akun yang Anda kendalikan
 
 *Cara kerja trading spot dan perpetual di Velum saat ini, dan peran lapisan privasi ke depannya.*
+
+## Ringkasnya
+
+- Trading Stock Token seperti TSLA, NVDA dan AAPL dari wallet Anda sendiri. Tanpa akun, tanpa kustodian.
+- **Spot**, 24/7 melalui Uniswap, langsung diterima di wallet Anda.
+- **Perpetual**, long atau short hingga 5x, dari akun Hyperliquid Anda sendiri.
+- **Berikutnya:** eksekusi privat, dengan posisi terenkripsi yang diverifikasi zero-knowledge proof.
 
 Pasar saham punya jam kerja. Bursa tutup di malam hari dan akhir pekan, dan aksesnya biasanya melalui broker yang
 menyimpan aset Anda. Stock Token di Robinhood Chain mengubah sebagian dari itu: eksposur saham yang hidup di onchain dan

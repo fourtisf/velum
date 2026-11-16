@@ -167,6 +167,9 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   every signature and payload. A real fill with real money has not been run: the owner's first small trade is
   the final check.
 - **CSP**: `deploy/lib/common.sh` adds `https://api.hyperliquid.xyz` to `connect-src` on mainnet.
+- **Account card (mainnet)**: the trade page's right column shows the wallet's real balances (USDG, Stock Tokens at the
+  live price, ETH for gas) and the Hyperliquid USDC and open positions, instead of the simulated private account; the
+  private account is named only as in development.
 
 ## What changed: live 24/7 prices and real spot through Uniswap (mainnet, November 2026)
 

@@ -12,3 +12,4 @@ export const HlPerpsTicket = dynamic(() => import('./HlPerpsTicket').then((m) =>
 export const HlPositionsCard = dynamic(() => import('./HlPositions').then((m) => m.HlPositionsCard), { ssr: false, loading: () => <BusyCard h={160} /> });
 export const HlPortfolioPositions = dynamic(() => import('./HlPositions').then((m) => m.HlPortfolioPositions), { ssr: false, loading: () => <Busy h={80} /> });
 export const HlFlowModal = dynamic(() => import('./HlFlowModal').then((m) => m.HlFlowModal), { ssr: false, loading: () => <Busy h={320} /> });
+export const HlAccountRows = dynamic(() => import('./HlAccountRows').then((m) => m.HlAccountRows), { ssr: false, loading: () => null });

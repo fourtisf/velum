@@ -117,6 +117,21 @@ export const HL = {
   noFills: 'No Hyperliquid trades in these markets yet.',
 } as const;
 
+/**
+ * The account card on mainnet (components/trade/AccountCard.tsx): the wallet's real balances and the perps account.
+ * The private account is not live there, so it is named only as in development (no simulated balance on mainnet).
+ */
+export const ACCT = {
+  title: 'Your account',
+  badge: 'Live',
+  connect: 'Connect your wallet to see your balances on Robinhood Chain and your perps account.',
+  perps: 'Perps (Hyperliquid)',
+  noDeposit: 'No deposit yet',
+  privateLabel: 'Private account',
+  privateState: 'In development',
+  privateNote: 'Trades today are public. Encrypted balances and positions come next.',
+} as const;
+
 export const CLOSED = {
   label: 'Market closed',
   tag: 'closed',

@@ -1,15 +1,83 @@
 'use client';
-import { inPos, privTotal } from '@/lib/calc';
-import { SIM, UI } from '@/lib/copy';
+import { IS_MAINNET, TOKENS } from '@velum/config';
+import type { Wad } from '@velum/math';
+import { usePublicBalances } from '@/lib/balances';
+import { inPos, privTotal, valueOf } from '@/lib/calc';
+import { ACCT, SIM, UI } from '@/lib/copy';
 import { fmt, fmtBal, shortH, usdBal } from '@/lib/format';
+import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { usePriceTick } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
+import { HlAccountRows } from '../hyperliquid/lazy';
 import { OcAccountCard } from '../onchain/lazy';
 
 export function AccountCard() {
   const oc = useOnchain();
-  return oc ? <OcAccountCard oc={oc} /> : <DemoAccountCard />;
+  // Mainnet without Velum contracts: the wallet's real balances and the perps account, never a simulated balance.
+  return oc ? <OcAccountCard oc={oc} /> : IS_MAINNET ? <LiveAccountCard /> : <DemoAccountCard />;
+}
+
+const STOCKS = Object.keys(TOKENS).filter((sym) => sym !== 'USDG');
+
+function LiveAccountCard() {
+  usePriceTick();
+  const account = useApp((s) => s.account);
+  const openModal = useApp((s) => s.openModal);
+  const pub = usePublicBalances(account?.addr);
+  if (!account)
+    return (
+      <aside className="card acct">
+        <h2>{ACCT.title}</h2>
+        <p className="muted" style={{ fontSize: 13.5, marginTop: 8 }}>
+          {ACCT.connect}
+        </p>
+        <button className="btn btn-dark btn-sm" style={{ marginTop: 12 }} onClick={() => openModal({ kind: 'connect' })}>
+          Connect wallet
+        </button>
+      </aside>
+    );
+  const b = pub.data?.bal;
+  const usdg = b?.USDG ?? null;
+  const held = b ? STOCKS.filter((sym) => (b[sym] ?? 0n) > 0n) : [];
+  // Stock Tokens at the live price; any held token without a live price leaves the totals unknown (a dash).
+  let stockValue: Wad | null = b ? 0n : null;
+  for (const sym of held) {
+    const v = valueOf(sym, b![sym]!);
+    stockValue = v === null || stockValue === null ? null : stockValue + v;
+  }
+  const total = usdg !== null && stockValue !== null ? usdg + stockValue : null;
+  const dash = pub.isError ? '—' : '…';
+  return (
+    <aside className="card acct">
+      <h2>
+        {ACCT.title}{' '}
+        <span className="badge up" style={{ color: 'var(--up)' }}>
+          <span className="d" />
+          {ACCT.badge}
+        </span>
+      </h2>
+      <div className="bigv num pv">{total !== null ? usdBal(total) : dash}</div>
+      <div className="r">
+        <span>USDG</span>
+        <b className="num pv">{usdg !== null ? `${fmtBal(usdg)} USDG` : dash}</b>
+      </div>
+      <div className="r">
+        <span>Stock Tokens{held.length ? ` (${held.join(', ')})` : ''}</span>
+        <b className="num pv">{stockValue !== null ? usdBal(stockValue) : dash}</b>
+      </div>
+      <div className="r">
+        <span>ETH for gas</span>
+        <b className="num pv">{b?.ETH !== undefined ? `${fmtBal(b.ETH, 4)} ETH` : dash}</b>
+      </div>
+      {HL_PERPS ? <HlAccountRows /> : null}
+      <div className="lastc">
+        {ACCT.privateLabel}
+        <b>{ACCT.privateState}</b>
+        <span style={{ display: 'block', marginTop: 4, fontSize: 12 }}>{ACCT.privateNote}</span>
+      </div>
+    </aside>
+  );
 }
 
 function DemoAccountCard() {

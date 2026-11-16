@@ -20,7 +20,7 @@ change the "Fees" section.
 
 - Trade Stock Tokens such as TSLA, NVDA and AAPL from your own wallet. No account, no custody.
 - **Spot**, 24/7 through Uniswap, settled directly to your wallet.
-- **Perpetuals**, long or short up to 5x, from your own Hyperliquid account.
+- **Perpetuals**, long or short up to 5x, from your own perpetuals account.
 - **Next:** private execution, with encrypted positions verified by zero-knowledge proofs.
 
 Stock markets keep office hours. They close in the evening and over the weekend, and access usually runs through a
@@ -36,7 +36,7 @@ each trade, and what comes next.
 Velum is an independent project on Robinhood Chain. It connects your own wallet to two sources of real liquidity:
 
 - **Spot**, through Uniswap pools on Robinhood Chain, available 24 hours a day, seven days a week.
-- **Perpetuals**, through Hyperliquid's stock perpetual markets, from your own Hyperliquid account.
+- **Perpetuals**, through stock perpetual markets on a third-party exchange, from your own account there.
 
 There is no Velum account to register and no deposit into Velum. Velum does not take custody at any point.
 
@@ -62,11 +62,9 @@ weekends and holidays when traditional markets are closed.
 
 ### 3. Open leveraged positions
 
-For long and short exposure, the Perps ticket places orders on Hyperliquid's stock perpetual markets from **your own
-Hyperliquid account**.
+For long and short exposure, the Perps ticket places orders on stock perpetual markets from **your own perpetuals account**.
 
-- **Funding the account.** Deposit USDC on Hyperliquid with the same wallet. Velum links there until your account
-  holds a first deposit.
+- **Funding the account.** Deposit USDC into that account with the same wallet. Velum shows the link until your account holds a first deposit.
 - **Enabling trading.** Your wallet signs one approval, without gas, that lets your browser place orders for 30 days.
   The key behind that approval is generated in your browser and stays there. It can place and close orders, but it
   cannot withdraw or transfer funds out of your account.
@@ -87,8 +85,7 @@ confirming that the trade uses real money and can lose its margin. Nothing is si
 
 ## Markets
 
-Velum lists ten Stock Token markets: **TSLA, NVDA, AAPL, META, AMZN, MSFT, COIN, PLTR, AMD and NFLX**. Each has spot
-liquidity on Uniswap and a perpetual market on Hyperliquid. The trade terminal shows the live mark price, hourly
+Velum lists ten Stock Token markets: **TSLA, NVDA, AAPL, META, AMZN, MSFT, COIN, PLTR, AMD and NFLX**. Each has spot liquidity on Uniswap and a perpetual market. The trade terminal shows the live mark price, hourly
 funding and open interest of each perpetual market.
 
 ## Custody and security
@@ -96,11 +93,10 @@ funding and open interest of each perpetual market.
 Velum's model is simple: **you keep your keys and your assets.**
 
 - Spot trades move tokens from your wallet to your wallet, through Uniswap's contracts.
-- Perpetual positions sit in your own Hyperliquid account. The browser-held key that places orders cannot withdraw.
+- Perpetual positions sit in your own perpetuals account. The browser-held key that places orders cannot withdraw.
 - Velum's servers never receive a seed phrase, a private key or a signature-derived key.
 
-That also means today's trades are **public**: spot trades are visible onchain, and perpetual positions are visible on
-Hyperliquid. Which brings us to what comes next.
+That also means today's trades are **public**: spot trades are visible onchain, and perpetual positions are visible on the exchange. Which brings us to what comes next.
 
 ## What's next: private execution
 
@@ -114,20 +110,19 @@ trade. Velum's own contracts will hold funds only after an external audit.
 
 ## Fees
 
-Velum currently adds no fee of its own. On spot trades you pay the Uniswap pool fee and gas; on perpetuals you pay
-Hyperliquid's trading fee and funding.
+Velum currently adds no fee of its own. On spot trades you pay the Uniswap pool fee and gas; on perpetuals you pay the exchange's trading fee and funding.
 
 ## Getting started
 
 1. Connect your wallet at [link].
 2. For spot, hold USDG and a little ETH for gas on Robinhood Chain.
-3. For perpetuals, deposit USDC on Hyperliquid with the same wallet, then open the Perps tab.
+3. For perpetuals, deposit USDC into your perpetuals account with the same wallet (Velum links you there), then open the Perps tab.
 
 Follow [@velumtrade](https://x.com/velumtrade) for updates on the privacy layer.
 
 ---
 
-*Velum is an independent project on Robinhood Chain and is not affiliated with Robinhood, Uniswap or Hyperliquid.
+*Velum is an independent project on Robinhood Chain and is not affiliated with Robinhood, Uniswap or the perpetuals exchange it routes orders to.
 Leveraged trading involves significant risk, including the loss of margin. This article is for information only and
 is not investment advice.*
 
@@ -143,7 +138,7 @@ is not investment advice.*
 
 - Trading Stock Token seperti TSLA, NVDA dan AAPL dari wallet Anda sendiri. Tanpa akun, tanpa kustodian.
 - **Spot**, 24/7 melalui Uniswap, langsung diterima di wallet Anda.
-- **Perpetual**, long atau short hingga 5x, dari akun Hyperliquid Anda sendiri.
+- **Perpetual**, long atau short hingga 5x, dari akun perpetual Anda sendiri.
 - **Berikutnya:** eksekusi privat, dengan posisi terenkripsi yang diverifikasi zero-knowledge proof.
 
 Pasar saham punya jam kerja. Bursa tutup di malam hari dan akhir pekan, dan aksesnya biasanya melalui broker yang
@@ -159,7 +154,7 @@ terjadi di balik setiap transaksi, dan apa yang akan datang.
 Velum adalah proyek independen di Robinhood Chain yang menghubungkan wallet Anda ke dua sumber likuiditas nyata:
 
 - **Spot**, melalui pool Uniswap di Robinhood Chain, tersedia 24 jam sehari, tujuh hari seminggu.
-- **Perpetual**, melalui pasar perpetual saham Hyperliquid, dari akun Hyperliquid Anda sendiri.
+- **Perpetual**, melalui pasar perpetual saham di bursa pihak ketiga, dari akun Anda sendiri di sana.
 
 Tidak ada akun Velum yang perlu didaftarkan dan tidak ada deposit ke Velum. Velum tidak pernah memegang aset Anda.
 
@@ -185,10 +180,9 @@ akhir pekan dan hari libur ketika bursa tradisional tutup.
 
 ### 3. Buka posisi dengan leverage
 
-Untuk posisi long dan short, tiket Perps menempatkan order di pasar perpetual saham Hyperliquid dari **akun
-Hyperliquid Anda sendiri**.
+Untuk posisi long dan short, tiket Perps menempatkan order di pasar perpetual saham dari **akun perpetual Anda sendiri**.
 
-- **Mengisi akun.** Deposit USDC di Hyperliquid dengan wallet yang sama. Velum menampilkan tautannya sampai akun Anda
+- **Mengisi akun.** Deposit USDC ke akun tersebut dengan wallet yang sama. Velum menampilkan tautannya sampai akun Anda
   memiliki deposit pertama.
 - **Mengaktifkan trading.** Wallet Anda menandatangani satu persetujuan tanpa gas yang mengizinkan browser menempatkan
   order selama 30 hari. Kunci untuk persetujuan itu dibuat di browser Anda dan tetap di sana. Kunci ini bisa membuka
@@ -212,7 +206,7 @@ transaksi ini memakai uang sungguhan dan bisa kehilangan margin. Tidak ada yang 
 ## Pasar
 
 Velum menyediakan sepuluh pasar Stock Token: **TSLA, NVDA, AAPL, META, AMZN, MSFT, COIN, PLTR, AMD dan NFLX**.
-Masing-masing memiliki likuiditas spot di Uniswap dan pasar perpetual di Hyperliquid. Terminal trading menampilkan
+Masing-masing memiliki likuiditas spot di Uniswap dan pasar perpetual. Terminal trading menampilkan
 harga mark, funding per jam, dan open interest dari setiap pasar perpetual secara langsung.
 
 ## Kustodi dan keamanan
@@ -220,12 +214,11 @@ harga mark, funding per jam, dan open interest dari setiap pasar perpetual secar
 Prinsip Velum sederhana: **kunci dan aset tetap milik Anda.**
 
 - Transaksi spot memindahkan token dari wallet Anda ke wallet Anda, melalui kontrak Uniswap.
-- Posisi perpetual berada di akun Hyperliquid Anda sendiri. Kunci di browser yang menempatkan order tidak bisa menarik
+- Posisi perpetual berada di akun perpetual Anda sendiri. Kunci di browser yang menempatkan order tidak bisa menarik
   dana.
 - Server Velum tidak pernah menerima seed phrase, private key, maupun kunci turunan dari tanda tangan.
 
-Artinya, transaksi saat ini masih **publik**: swap spot terlihat di onchain dan posisi perpetual terlihat di
-Hyperliquid. Inilah alasan langkah berikutnya.
+Artinya, transaksi saat ini masih **publik**: swap spot terlihat di onchain dan posisi perpetual terlihat di bursa tersebut. Inilah alasan langkah berikutnya.
 
 ## Selanjutnya: eksekusi privat
 
@@ -241,18 +234,17 @@ tidak muncul di transaksi. Kontrak milik Velum baru akan memegang dana setelah a
 ## Biaya
 
 Saat ini Velum tidak menambahkan biaya apa pun. Untuk spot, Anda membayar biaya pool Uniswap dan gas; untuk perpetual,
-Anda membayar biaya trading Hyperliquid dan funding.
+Anda membayar biaya trading bursa dan funding.
 
 ## Cara memulai
 
 1. Hubungkan wallet Anda di [link].
 2. Untuk spot, siapkan USDG dan sedikit ETH untuk gas di Robinhood Chain.
-3. Untuk perpetual, deposit USDC di Hyperliquid dengan wallet yang sama, lalu buka tab Perps.
+3. Untuk perpetual, deposit USDC ke akun perpetual Anda dengan wallet yang sama (Velum menautkannya), lalu buka tab Perps.
 
 Ikuti [@velumtrade](https://x.com/velumtrade) untuk kabar terbaru tentang lapisan privasi.
 
 ---
 
-*Velum adalah proyek independen di Robinhood Chain dan tidak berafiliasi dengan Robinhood, Uniswap maupun
-Hyperliquid. Trading dengan leverage memiliki risiko tinggi, termasuk kehilangan margin. Artikel ini hanya untuk
+*Velum adalah proyek independen di Robinhood Chain dan tidak berafiliasi dengan Robinhood, Uniswap maupun bursa perpetual yang menjadi tujuan order. Trading dengan leverage memiliki risiko tinggi, termasuk kehilangan margin. Artikel ini hanya untuk
 informasi dan bukan saran investasi.*

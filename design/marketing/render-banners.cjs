@@ -1,5 +1,5 @@
 // Renders the banners to PNG at 2x (design/marketing/*.png): banners.html (casual copy), banners-pro.html
-// (professional copy) and article-cover.html (article covers).
+// (professional copy), article-cover.html (article covers) and banners-premium.html (premium how-it-works).
 // Run: node design/marketing/render-banners.cjs
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -11,6 +11,7 @@ const SETS = [
   ['banners.html', [['post', 'velum-how-it-works-1600x900.png'], ['header', 'velum-x-header-1500x500.png'], ['portrait', 'velum-how-it-works-1080x1350.png']]],
   ['banners-pro.html', [['post', 'velum-how-it-works-pro-1600x900.png'], ['header', 'velum-x-header-pro-1500x500.png'], ['portrait', 'velum-how-it-works-pro-1080x1350.png']]],
   ['article-cover.html', [['cover', 'velum-article-cover-1500x600.png'], ['wide', 'velum-article-cover-1600x900.png']]],
+  ['banners-premium.html', [['hiw', 'velum-how-it-works-premium-1600x900.png'], ['hiw-portrait', 'velum-how-it-works-premium-1080x1350.png']]],
 ];
 
 (async () => {

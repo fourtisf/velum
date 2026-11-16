@@ -22,9 +22,9 @@ export function MarketsView() {
   const oc = useOnchain();
   const stats = useQuery({ queryKey: ['stats'], queryFn: ({ signal }) => api.stats(signal), refetchInterval: 30_000, retry: 1 });
   const oi = order.reduce((a, s) => a + (bySym[s]!.oi ?? 0), 0);
-  // Mainnet: some market's funding and open interest come from its perp on Lighter.
+  // Mainnet: some market's funding and open interest come from its perp on another venue (Hyperliquid or Lighter).
   const anyRef = !METRICS.real && order.some((s) => bySym[s]!.ref !== null);
-  // Mainnet: the listed markets' open interest on Lighter (the table's column, summed).
+  // Mainnet: the listed markets' open interest on that venue (the table's column, summed).
   const refOi = order.reduce((a, s) => a + (bySym[s]!.ref ? (bySym[s]!.oi ?? 0) : 0), 0);
   const needle = q.toLowerCase().trim();
   const match = (s: string) => !needle || (s + ' ' + bySym[s]!.name).toLowerCase().includes(needle);

@@ -4,8 +4,9 @@ Private spot and perps for Stock Tokens on Robinhood Chain.
 
 > Status: **Phase 2**, a production frontend with demo trading. Wallet connect, public balances,
 > prices and candles are real; trades are simulated in the browser behind a visible "Demo mode" banner.
-> The site runs on testnet, or on mainnet with live 24/7 prices and candles from Uniswap on Robinhood Chain and
-> **real spot trades through Uniswap** from the user's wallet (perps and the private account stay simulated). Velum contracts are not deployed on mainnet; the guarded mainnet beta (allowlisted wallets, small
+> The site runs on testnet, or on mainnet with live 24/7 prices and candles from Uniswap on Robinhood Chain,
+> **real spot trades through Uniswap** from the user's wallet and **real perps through the user's own Hyperliquid
+> account** (Hyperliquid's XYZ stock perps); the private account stays simulated. Velum contracts are not deployed on mainnet; the guarded mainnet beta (allowlisted wallets, small
 > caps, unaudited contracts) is prepared: `docs/07-mainnet-guarded-beta.md`. Claude Code: start with `CLAUDE.md`.
 
 ## What's in this repo
@@ -115,6 +116,39 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
+
+## What changed: real perps through Hyperliquid (mainnet, November 16 2026)
+
+- **Why**: the owner wants real perps without putting up Velum's own capital or liquidity ("ok hyperliquid aja").
+  Hyperliquid's XYZ market (trade.xyz, a HIP-3 dex) lists stock perps for every Velum market, with its own order
+  book and free public API. Velum routes orders there from each user's **own** Hyperliquid account: Velum never
+  holds funds, has no counterparty risk and needs no capital.
+- **Markets** (`packages/config/src/hyperliquid.ts`): the ten Velum symbols pinned to their index in the xyz
+  universe (asset id = 100000 + 10000 x dex index 1 + index, e.g. TSLA 110001), re-checked against the live market
+  list before any order (a moved, renamed or delisted market is refused).
+- **Web** (`apps/web/lib/hyperliquid`, `components/hyperliquid`, mainnet builds; `NEXT_PUBLIC_HL_PERPS=off` keeps the
+  simulated ticket): the Perps ticket shows the user's Hyperliquid balance, size in USD, whole-number leverage 1 to
+  5x, isolated margin, the slippage limit, the exact position size, margin and an estimated liquidation price.
+  The order is an immediate-or-cancel limit order at the mid price moved by the slippage setting (Hyperliquid's
+  tick and lot rules), so a fast market cancels it instead of filling worse. The positions card and Portfolio show
+  the real positions (Close = a reduce-only order for the whole size) and the Activity tab the real fills.
+- **Signing**: the user's wallet signs once per 30 days (EIP-712, no gas) to approve an agent key that this
+  browser generates and keeps in localStorage; the agent signs orders, leverage changes and moves between the
+  user's own Hyperliquid balances. Hyperliquid does not let an agent withdraw or transfer funds out, and the key
+  never reaches Velum's server (CLAUDE.md §1.6). A Velum builder fee is optional and off by default
+  (`NEXT_PUBLIC_HL_BUILDER_ADDRESS` / `NEXT_PUBLIC_HL_BUILDER_FEE`; with a fee set, each wallet approves it once).
+- **Deposits** happen on Hyperliquid itself (USDC from Arbitrum, app.hyperliquid.xyz, same wallet): the ticket
+  links there until the account has a first deposit, which Hyperliquid requires before any approval.
+- **Metrics**: Mark, Funding / h and Open interest now default to the same Hyperliquid markets (`PERPS_REF=hyperliquid`;
+  `lighter` keeps the Lighter reference).
+- **Checked**: unit tests for the order math, agent storage, account reads (trimmed real answers) and every flow
+  step; `apps/web/e2e/hyperliquid-live.e2e.ts` sends refused requests signed by throwaway keys to the live API and
+  confirms Hyperliquid recovers exactly the expected agent and user addresses (order, leverage, transfer,
+  approval on chain 0x1237); `apps/web/e2e/hyperliquid-browser.e2e.cjs` runs the mainnet build in a browser with a
+  test wallet against a model of the API (open, close, a cancelled order and retry, no deposit, 360 px), verifying
+  every signature and payload. A real fill with real money has not been run: the owner's first small trade is
+  the final check.
+- **CSP**: `deploy/lib/common.sh` adds `https://api.hyperliquid.xyz` to `connect-src` on mainnet.
 
 ## What changed: live 24/7 prices and real spot through Uniswap (mainnet, November 2026)
 

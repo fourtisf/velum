@@ -1,6 +1,7 @@
 /**
- * Real perps metrics from Lighter (packages/config/src/perps-ref.ts, jobs/perp-ref.ts), checked against trimmed real
- * API responses read on 2026-11-16 (__fixtures__/lighter-2026-11-16.json).
+ * Real perps metrics from Hyperliquid's xyz dex and from Lighter (packages/config/src/perps-ref.ts, jobs/perp-ref.ts),
+ * checked against trimmed real API responses read on 2026-11-16 (__fixtures__/hyperliquid-xyz-2026-11-16.json,
+ * __fixtures__/lighter-2026-11-16.json).
  */
 import { cacheKeys } from '@velum/config';
 import { LIGHTER_API, LIGHTER_MARKETS, PERP_REF_MAX_AGE_MS, lighterHourlyFundingPct, lighterRef, mulDecimal, parsePerpRef } from '@velum/config/src/perps-ref';
@@ -84,7 +85,7 @@ describe('runPerpRef', () => {
         exec: async () => [],
       }),
     };
-    const done = await runPerpRef({ redis: redis as never, mac: mainnetTestMac, log: silent, fetchImpl, now: () => AT, symbols: ['TSLA', 'AAPL', 'MSFT'] });
+    const done = await runPerpRef({ redis: redis as never, mac: mainnetTestMac, log: silent, fetchImpl, now: () => AT, symbols: ['TSLA', 'AAPL', 'MSFT'], venue: 'lighter' });
     expect(done).toEqual(['TSLA']);
     expect(urls[0]).toBe(`${LIGHTER_API}/api/v1/funding-rates`);
     expect(urls).toHaveLength(4);
@@ -94,9 +95,58 @@ describe('runPerpRef', () => {
     expect([ex, ttl]).toEqual(['EX', 900]);
     expect(parsePerpRef(mainnetTestMac.open(key, sealed, 2048), 'TSLA', AT)?.fundingPerHour).toBe('0.000400');
   });
-  it('stores nothing when the funding read fails', async () => {
+  it('stores nothing when the venue read fails', async () => {
     const fetchImpl = (async () => new Response('down', { status: 503 })) as unknown as typeof fetch;
     const redis = { pipeline: () => ({ set() { throw new Error('no write expected'); }, exec: async () => [] }) };
+    expect(await runPerpRef({ redis: redis as never, mac: mainnetTestMac, log: silent, fetchImpl, venue: 'lighter' })).toEqual([]);
     expect(await runPerpRef({ redis: redis as never, mac: mainnetTestMac, log: silent, fetchImpl })).toEqual([]);
+  });
+});
+
+/** The fixture's metaAndAssetCtxs answer: [meta, asset contexts]. */
+type HlBody = [{ universe: Array<Record<string, unknown>> }, Array<Record<string, string>>];
+const hlBody = async (): Promise<HlBody> => (await import('./__fixtures__/hyperliquid-xyz-2026-11-16.json')).default.body as unknown as HlBody;
+
+describe('Hyperliquid xyz reference (real response, 2026-11-16)', () => {
+  it('reads every Velum market at its pinned index: mark, oracle as index, hourly funding, one-sided OI in USD', async () => {
+    const hl = { body: await hlBody() };
+    const { HL_MARKETS, hlAssetId, hlHourlyFundingPct } = await import('@velum/config/src/hyperliquid');
+    const { hyperliquidRef, parsePerpRef } = await import('@velum/config/src/perps-ref');
+    const r = hyperliquidRef('TSLA', hl.body, AT)!;
+    expect(r).toEqual({ symbol: 'TSLA', venue: 'hyperliquid', market: 110001, mark: '383.93', index: '383.93', fundingPerHour: '0.000625', openInterest: mulDecimal('106305.654', '383.93', 2), at: AT });
+    for (const s of Object.keys(HL_MARKETS)) expect(hyperliquidRef(s, hl.body, AT)?.market, s).toBe(hlAssetId(HL_MARKETS[s]!.index));
+    expect(parsePerpRef(JSON.stringify(r), 'TSLA', AT)).toEqual(r);
+    expect(parsePerpRef(JSON.stringify({ ...r, market: 112 }), 'TSLA', AT)).toBeNull();
+    // A shifted universe (another coin at the pinned index), a delisted market or a bad number gives none.
+    const shifted = [{ ...hl.body[0], universe: [...hl.body[0].universe].reverse() }, hl.body[1]];
+    expect(hyperliquidRef('TSLA', shifted, AT)).toBeNull();
+    const delisted = [{ ...hl.body[0], universe: hl.body[0].universe.map((u, i) => (i === 1 ? { ...u, isDelisted: true } : u)) }, hl.body[1]];
+    expect(hyperliquidRef('TSLA', delisted, AT)).toBeNull();
+    const badMark = [hl.body[0], hl.body[1].map((c, i) => (i === 1 ? { ...c, markPx: '0' } : c))];
+    expect(hyperliquidRef('TSLA', badMark, AT)).toBeNull();
+    expect(hlHourlyFundingPct('0.00000625')).toBe('0.000625');
+    expect(hlHourlyFundingPct('-0.0001')).toBe('-0.010000');
+    expect(hlHourlyFundingPct('0.01')).toBeNull(); // 1%/h: beyond Hyperliquid's 0.5% cap
+  });
+  it('runPerpRef (default venue) reads one metaAndAssetCtxs and stores a reference per market', async () => {
+    const hl = { body: await hlBody() };
+    const calls: Array<{ url: string; body?: string }> = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: init?.body as string | undefined });
+      return new Response(JSON.stringify(hl.body));
+    }) as typeof fetch;
+    const keys: string[] = [];
+    const redis = { pipeline: () => ({ set(k: string) { keys.push(k); return this; }, exec: async () => [] }) };
+    const done = await runPerpRef({ redis: redis as never, mac: mainnetTestMac, log: silent, fetchImpl, now: () => AT });
+    expect(done.sort()).toEqual(['AAPL', 'AMD', 'AMZN', 'COIN', 'META', 'MSFT', 'NFLX', 'NVDA', 'PLTR', 'TSLA']);
+    expect(calls).toEqual([{ url: 'https://api.hyperliquid.xyz/info', body: JSON.stringify({ type: 'metaAndAssetCtxs', dex: 'xyz' }) }]);
+    expect(keys).toContain(cacheKeys.perpRef('NFLX'));
+  });
+  it('hlCheckMarket refuses a market that moved or was delisted', async () => {
+    const hl = { body: await hlBody() };
+    const { hlCheckMarket } = await import('@velum/config/src/hyperliquid');
+    expect(hlCheckMarket('NFLX', hl.body[0].universe)).toMatchObject({ coin: 'xyz:NFLX', asset: 110019, szDecimals: 3, crossAllowed: false });
+    expect(hlCheckMarket('TSLA', [...hl.body[0].universe].reverse())).toBeNull();
+    expect(hlCheckMarket('NOPE', hl.body[0].universe)).toBeNull();
   });
 });

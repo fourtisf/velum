@@ -45,7 +45,7 @@ function Strip({ sym, embedded }: { sym: string; embedded?: boolean }) {
 
 function ChartCard({ sym }: { sym: string }) {
   const m = useMarket(sym);
-  // Mainnet: the market's perp on another venue (Lighter) while the API has a fresh read of it; testnet: demo values.
+  // Mainnet: the market's perp on another venue (Hyperliquid or Lighter) while the API has a fresh read of it; testnet: demo values.
   const ref = !METRICS.real && m.ref ? PERP_VENUES[m.ref] : null;
   const shown = METRICS.real || ref !== null;
   const mode = useTradeMode();

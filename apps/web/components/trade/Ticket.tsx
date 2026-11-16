@@ -12,6 +12,8 @@ import { I } from '../icons';
 import { DemoTag, RefTag } from '../ui';
 import { OnchainTicket } from '../onchain/lazy';
 import { UniSpotTicket } from '../uniswap/lazy';
+import { HlPerpsTicket } from '../hyperliquid/lazy';
+import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { UNISWAP } from '@velum/config/src/uniswap';
 import { useTradeMode } from './mode';
 import { useOnchain } from '@/lib/onchain/deployment';
@@ -38,7 +40,7 @@ function PerpsTicket({ sym }: { sym: string }) {
   const have = bal(s.ledger.priv, 'USDG');
   const c = perpsCalc({ sel: sym, side: s.side, lev: s.lev, size: s.size }, have, price);
   const live = isLive(sym);
-  // Mainnet: the funding rate of the market's perp on Lighter (a labelled reference; Velum perps are simulated there).
+  // Mainnet with HL_PERPS off: the funding rate of the market's perp on another venue (a labelled reference).
   const refVenue = !METRICS.real && m.ref ? PERP_VENUES[m.ref] : null;
   /** Price-derived figures show a dash without a live price (audit round 2, M4). */
   const px = (v: string) => (c.priced ? v : '—');
@@ -260,12 +262,13 @@ function SpotTicket({ sym }: { sym: string }) {
 export function Ticket({ sym }: { sym: string }) {
   const mode = useTradeMode();
   // Real transactions once a deployment is live (lib/onchain/deployment.ts); otherwise the simulated ticket, except
-  // Spot on mainnet, which trades for real through Uniswap from the wallet (lib/uniswap).
+  // on mainnet: Spot trades for real through Uniswap from the wallet (lib/uniswap), Perps for real through the user's
+  // own Hyperliquid account (lib/hyperliquid).
   const oc = useOnchain();
   if (oc) return <OnchainTicket sym={sym} mode={mode} oc={oc} />;
   return (
     <aside className="card ticket" aria-label="Order ticket">
-      {mode === 'perps' ? <PerpsTicket sym={sym} /> : UNISWAP ? <UniSpotTicket sym={sym} /> : <SpotTicket sym={sym} />}
+      {mode === 'perps' ? HL_PERPS ? <HlPerpsTicket sym={sym} /> : <PerpsTicket sym={sym} /> : UNISWAP ? <UniSpotTicket sym={sym} /> : <SpotTicket sym={sym} />}
     </aside>
   );
 }

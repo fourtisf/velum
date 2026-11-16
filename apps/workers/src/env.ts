@@ -14,10 +14,10 @@ export interface WorkerEnv {
   tickRetentionDays: number;
   network: NetworkName;
   /**
-   * Real perps metrics from Lighter for the trade terminal (jobs/perp-ref.ts): PERPS_REF=lighter (the default on
-   * mainnet) or off. Never on testnet.
+   * Real perps metrics for the trade terminal (jobs/perp-ref.ts): PERPS_REF=hyperliquid (the default on mainnet: the
+   * venue Velum routes perps orders to), lighter, or off (null). Never on testnet.
    */
-  perpsRef: boolean;
+  perpsRef: 'hyperliquid' | 'lighter' | null;
 }
 
 /** Log levels LOG_LEVEL accepts (pino's names, shared with the API; fatal/trace map to error/debug). */
@@ -67,7 +67,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
   if (network !== 'mainnet' && src === 'uniswap') problems.push('PRICE_SOURCE=uniswap needs VELUM_NETWORK=mainnet: the curated Uniswap pools are on Robinhood Chain mainnet only.');
 
   const perpsRefRaw = (e.PERPS_REF ?? '').trim().toLowerCase();
-  if (perpsRefRaw && perpsRefRaw !== 'lighter' && perpsRefRaw !== 'off') problems.push(`PERPS_REF must be "lighter" or "off" (got "${e.PERPS_REF}").`);
+  if (perpsRefRaw && perpsRefRaw !== 'hyperliquid' && perpsRefRaw !== 'lighter' && perpsRefRaw !== 'off') problems.push(`PERPS_REF must be "hyperliquid", "lighter" or "off" (got "${e.PERPS_REF}").`);
 
   const logLevel = (e.LOG_LEVEL ?? '').trim();
   if (logLevel && !(LOG_LEVELS as readonly string[]).includes(logLevel)) problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')} (got "${e.LOG_LEVEL}").`);
@@ -83,7 +83,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
     chainId,
     tickRetentionDays: int('PRICE_TICK_RETENTION_DAYS', e.PRICE_TICK_RETENTION_DAYS, 7, 1, 365),
     network,
-    perpsRef: network === 'mainnet' && perpsRefRaw !== 'off',
+    perpsRef: network !== 'mainnet' || perpsRefRaw === 'off' ? null : perpsRefRaw === 'lighter' ? 'lighter' : 'hyperliquid',
   };
   if (problems.length) throw new Error(`Invalid workers environment:\n  - ${problems.join('\n  - ')}`);
   return env;

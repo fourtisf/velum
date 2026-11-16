@@ -1,8 +1,10 @@
 /**
- * Real perps metrics for the trade terminal while Velum's own perps are not live on mainnet: the Stock Token perps on
- * Lighter, the perps venue of Robinhood Chain (public REST API, no key). Shown as a labelled reference ("Lighter"),
- * never as Velum's own market. Pure and dependency-free: the workers fetch and validate, the API serves, the web shows.
+ * Real perps metrics for the trade terminal on mainnet, labelled with their venue. The default is Hyperliquid's xyz dex,
+ * where Velum routes real perps orders (hyperliquid.ts, hyperliquidRef below); Lighter, the perps venue of Robinhood
+ * Chain (public REST API, no key), remains available as a reference (PERPS_REF=lighter). Pure and dependency-free: the
+ * workers fetch and validate, the API serves, the web shows.
  *
+ * Lighter notes:
  * Checked 2026-11-16 against the live API (mainnet.zklighter.elliot.ai):
  *  - GET /api/v1/orderBookDetails?market_id=N returns one market with `symbol`, `market_type` "perp", `status`,
  *    `is_frozen`, `mark_price`, `index_price` (decimal strings) and `open_interest` (base units, one side: Lighter's
@@ -15,9 +17,21 @@
  *  - NFLX has no Lighter market: it shows no reference.
  */
 
+import { HL_MARKETS, HL_VENUE, hlHourlyFundingPct } from './hyperliquid';
+
 export const LIGHTER_API = 'https://mainnet.zklighter.elliot.ai';
 export const LIGHTER_VENUE = 'lighter' as const;
-export type PerpVenue = typeof LIGHTER_VENUE;
+/**
+ * The venues a reference can come from: Hyperliquid's xyz dex (where Velum routes real perps orders, the default) or
+ * Lighter (the perps venue of Robinhood Chain, a reference only).
+ */
+export type PerpVenue = typeof LIGHTER_VENUE | typeof HL_VENUE;
+export const PERP_VENUE_IDS: readonly PerpVenue[] = [HL_VENUE, LIGHTER_VENUE];
+
+/** A venue's market id for `symbol`: Lighter's market id, or the Hyperliquid order asset id. */
+export function venueMarketId(venue: PerpVenue, symbol: string): number | undefined {
+  return venue === HL_VENUE ? HL_MARKETS[symbol]?.asset : LIGHTER_MARKETS[symbol];
+}
 
 /** Velum symbol -> Lighter market id (each checked against the symbol the API returns for it). */
 export const LIGHTER_MARKETS: Readonly<Record<string, number>> = {
@@ -41,7 +55,7 @@ export const PERP_REF_MAX_FUNDING_PCT = 4;
 export interface PerpRef {
   symbol: string;
   venue: PerpVenue;
-  /** Lighter's market id. */
+  /** The venue's market id (Lighter market id, or Hyperliquid asset id). */
   market: number;
   /** Mark price (USDC per token). */
   mark: string;
@@ -105,6 +119,24 @@ export function lighterRef(symbol: string, detail: unknown, fundingRates: unknow
   return { symbol, venue: LIGHTER_VENUE, market, mark: d.mark_price, index: d.index_price, fundingPerHour, openInterest: mulDecimal(oi, d.mark_price, 2), at };
 }
 
+/**
+ * The reference for `symbol` from Hyperliquid's metaAndAssetCtxs of the xyz dex ([meta, assetCtxs]), or null when
+ * anything is off: the coin is not at its pinned index (or delisted), a price or open interest is not a plain positive
+ * decimal, or the funding rate is implausible.
+ */
+export function hyperliquidRef(symbol: string, metaAndCtxs: unknown, at: number): PerpRef | null {
+  const m = HL_MARKETS[symbol];
+  if (!m || !Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2) return null;
+  const [meta, ctxs] = metaAndCtxs as [{ universe?: unknown[] } | null, unknown[]];
+  const u = meta?.universe?.[m.index] as { name?: unknown; isDelisted?: unknown } | undefined;
+  if (!u || u.name !== m.coin || u.isDelisted === true || !Array.isArray(ctxs)) return null;
+  const c = ctxs[m.index] as Record<string, unknown> | undefined;
+  if (!c || !isPos(c.markPx) || !isPos(c.oraclePx) || !isNonNeg(c.openInterest)) return null;
+  const fundingPerHour = hlHourlyFundingPct(c.funding);
+  if (fundingPerHour === null) return null;
+  return { symbol, venue: HL_VENUE, market: m.asset, mark: c.markPx, index: c.oraclePx, fundingPerHour, openInterest: mulDecimal(c.openInterest, c.markPx, 2), at };
+}
+
 /** A PerpRef read back from Redis for `symbol`, or null when malformed, for another symbol or dated ahead of `now`. */
 export function parsePerpRef(raw: unknown, symbol: string, now: number): PerpRef | null {
   if (typeof raw !== 'string' || raw.length > 2048) return null;
@@ -114,9 +146,11 @@ export function parsePerpRef(raw: unknown, symbol: string, now: number): PerpRef
   } catch {
     return null;
   }
-  const market = LIGHTER_MARKETS[symbol];
-  if (!v || typeof v !== 'object' || market === undefined || v.symbol !== symbol || v.venue !== LIGHTER_VENUE || v.market !== market) return null;
+  if (!v || typeof v !== 'object' || v.symbol !== symbol || !PERP_VENUE_IDS.includes(v.venue as PerpVenue)) return null;
+  const venue = v.venue as PerpVenue;
+  const market = venueMarketId(venue, symbol);
+  if (market === undefined || v.market !== market) return null;
   if (!isPos(v.mark) || !isPos(v.index) || !isNonNeg(v.openInterest) || typeof v.fundingPerHour !== 'string' || !SIGNED.test(v.fundingPerHour)) return null;
   if (typeof v.at !== 'number' || !Number.isSafeInteger(v.at) || v.at <= 0 || v.at > now + 30_000) return null;
-  return { symbol, venue: LIGHTER_VENUE, market, mark: v.mark, index: v.index, fundingPerHour: v.fundingPerHour, openInterest: v.openInterest, at: v.at };
+  return { symbol, venue, market, mark: v.mark, index: v.index, fundingPerHour: v.fundingPerHour, openInterest: v.openInterest, at: v.at };
 }

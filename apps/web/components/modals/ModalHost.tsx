@@ -17,6 +17,7 @@ import { ENV } from '@/lib/env';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
 import { ManageModal, OcLpAddModal, OcMoveModal, TxFlowModal } from '../onchain/lazy';
+import { HlFlowModal } from '../hyperliquid/lazy';
 import {
   bal,
   emptyLedger,
@@ -767,6 +768,8 @@ function Content({ m }: { m: ModalState }) {
       return <FlowModal key={m.id} flow={m.flow} />;
     case 'tx':
       return <TxFlowModal key={m.id} flow={m.flow} />;
+    case 'hl':
+      return <HlFlowModal key={m.id} flow={m.flow} />;
     case 'manage':
       return oc ? <ManageModal oc={oc} id={m.id} /> : null;
   }
@@ -835,7 +838,7 @@ export function ModalHost() {
   const bg = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const open = modal !== null;
-  const key = modal ? (modal.kind === 'flow' || modal.kind === 'tx' ? `${modal.kind}-${modal.id}` : modal.kind) : '';
+  const key = modal ? (modal.kind === 'flow' || modal.kind === 'tx' || modal.kind === 'hl' ? `${modal.kind}-${modal.id}` : modal.kind) : '';
 
   const inerted = useRef(new Set<Element>());
   const path = usePathname();

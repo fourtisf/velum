@@ -175,8 +175,8 @@ async function main(): Promise<void> {
       },
       { connection: redis, concurrency: 1 },
     ),
-    // Lighter perps metrics (mainnet): mark, funding and open interest for the trade terminal, labelled as Lighter's.
-    new Worker(Q_PERP_REF, async () => (env.perpsRef ? (await runPerpRef({ redis, mac, log })).length : 0), { connection: redis, concurrency: 1 }),
+    // Perps metrics (mainnet): mark, funding and open interest for the trade terminal, labelled with their venue.
+    new Worker(Q_PERP_REF, async () => (env.perpsRef ? (await runPerpRef({ redis, mac, log, venue: env.perpsRef })).length : 0), { connection: redis, concurrency: 1 }),
   ];
   for (const w of workers) {
     w.on('failed', (job, err) => log.error('job failed', { queue: w.name, job: job?.name, err: err.message }));

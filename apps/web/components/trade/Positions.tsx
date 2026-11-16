@@ -8,6 +8,8 @@ import { mk, useLivePrice, usePriceTick } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp, type Activity, type Position } from '@/lib/store';
 import { OcPositionsCard } from '../onchain/lazy';
+import { HlPositionsCard } from '../hyperliquid/lazy';
+import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { toNumber } from '@velum/math';
 import { Icon } from '../icons';
 import { Av, Pv, Px } from '../ui';
@@ -174,7 +176,8 @@ export function ActList({ list, n }: { list: Activity[]; n: number }) {
 
 export function PositionsCard() {
   const oc = useOnchain();
-  return oc ? <OcPositionsCard oc={oc} /> : <DemoPositionsCard />;
+  // Mainnet without Velum contracts: the user's real positions on Hyperliquid (lib/hyperliquid).
+  return oc ? <OcPositionsCard oc={oc} /> : HL_PERPS ? <HlPositionsCard /> : <DemoPositionsCard />;
 }
 
 function DemoPositionsCard() {

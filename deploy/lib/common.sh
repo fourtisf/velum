@@ -228,6 +228,9 @@ official_rpc() {
 #    https://rpc.wallet.coinbase.com. keys.coinbase.com opens as a popup window, not a frame, and the
 #    web turns telemetry off (no cca-lite/as.coinbase.com).
 CSP_COINBASE_CONNECT='https://www.walletlink.org wss://www.walletlink.org https://rpc.wallet.coinbase.com'
+# Real perps on mainnet go from the browser straight to Hyperliquid's API (apps/web/lib/hyperliquid), unless the build
+# turns them off with NEXT_PUBLIC_HL_PERPS=off.
+CSP_HL_CONNECT='https://api.hyperliquid.xyz'
 #  - WalletConnect 2.21.1 (@walletconnect/ethereum-provider, Apache-2.0, a direct pinned web dependency;
 #    @walletconnect/core: relay, Verify API iframe + attestation fetch; its own telemetry is off in
 #    lib/wagmi.ts) and Reown AppKit 1.7.8 (Apache-2.0), the QR modal (appkit-common ConstantsUtil: blockchain API
@@ -247,7 +250,7 @@ CSP_IMG="'self' data:"
 
 # render_security_headers ENV_FILE — prints the Nginx headers snippet for the full app (audit L10).
 # connect-src follows the configured network and NEXT_PUBLIC_RPC_URL; WalletConnect hosts appear only
-# when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set. Fails on an unusable RPC URL.
+# when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set, Hyperliquid's API only on mainnet (real perps). Fails on an unusable RPC URL.
 render_security_headers() {
   local env_file="$1" net rpc rpc_origin official origins connect frame="'none'" style="'self' 'unsafe-inline'" font="'self'" img="${CSP_IMG}"
   net="$(env_get "${env_file}" NEXT_PUBLIC_VELUM_NETWORK)"
@@ -260,6 +263,9 @@ render_security_headers() {
     [ "${rpc_origin}" = "${official}" ] || origins="${rpc_origin} ${official}"
   fi
   connect="'self' ${origins} ${CSP_COINBASE_CONNECT}"
+  if [ "${net}" = mainnet ] && [ "$(env_get "${env_file}" NEXT_PUBLIC_HL_PERPS)" != off ]; then
+    connect="${connect} ${CSP_HL_CONNECT}"
+  fi
   if [ -n "$(env_get "${env_file}" NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID)" ]; then
     connect="${connect} ${CSP_WC_CONNECT}"
     frame="${CSP_WC_FRAME}"

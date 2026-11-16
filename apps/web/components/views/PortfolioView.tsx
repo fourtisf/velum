@@ -9,6 +9,8 @@ import { tokPx, usePriceTick } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
 import { OcPortfolio } from '../onchain/lazy';
+import { HlPortfolioPositions } from '../hyperliquid/lazy';
+import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { COPY, SIM, UI } from '@/lib/copy';
 import { I } from '../icons';
 import { ActList, PosTable } from '../trade/Positions';
@@ -237,8 +239,12 @@ function DemoPortfolioView() {
           </section>
         </div>
         <section className="card">
-          <h2 className="ph">Open positions</h2>
-          {ledger.positions.length ? (
+          <h2 className="ph">Open positions{HL_PERPS ? <span className="faint"> on Hyperliquid</span> : null}</h2>
+          {HL_PERPS ? (
+            <div style={{ marginTop: 8 }}>
+              <HlPortfolioPositions />
+            </div>
+          ) : ledger.positions.length ? (
             <div style={{ marginTop: 8 }}>
               <PosTable list={ledger.positions} wide />
             </div>

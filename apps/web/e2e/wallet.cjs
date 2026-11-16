@@ -37,14 +37,14 @@ const READS = new Set([
 
 /**
  * opts.privateKey (throwaway), opts.rpc (anvil URL), opts.chainId (where the wallet starts), opts.anvilChainId.
- * Returns the wallet state: { log, sent, wrongChainSends, setChain(id), rejectNext }.
+ * Returns the wallet state: { log, sent, typed (EIP-712 requests), wrongChainSends, setChain(id), rejectNext }.
  */
 async function installWallet(context, opts) {
   const account = privateKeyToAccount(opts.privateKey);
   const anvilChainId = opts.anvilChainId ?? 31337;
   const chain = { id: anvilChainId, name: 'anvil', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [opts.rpc] } } };
   const signer = createWalletClient({ account, chain, transport: http(opts.rpc) });
-  const state = { chainId: opts.chainId ?? anvilChainId, connected: false, log: [], sent: [], wrongChainSends: 0, rejectNext: false, address: account.address };
+  const state = { chainId: opts.chainId ?? anvilChainId, connected: false, log: [], sent: [], typed: [], wrongChainSends: 0, rejectNext: false, address: account.address };
   const forward = async (method, params) => {
     const res = await fetch(opts.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
     return res.json();
@@ -78,6 +78,17 @@ async function installWallet(context, opts) {
         return ok(null);
       case 'personal_sign':
         return ok(await account.signMessage({ message: { raw: params[0] } }));
+      case 'eth_signTypedData_v4': {
+        // EIP-712 (Hyperliquid approvals): recorded for the test, signed with the throwaway key.
+        if (state.rejectNext) {
+          state.rejectNext = false;
+          return err(4001, 'User rejected the request.');
+        }
+        const typed = JSON.parse(params[1]);
+        state.typed.push({ chainId: state.chainId, typed });
+        const { EIP712Domain: _domain, ...types } = typed.types;
+        return ok(await account.signTypedData({ domain: typed.domain, types, primaryType: typed.primaryType, message: typed.message }));
+      }
       case 'eth_sendTransaction': {
         if (state.chainId !== anvilChainId) {
           state.wrongChainSends++;

@@ -188,18 +188,20 @@ the deployment does not list.
   "source": "robinhood", "updatedAt": 1794646800000, "perpsRef": null
 }]
 ```
-Mainnet with the Lighter reference (`PERPS_REF=lighter`, the default there):
-`"mark": "385.63", "fundingPerHour": "0.000400", "openInterest": "3125441.18", "demo": false,
-"perpsRef": { "venue": "lighter", "market": 112, "index": "385.64", "at": 1794810000000 }`
+Mainnet with the Hyperliquid reference (`PERPS_REF=hyperliquid`, the default there):
+`"mark": "383.93", "fundingPerHour": "0.000625", "openInterest": "40813929.74", "demo": false,
+"perpsRef": { "venue": "hyperliquid", "market": 110001, "index": "383.93", "at": 1794810000000 }`
+(with `PERPS_REF=lighter`: `"venue": "lighter", "market": 112`, Lighter's index price).
 - `status`: `live` | `coming_soon` | `close_only`. `spark`: last hour, one point per minute (at most 60).
 - `fundingPerHour`, `openInterest`: demo values on testnet, where `demo` is `true`. On mainnet (`demo` false)
-  they are the market's perp on **Lighter**, the perps venue of Robinhood Chain, while the workers' last read of it
-  is under 5 minutes old, else `null` (NFLX has no Lighter market): funding per hour in percent, signed (positive:
-  longs pay; Lighter's 8-hour rate / 8), open interest in USD at the mark price, one side (Lighter's own
-  `open_interest_usd` counts both sides). `perpsRef` then names the venue, its market id, its index price and the
-  read time, and `mark` is Lighter's mark price; without it, `mark` is the price itself on mainnet (the demo mark
-  premium is testnet only). This is a labelled market reference, not Velum's own market: Velum's perps are not
-  live on mainnet. Where the price comes from is `source`.
+  they are the market's perp on the reference venue while the workers' last read of it is under 5 minutes old,
+  else `null`: funding per hour in percent, signed (positive: longs pay; Hyperliquid's hourly rate x 100, or
+  Lighter's 8-hour rate / 8), open interest in USD at the mark price, one side. **Hyperliquid** (default): the XYZ
+  stock perp the web's Perps ticket trades for real from the user's own account, `market` its asset id, `index`
+  its oracle price. **Lighter**: the perps venue of Robinhood Chain, a reference only (NFLX has no Lighter market).
+  `perpsRef` names the venue, its market id, its index price and the read time, and `mark` is the venue's mark
+  price; without it, `mark` is the price itself on mainnet (the demo mark premium is testnet only). These are the
+  venue's numbers, not Velum's own market. Where the price comes from is `source`.
 - `source`: `demo` (simulated), `robinhood` (official quotes), `chainlink`, `uniswap` (the curated Uniswap
   pools on Robinhood Chain mainnet, live 24/7: docs/02 "DEX prices and candles"), or `null` before the first
   tick (the seed price is returned then; clients must not show it as live, the web shows dashes).

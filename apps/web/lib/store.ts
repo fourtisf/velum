@@ -10,6 +10,7 @@ import type { ReactNode } from 'react';
 import { create } from 'zustand';
 import type { IconName } from '@/components/icons';
 import type { TxFlowSpec } from './onchain/flow';
+import type { HlFlowSpec } from './hyperliquid/flows';
 import { randomHex } from './format';
 import { decodeLedger, encodeLedger } from './ledger-codec';
 
@@ -102,6 +103,8 @@ export type ModalState =
   | { kind: 'flow'; flow: FlowSpec; id: number }
   /** A real (Phase 3) flow: review, wallet transactions, receipt (components/modals/TxFlow.tsx). */
   | { kind: 'tx'; flow: TxFlowSpec; id: number }
+  /** A real perps flow on Hyperliquid: review, signed API actions, receipt (components/hyperliquid/HlFlowModal.tsx). */
+  | { kind: 'hl'; flow: HlFlowSpec; id: number }
   /** Phase 3 position management: add or remove margin, forced exit. */
   | { kind: 'manage'; id: string };
 
@@ -144,6 +147,7 @@ interface AppState {
   toast: (msg: string, warn?: boolean) => void;
   runFlow: (flow: FlowSpec) => void;
   runTxFlow: (flow: TxFlowSpec) => void;
+  runHlFlow: (flow: HlFlowSpec) => void;
 }
 
 let toastId = 0;
@@ -187,6 +191,7 @@ export const useApp = create<AppState>((set, get) => ({
   runFlow: (flow) => set({ modal: { kind: 'flow', flow, id: ++flowId }, modalLocked: true }),
   // Not locked while the user reviews it: nothing has been asked of the wallet yet.
   runTxFlow: (flow) => set({ modal: { kind: 'tx', flow, id: ++flowId }, modalLocked: false }),
+  runHlFlow: (flow) => set({ modal: { kind: 'hl', flow, id: ++flowId }, modalLocked: false }),
 }));
 
 /* ---------- ledger helpers (pure) ---------- */

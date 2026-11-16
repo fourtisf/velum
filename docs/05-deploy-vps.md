@@ -318,8 +318,12 @@ switching back to the previous release (web.env and the CSP follow); when it fai
 `.env` and `web.env` are put back and the running release is untouched. On mainnet: real wallet and balances,
 live 24/7 prices and candles from the curated Uniswap pools (`PRICE_SOURCE=uniswap`; run
 `sudo PRICE_SOURCE_MAINNET=robinhood bash /srv/velum/deploy/set-network.sh mainnet` for the official Robinhood
-quotes instead), real spot trades through Uniswap from the user's wallet, simulated perps and private account,
-and the copy says which is which. A server already on mainnet switches to Uniswap prices by running
+quotes instead), real spot trades through Uniswap from the user's wallet, real perps through each user's own
+Hyperliquid account (the browser talks to api.hyperliquid.xyz, which the release adds to the CSP on mainnet;
+`NEXT_PUBLIC_HL_PERPS=off` in `.env` and a release keep the simulated ticket), a simulated private account, and the
+copy says which is which. Users deposit USDC on Hyperliquid itself (app.hyperliquid.xyz); Velum's optional builder
+fee is off unless `NEXT_PUBLIC_HL_BUILDER_ADDRESS` and `NEXT_PUBLIC_HL_BUILDER_FEE` are set (then a release). The
+workers read the perps metrics from api.hyperliquid.xyz too (`PERPS_REF=hyperliquid`, the default on mainnet). A server already on mainnet switches to Uniswap prices by running
 `sudo bash /srv/velum/deploy/set-network.sh mainnet` again: the workers then clear the Robinhood quote history
 once (different kinds never mix) and build the swap history from the chain, newest first (the 15m and 1h
 charts fill within minutes; full 1D history takes longer on the public RPC). Velum contracts go to

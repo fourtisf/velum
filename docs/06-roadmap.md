@@ -45,6 +45,16 @@ touching mainnet. The owner's approvals so far:
     offers stay simulated and are labelled so; real perps need Velum's own contracts (the guarded beta,
     docs/07) or another venue, an open owner decision.
 
+- **2026-11-16: real perps on mainnet through Hyperliquid.** Asked by the owner (no own capital: "kenapa saya harus
+  modal???"; then "ok hyperliquid aja"): on mainnet the Perps ticket places **real** orders on Hyperliquid's XYZ stock
+  perps from each user's own Hyperliquid account (apps/web/lib/hyperliquid). Velum holds no funds and no keys: the
+  user's wallet approves a browser-held agent (30 days, cannot withdraw), deposits happen on Hyperliquid. Public on
+  Hyperliquid, not private, isolated margin, at most 5x and 100 tokens per position as in §5, IOC orders inside the
+  slippage limit. Velum's builder fee is 0% unless the owner sets one (`NEXT_PUBLIC_HL_BUILDER_*`). Mark, funding
+  and open interest default to the same markets (`PERPS_REF=hyperliquid`). Velum's own private perps (Phases 3 and 4)
+  are unchanged as the goal; this route needs no Velum contract on mainnet. `NEXT_PUBLIC_HL_PERPS=off` reverts to
+  the simulated ticket.
+
 - **2026-11-16: real perps metrics on mainnet from Lighter.** Asked by the owner ("Mark, Funding, Open interest must
   show real data"): until Velum's own perps are live, the terminal and the markets table show each market's perp on
   Lighter (the perps venue of Robinhood Chain; free public API) with a "Lighter" label and a tooltip saying it is a

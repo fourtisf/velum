@@ -56,7 +56,7 @@ export interface LiveMarket {
 }
 
 /** Perps venues the API may name as the source of mark, funding and open interest, with their display names. */
-export const PERP_VENUES = { lighter: 'Lighter' } as const;
+export const PERP_VENUES = { hyperliquid: 'Hyperliquid', lighter: 'Lighter' } as const;
 export type PerpVenueId = keyof typeof PERP_VENUES;
 
 /** The venue of an API `perpsRef`, or null for anything else (absent, malformed, unknown venue). */

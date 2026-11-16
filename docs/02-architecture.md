@@ -106,19 +106,35 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
   so the result is the same in any order; each range commits its candles and its checkpoint in one transaction.
   A changed pool list or a live checkpoint whose block left the chain rebuilds from scratch. Switching between
   kinds of history (simulated, stock quotes, DEX trades) clears stored history once (`priceKindOf`).
-- **Perps reference from Lighter (mainnet, `PERPS_REF=lighter`, the default there).** Velum's own perps are not
-  live on mainnet, so the terminal's Mark, Funding / h and Open interest show each market's perp on Lighter, the
-  perps venue of Robinhood Chain, labelled "Lighter". The workers (`jobs/perp-ref.ts`) read once a minute one
+- **Perps reference (mainnet, `PERPS_REF=hyperliquid`, the default there; `lighter` or `off`).** The terminal's
+  Mark, Funding / h and Open interest show each market's perp on the venue, labelled with its name. Hyperliquid:
+  the workers read once a minute one `metaAndAssetCtxs` of the xyz dex (api.hyperliquid.xyz, no key) and keep each
+  pinned market's mark, oracle price as index, hourly funding (Hyperliquid's hourly fraction x 100) and open
+  interest in USD at the mark (one side). Lighter (the perps venue of Robinhood Chain, a reference only): The workers (`jobs/perp-ref.ts`) read once a minute one
   funding list (`/api/v1/funding-rates`) and one `orderBookDetails?market_id=` per market from the public API
   (mainnet.zklighter.elliot.ai, no key), validate each value against the pinned market id and symbol
   (`packages/config/src/perps-ref.ts`, where the units checked on 2026-11-16 are written down) and store it
   authenticated in Redis for 15 minutes; the API serves it while under 5 minutes old. NFLX has no Lighter market.
+- **Real perps through Hyperliquid (mainnet, web; `NEXT_PUBLIC_HL_PERPS=off` turns it off).** The Perps ticket,
+  the positions card and Portfolio talk to api.hyperliquid.xyz straight from the browser (each user's own rate
+  limit; the CSP allows the host on mainnet) for the user's own account on Hyperliquid's XYZ stock perps
+  (`apps/web/lib/hyperliquid`, `packages/config/src/hyperliquid.ts`). Reads: the market list (hourly, checked
+  against the pinned indices), mid prices (5 s), balances and positions (6 s), the account mode (1 min), fills (1
+  min, while shown). Writes, each after a review dialog: the user's wallet approves a browser-generated agent key
+  once per 30 days (`approveAgent`, EIP-712 on the wallet's chain, no gas; stored in localStorage only, never sent
+  to Velum); the agent then signs `agentSendAsset` (standard accounts: the margin shortfall from the main USDC
+  balance to the xyz balance, both the user's), `updateLeverage` (isolated, whole number up to 5x) and `order`
+  (one IOC limit order at the mid moved by the slippage setting, sized and priced by Hyperliquid's lot and tick
+  rules; Close is reduce-only for the whole size). Hyperliquid refuses withdrawals and transfers to others from an
+  agent. Optional builder fee (`NEXT_PUBLIC_HL_BUILDER_ADDRESS`, `NEXT_PUBLIC_HL_BUILDER_FEE` in tenths of a bp):
+  each wallet approves it once (`approveBuilderFee`), orders carry it. Checked against the live API with throwaway
+  keys (`apps/web/e2e/hyperliquid-live.e2e.ts`) and in the browser (`apps/web/e2e/hyperliquid-browser.e2e.cjs`).
 - **Real spot through Uniswap (mainnet, web).** The Spot ticket and the swap page trade from the connected wallet
   through the Universal Router (`apps/web/lib/uniswap`): the best on-chain quote among the market's curated pools,
   an exact ERC-20 approval to Permit2 and an exact 30-minute Permit2 allowance for the router (each only when
   short), then the swap with the minimum from the slippage setting and a 20-minute deadline. Stock to stock is two
   swaps through USDG. Receipts are read from the tokens' Transfer events. Public onchain, no Velum fee, no Velum
-  contract involved; perps and the private account stay simulated. Rehearsed against the deployed contracts on a
+  contract involved; the private account stays simulated. Rehearsed against the deployed contracts on a
   mainnet fork: `apps/web/e2e/uniswap-fork.e2e.ts` (calldata, v3 and v4, both token orders) and
   `apps/web/e2e/uniswap-browser.e2e.cjs` (the mainnet web build with a test wallet: buy, sell, stock to stock).
 - The API serves `stale` with a reason: no snapshot, pipeline outdated, a demo price on mainnet, the

@@ -357,6 +357,10 @@ export default function Landing() {
             <Link className="btn btn-dark btn-lg" href="/app/portfolio">
               Open portfolio
             </Link>
+            <a className="btn btn-dark btn-lg follow-x" href={SOCIAL.x} target="_blank" rel="noopener noreferrer">
+              <XLogo />
+              Follow {SOCIAL.xHandle}
+            </a>
           </div>
         </section>
       </main>

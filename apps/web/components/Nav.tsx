@@ -6,10 +6,11 @@ import { privTotal } from '@/lib/calc';
 import { shortH, usdBal } from '@/lib/format';
 import { usePriceTick } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
+import { SOCIAL } from '@/lib/copy';
 import { useApp } from '@/lib/store';
 import { OcWalletTotal } from './onchain/lazy';
 import { DemoBanner } from './DemoBanner';
-import { I, Mark } from './icons';
+import { I, Mark, XLogo } from './icons';
 
 const TABS: Array<[string, string]> = [
   ['trade', 'Trade'],
@@ -36,6 +37,15 @@ export function EyeButton() {
     <button className="iconbtn" aria-pressed={veiled} aria-label="Hide balances on screen" title="Hide balances on screen" onClick={() => set({ veiled: !veiled })}>
       {veiled ? <I.eyeOff /> : <I.eye />}
     </button>
+  );
+}
+
+/** Velum on X, in the nav of every page (owner request). */
+export function XButton({ className = '' }: { className?: string }) {
+  return (
+    <a className={`iconbtn iconbtn-x ${className}`} href={SOCIAL.x} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.xLabel} title={`${SOCIAL.xHandle} on X`}>
+      <XLogo />
+    </a>
   );
 }
 
@@ -82,6 +92,8 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
             </nav>
           )}
           <div className="nright">
+            {/* In the app on a phone the nav keeps the wallet button; X stays in the brand line under the page. */}
+            <XButton className={app ? 'hide-sm' : ''} />
             {app || connected ? <EyeButton /> : null}
             {connected ? (
               <button className="walletbtn" onClick={() => openModal({ kind: 'account' })}>

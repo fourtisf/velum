@@ -117,6 +117,16 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: Velum on X, marketing kit (November 16 2026)
+
+- **X on the site**: an X button (`@veliumtrade`) in the top navigation of every page (on phones in the app it stays
+  in the brand line under the page, so the nav keeps room for the wallet button) and a "Follow @veliumtrade" button
+  in the landing page's closing call to action. The footer link and the link metadata were already there.
+- **Marketing** (`design/marketing/`): "How Velum works" banners (16:9 post, 4:5 portrait, X header) rendered from
+  `banners.html`, the copy deck (`how-velum-works-copy.md`) and ready-to-post X posts (`x-posts.md`: pinned post,
+  launch thread, daily posts, reply templates, a two-week schedule, English and Bahasa Indonesia), each checked
+  against X's 280-character count by `check-x-posts.cjs`.
+
 ## What changed: real perps through Hyperliquid (mainnet, November 16 2026)
 
 - **Why**: the owner wants real perps without putting up Velum's own capital or liquidity ("ok hyperliquid aja").

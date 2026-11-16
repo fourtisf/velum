@@ -45,6 +45,11 @@ touching mainnet. The owner's approvals so far:
     offers stay simulated and are labelled so; real perps need Velum's own contracts (the guarded beta,
     docs/07) or another venue, an open owner decision.
 
+- **2026-11-16: real perps metrics on mainnet from Lighter.** Asked by the owner ("Mark, Funding, Open interest must
+  show real data"): until Velum's own perps are live, the terminal and the markets table show each market's perp on
+  Lighter (the perps venue of Robinhood Chain; free public API) with a "Lighter" label and a tooltip saying it is a
+  market reference. Velum never presents them as its own market. `PERPS_REF=off` turns it off.
+
 ## Phase 1 — Live today (static)
 **Build:** nothing; serve `prototype/index.html`.
 **Accept when:** `https://<domain>` loads the prototype over HTTPS; all demo flows work;

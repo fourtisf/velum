@@ -1,5 +1,6 @@
 import type { Candle, CandleCache, MarketSnapshot, Timeframe } from '@velum/config';
 import type { OnchainStatus, SignerStatus } from '@velum/config/src/onchain';
+import type { PerpRef } from '@velum/config/src/perps-ref';
 import type { ApiEnv } from '../env';
 import type { DeploymentSource, OnchainReader } from './onchain';
 
@@ -15,6 +16,8 @@ export interface CacheReader {
   heartbeat(worker: string): Promise<number | null>;
   /** The on-chain workers' status (Phase 3), authenticated and validated, or null (off, or not written). */
   onchainStatus?(): Promise<OnchainStatus | null>;
+  /** Real perps metrics per market from Lighter (mainnet), authenticated and validated; absent ones are left out. */
+  perpRefs?(symbols: readonly string[]): Promise<Map<string, PerpRef>>;
 }
 
 export interface PublishedPool {

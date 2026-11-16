@@ -48,6 +48,21 @@ export interface LiveMarket {
   demo: boolean;
   /** The stock market is closed (API staleReason marketClosed): the last price is shown, marked closed, never tradable on mainnet. */
   closed: boolean;
+  /**
+   * Mainnet: the venue whose perp supplies mark, funding and open interest (PERP_VENUES), or null. These are a labelled
+   * market reference while Velum's own perps are not live there.
+   */
+  ref: PerpVenueId | null;
+}
+
+/** Perps venues the API may name as the source of mark, funding and open interest, with their display names. */
+export const PERP_VENUES = { lighter: 'Lighter' } as const;
+export type PerpVenueId = keyof typeof PERP_VENUES;
+
+/** The venue of an API `perpsRef`, or null for anything else (absent, malformed, unknown venue). */
+export function apiPerpVenue(v: unknown): PerpVenueId | null {
+  const venue = v && typeof v === 'object' ? (v as { venue?: unknown }).venue : null;
+  return typeof venue === 'string' && Object.prototype.hasOwnProperty.call(PERP_VENUES, venue) ? (venue as PerpVenueId) : null;
 }
 
 export type FeedSource = 'seed' | 'api' | 'local';
@@ -237,6 +252,7 @@ function seedMarkets(): Record<string, LiveMarket> {
       noData: IS_MAINNET,
       demo: true,
       closed: false,
+      ref: null,
     };
   }
   return out;
@@ -319,6 +335,7 @@ function applyApi(list: unknown[], now: number, serverNow: number | null) {
         ...apiMeta(d, prev),
         funding: apiMetric(d.fundingPerHour),
         oi: apiMetric(d.openInterest),
+        ref: apiPerpVenue(d.perpsRef),
         stale: r.stale,
         demo: d.demo === true,
         closed: r.closed,

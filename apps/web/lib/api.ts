@@ -13,6 +13,8 @@ export interface MarketDTO {
   /** null on mainnet (no protocol data there yet): shown as a dash. */
   fundingPerHour: string | null;
   openInterest: string | null;
+  /** Mainnet: where mark, funding and open interest come from (the market's perp on Lighter), or null. */
+  perpsRef?: { venue?: unknown; market?: unknown; index?: unknown; at?: unknown } | null;
   maxLeverage: number;
   takerFeeBps: number;
   maintenanceMargin: string;

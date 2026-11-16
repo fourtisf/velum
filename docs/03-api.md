@@ -185,13 +185,21 @@ the deployment does not list.
   "maxLeverage": 5, "takerFeeBps": 6, "maintenanceMargin": "0.10",
   "spark": ["390.1", "390.4", "…"],
   "stale": false, "staleReason": null, "marketOpen": true, "quoteAge": 3,
-  "source": "robinhood", "updatedAt": 1794646800000
+  "source": "robinhood", "updatedAt": 1794646800000, "perpsRef": null
 }]
 ```
+Mainnet with the Lighter reference (`PERPS_REF=lighter`, the default there):
+`"mark": "385.63", "fundingPerHour": "0.000400", "openInterest": "3125441.18", "demo": false,
+"perpsRef": { "venue": "lighter", "market": 112, "index": "385.64", "at": 1794810000000 }`
 - `status`: `live` | `coming_soon` | `close_only`. `spark`: last hour, one point per minute (at most 60).
-- `fundingPerHour`, `openInterest`: demo values on testnet, where `demo` is `true`; on mainnet they are
-  `null` and `demo` is `false` until they have a real source (Phase 3). `demo` describes these two
-  numbers; where the price comes from is `source`.
+- `fundingPerHour`, `openInterest`: demo values on testnet, where `demo` is `true`. On mainnet (`demo` false)
+  they are the market's perp on **Lighter**, the perps venue of Robinhood Chain, while the workers' last read of it
+  is under 5 minutes old, else `null` (NFLX has no Lighter market): funding per hour in percent, signed (positive:
+  longs pay; Lighter's 8-hour rate / 8), open interest in USD at the mark price, one side (Lighter's own
+  `open_interest_usd` counts both sides). `perpsRef` then names the venue, its market id, its index price and the
+  read time, and `mark` is Lighter's mark price; without it, `mark` is the price itself on mainnet (the demo mark
+  premium is testnet only). This is a labelled market reference, not Velum's own market: Velum's perps are not
+  live on mainnet. Where the price comes from is `source`.
 - `source`: `demo` (simulated), `robinhood` (official quotes), `chainlink`, `uniswap` (the curated Uniswap
   pools on Robinhood Chain mainnet, live 24/7: docs/02 "DEX prices and candles"), or `null` before the first
   tick (the seed price is returned then; clients must not show it as live, the web shows dashes).

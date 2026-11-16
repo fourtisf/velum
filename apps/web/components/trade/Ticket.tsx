@@ -5,11 +5,11 @@ import { amountHint, amountInputProps } from '@/lib/amount';
 import { MIN_LEVERAGE, perpsCalc, presetSize, spotCalc } from '@/lib/calc';
 import { openPerps, spotTrade } from '@/lib/demo';
 import { dp, floorTo, fmt, fmtBal, fmtFloor } from '@/lib/format';
-import { useLivePrice, useMarket, usePriceTick } from '@/lib/markets';
+import { PERP_VENUES, useLivePrice, useMarket, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 import { CLOSED, COPY, METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
-import { DemoTag } from '../ui';
+import { DemoTag, RefTag } from '../ui';
 import { OnchainTicket } from '../onchain/lazy';
 import { UniSpotTicket } from '../uniswap/lazy';
 import { UNISWAP } from '@velum/config/src/uniswap';
@@ -38,6 +38,8 @@ function PerpsTicket({ sym }: { sym: string }) {
   const have = bal(s.ledger.priv, 'USDG');
   const c = perpsCalc({ sel: sym, side: s.side, lev: s.lev, size: s.size }, have, price);
   const live = isLive(sym);
+  // Mainnet: the funding rate of the market's perp on Lighter (a labelled reference; Velum perps are simulated there).
+  const refVenue = !METRICS.real && m.ref ? PERP_VENUES[m.ref] : null;
   /** Price-derived figures show a dash without a live price (audit round 2, M4). */
   const px = (v: string) => (c.priced ? v : '—');
   const bad = amountHint(s.size);
@@ -133,9 +135,9 @@ function PerpsTicket({ sym }: { sym: string }) {
         </div>
         <div>
           <span>
-            Funding{METRICS.real ? <DemoTag flag={m.demo} /> : null}
+            Funding{refVenue ? <RefTag venue={refVenue} sym={sym} /> : METRICS.real ? <DemoTag flag={m.demo} /> : null}
           </span>
-          <b>{METRICS.real && c.funding !== null ? `${fmt(c.funding, 4)}% / h` : METRICS.dash}</b>
+          <b>{(METRICS.real || refVenue) && c.funding !== null ? `${fmt(c.funding, 4)}% / h` : METRICS.dash}</b>
         </div>
       </div>
       <SubmitButton b={b} />

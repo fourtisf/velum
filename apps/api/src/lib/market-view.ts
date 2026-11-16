@@ -1,4 +1,5 @@
 import { DEMO, PROTOCOL, QUOTE_FROZEN_AFTER_MS, isAlwaysOpenSource, usEquitySession, type MarketSeed, type MarketSnapshot, type NetworkName } from '@velum/config';
+import { PERP_REF_MAX_AGE_MS, type PerpRef } from '@velum/config/src/perps-ref';
 import { WAD, bps, maintenanceMargin, parseWad, toDecimalString, wdiv, wmul, type Wad } from '@velum/math';
 
 export const MAX_PRICE_AGE_MS = PROTOCOL.oracleMaxAgeSeconds * 1000;
@@ -58,12 +59,21 @@ export interface MarketView extends PriceState {
   mark: string;
   open24h: string;
   change24h: string;
-  /** Demo value on testnet; null on mainnet until funding has a real source (Phase 3). */
+  /**
+   * Funding per hour in percent, signed (positive: longs pay). Demo value on testnet. On mainnet the market's perp on
+   * Lighter while that reference is fresh (`perpsRef`), else null: Velum's own perps are not live there yet.
+   */
   fundingPerHour: string | null;
-  /** Demo value on testnet; null on mainnet until open interest has a real source (Phase 3). */
+  /** Open interest in USD (one side). Demo on testnet; on mainnet Lighter's (`perpsRef`) or null. */
   openInterest: string | null;
   /** True when fundingPerHour and openInterest are simulated (testnet); the price's origin is `source`. */
   demo: boolean;
+  /**
+   * Where mark, fundingPerHour and openInterest come from on mainnet: the market's perp on Lighter (the perps venue of
+   * Robinhood Chain), read at `at`, with its index price. null when there is none (no Lighter market, a stale read, or
+   * testnet). A reference, not Velum's own market: clients label it with the venue.
+   */
+  perpsRef: { venue: string; market: number; index: string; at: number } | null;
   maxLeverage: number;
   takerFeeBps: number;
   maintenanceMargin: string;
@@ -82,12 +92,15 @@ export function changePct(price: Wad, open: Wad): string {
   return toDecimalString(wdiv((price - open) * 100n, open), 2);
 }
 
-export function marketView(seed: MarketSeed, snap: MarketSnapshot | undefined, now: number, network: NetworkName, cacheOk = true): MarketView {
+export function marketView(seed: MarketSeed, snap: MarketSnapshot | undefined, now: number, network: NetworkName, cacheOk = true, perp?: PerpRef): MarketView {
   const priceStr = snap?.price ?? seed.seedPrice;
   const price = parseWad(priceStr) ?? 0n;
   const open = parseWad(snap?.open24h ?? priceStr) ?? price;
-  const mark = snap?.mark ?? toDecimalString(wmul(price, WAD + bps(DEMO.markPremiumBps), 'floor'), 2);
   const demo = network !== 'mainnet';
+  // Mainnet: the Lighter perp's numbers while fresh (never on testnet, never older than PERP_REF_MAX_AGE_MS).
+  const ref = !demo && perp && perp.symbol === seed.symbol && now - perp.at <= PERP_REF_MAX_AGE_MS && perp.at <= now + 30_000 ? perp : null;
+  // The demo mark premium is a testnet simulation: on mainnet without a perp reference the mark is the price itself.
+  const mark = ref?.mark ?? (demo ? (snap?.mark ?? toDecimalString(wmul(price, WAD + bps(DEMO.markPremiumBps), 'floor'), 2)) : priceStr);
   return {
     symbol: seed.symbol,
     name: seed.name,
@@ -97,9 +110,10 @@ export function marketView(seed: MarketSeed, snap: MarketSnapshot | undefined, n
     mark,
     open24h: toDecimalString(open),
     change24h: changePct(price, open),
-    fundingPerHour: demo ? seed.fundingPerHour : null,
-    openInterest: demo ? seed.openInterest : null,
+    fundingPerHour: demo ? seed.fundingPerHour : (ref?.fundingPerHour ?? null),
+    openInterest: demo ? seed.openInterest : (ref?.openInterest ?? null),
     demo,
+    perpsRef: ref ? { venue: ref.venue, market: ref.market, index: ref.index, at: ref.at } : null,
     maxLeverage: PROTOCOL.maxLeverage,
     takerFeeBps: PROTOCOL.takerFeeBps,
     maintenanceMargin: MM,

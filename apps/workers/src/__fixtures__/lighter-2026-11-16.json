@@ -1,0 +1,76 @@
+{
+ "_note": "Trimmed real responses of mainnet.zklighter.elliot.ai read on 2026-11-16: GET /api/v1/orderBookDetails?market_id=112 (TSLA) and GET /api/v1/funding-rates (TSLA and ARB entries).",
+ "orderBookDetails": {
+  "code": 200,
+  "order_book_details": [
+   {
+    "symbol": "TSLA",
+    "market_id": 112,
+    "market_type": "perp",
+    "status": "active",
+    "is_frozen": false,
+    "mark_price": "385.49",
+    "index_price": "385.51",
+    "last_trade_price": 385.4,
+    "open_interest": 8113.7339,
+    "open_interest_usd": "6255526.562222",
+    "base_interest_rate": "0.0032",
+    "funding_clamp_small": "0.0500",
+    "funding_clamp_big": "4.0000"
+   }
+  ]
+ },
+ "fundingRates": {
+  "code": 200,
+  "funding_rates": [
+   {
+    "market_id": 112,
+    "exchange": "binance",
+    "symbol": "TSLA",
+    "rate": 0
+   },
+   {
+    "market_id": 50,
+    "exchange": "binance",
+    "symbol": "ARB",
+    "rate": -0.00010538
+   },
+   {
+    "market_id": 50,
+    "exchange": "bybit",
+    "symbol": "ARB",
+    "rate": -5.887e-05
+   },
+   {
+    "market_id": 112,
+    "exchange": "bybit",
+    "symbol": "TSLA",
+    "rate": 0
+   },
+   {
+    "market_id": 50,
+    "exchange": "hyperliquid",
+    "symbol": "ARB",
+    "rate": -0.000114048
+   },
+   {
+    "market_id": 112,
+    "exchange": "hyperliquid",
+    "symbol": "TSLA",
+    "rate": 5e-05
+   },
+   {
+    "market_id": 50,
+    "exchange": "lighter",
+    "symbol": "ARB",
+    "rate": -0.00035200000000000005
+   },
+   {
+    "market_id": 112,
+    "exchange": "lighter",
+    "symbol": "TSLA",
+    "rate": 3.2e-05
+   }
+  ]
+ }
+}

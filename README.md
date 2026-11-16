@@ -139,6 +139,11 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   (`apps/web/e2e/uniswap-fork.e2e.ts`: v3 and v4, both token orders, buy and sell, exact amounts, slippage
   reverts; `apps/web/e2e/uniswap-browser.e2e.cjs`: the mainnet web build with a test wallet buys, sells and swaps
   stock to stock, every amount checked on chain). Perps, shield/unshield, liquidity and maker offers stay simulated, and the banner says so.
+- **Perps metrics** (November 16): Mark, Funding / h and Open interest on mainnet are each market's live perp on
+  Lighter, the perps venue of Robinhood Chain (public API, no key; `apps/workers/src/jobs/perp-ref.ts`), labelled
+  "Lighter" as a market reference until Velum's own perps are live. NFLX has none. The 24h change with Uniswap prices
+  now comes from the candles per market (a market without a day of history no longer zeroes the others), and the
+  mainnet copy says plainly that spot is real and perps are simulated.
 - **Deploy**: `deploy/set-network.sh mainnet` now sets `PRICE_SOURCE=uniswap` (`PRICE_SOURCE_MAINNET=robinhood`
   keeps the official quotes). A provider `RPC_URL` makes the first history build much faster.
 

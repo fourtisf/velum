@@ -528,3 +528,46 @@ describe('candleMergeSql on Postgres', () => {
     }
   });
 });
+
+describe('24h open with the DEX source (regression: one market without history zeroed every 24h change)', () => {
+  const w = (x: string) => parseWad(x)!;
+  const NOW = Date.UTC(2026, 10, 16, 5, 0, 0);
+  const since = NOW - 86_400_000;
+  it('falls back to coarser candles that ended by then, never to a still-open bucket', async () => {
+    const { open24hFromSeries } = await import('./jobs/price-relay');
+    const hour = 3_600_000;
+    const s1h: WadCandle[] = [
+      { t: since - 2 * hour, o: w('1'), h: w('1'), l: w('1'), c: w('100') },
+      { t: since - hour, o: w('1'), h: w('1'), l: w('1'), c: w('101') },
+      { t: since - 1000 - (since % hour), o: w('1'), h: w('1'), l: w('1'), c: w('999') },
+    ].filter((c, i, a) => a.findIndex((x) => x.t === c.t) === i);
+    expect(open24hFromSeries((tf) => (tf === '1h' ? s1h : []), since)).toBe('101');
+    expect(open24hFromSeries(() => [], since)).toBeNull();
+  });
+  it('only markets without candles fall back to ticks; the others keep their candle open', async () => {
+    const { refreshOpen24h } = await import('./jobs/price-relay');
+    const queried: string[] = [];
+    const ctx = {
+      source: { name: 'uniswap' },
+      lastOpenRefresh: 0,
+      marketIds: new Map([
+        ['TSLA', 'm-tsla'],
+        ['NFLX', 'm-nflx'],
+      ]),
+      series: new Map([[seriesKey('TSLA', '15m'), [{ t: since - 600_000, o: w('380'), h: w('380'), l: w('380'), c: w('380.5') }]]]),
+      open24h: new Map<string, string>(),
+      prisma: {
+        priceTick: {
+          findFirst: async ({ where }: { where: { marketId: string } }) => {
+            queried.push(where.marketId);
+            return { price: { toFixed: () => '61.2' }, at: new Date(NOW - 60_000) };
+          },
+        },
+      },
+    } as unknown as WorkerContext;
+    await refreshOpen24h(ctx, NOW);
+    expect(ctx.open24h.get('TSLA')).toBe('380.5');
+    expect(ctx.open24h.get('NFLX')).toBe('61.2');
+    expect(queried).toEqual(['m-nflx']);
+  });
+});

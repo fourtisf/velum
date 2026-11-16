@@ -14,6 +14,7 @@ import {
   type Timeframe,
 } from '@velum/config';
 import type { CacheMac } from '@velum/config/src/cache-mac';
+import { parsePerpRef, type PerpRef } from '@velum/config/src/perps-ref';
 import { MAX_ONCHAIN_STATUS_BYTES, MAX_SIGNER_STATUS_BYTES, ONCHAIN_STATUS_KEY, parseOnchainStatus, parseSignerStatus } from '@velum/config/src/onchain';
 import { Prisma, type PrismaClient } from '@velum/db';
 import { constants as fsConstants } from 'node:fs';
@@ -70,6 +71,18 @@ export function redisCache(redis: Redis, opts: { mac: CacheMac; now?: () => numb
       const raw = await read(() => redis.get(key));
       const cached = parseCandleCache(mac.open(key, raw, MAX_CANDLES_BYTES), TIMEFRAME_MS[tf], now());
       return cached && cached.network === mac.network ? cached : null;
+    },
+    async perpRefs(symbols) {
+      const out = new Map<string, PerpRef>();
+      if (!symbols.length) return out;
+      const keys = symbols.map((s) => cacheKeys.perpRef(s));
+      const raws = await read(() => redis.mget(...keys));
+      const t = now();
+      raws.forEach((raw, i) => {
+        const ref = parsePerpRef(mac.open(keys[i]!, raw, 2048), symbols[i]!, t);
+        if (ref) out.set(symbols[i]!, ref);
+      });
+      return out;
     },
     async heartbeat(worker) {
       const key = cacheKeys.heartbeat(worker);

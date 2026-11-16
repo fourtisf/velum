@@ -106,6 +106,13 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
   so the result is the same in any order; each range commits its candles and its checkpoint in one transaction.
   A changed pool list or a live checkpoint whose block left the chain rebuilds from scratch. Switching between
   kinds of history (simulated, stock quotes, DEX trades) clears stored history once (`priceKindOf`).
+- **Perps reference from Lighter (mainnet, `PERPS_REF=lighter`, the default there).** Velum's own perps are not
+  live on mainnet, so the terminal's Mark, Funding / h and Open interest show each market's perp on Lighter, the
+  perps venue of Robinhood Chain, labelled "Lighter". The workers (`jobs/perp-ref.ts`) read once a minute one
+  funding list (`/api/v1/funding-rates`) and one `orderBookDetails?market_id=` per market from the public API
+  (mainnet.zklighter.elliot.ai, no key), validate each value against the pinned market id and symbol
+  (`packages/config/src/perps-ref.ts`, where the units checked on 2026-11-16 are written down) and store it
+  authenticated in Redis for 15 minutes; the API serves it while under 5 minutes old. NFLX has no Lighter market.
 - **Real spot through Uniswap (mainnet, web).** The Spot ticket and the swap page trade from the connected wallet
   through the Universal Router (`apps/web/lib/uniswap`): the best on-chain quote among the market's curated pools,
   an exact ERC-20 approval to Permit2 and an exact 30-minute Permit2 allowance for the router (each only when

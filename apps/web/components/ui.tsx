@@ -1,7 +1,7 @@
 'use client';
 import { getMarket } from '@velum/config';
 import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
-import { CLOSED, isDemoMetric } from '@/lib/copy';
+import { CLOSED, isDemoMetric, refTitle } from '@/lib/copy';
 import { fmt, pct, usd } from '@/lib/format';
 import { LOGOS } from '@/lib/logos';
 import { useMarket, usePriceState } from '@/lib/markets';
@@ -98,6 +98,15 @@ export function ComingSoon() {
  * "Demo" beside a protocol metric that is demo data (DV-03): every such metric on testnet, and any the
  * API flags `demo: true` (lib/copy.ts isDemoMetric). Render it only where the metric itself is shown.
  */
+/** The venue label of a perps metric taken from another venue's live market (mainnet), with what it means. */
+export function RefTag({ venue, sym }: { venue: string; sym?: string }) {
+  return (
+    <span className="badge demo-tag" title={refTitle(venue, sym)}>
+      {venue}
+    </span>
+  );
+}
+
 export function DemoTag({ flag }: { flag?: boolean }) {
   if (!isDemoMetric(flag)) return null;
   return (

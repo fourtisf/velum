@@ -86,7 +86,7 @@ describe('privacy claims are labelled as simulated (owner decision of 2026-11-15
   it('no string the web shows states a simulated feature, a key or a price source as fact', () => {
     const all = [
       ...strings(COPY),
-      ...(['robinhood', 'chainlink', 'demo', 'loading', 'none'] as const).flatMap((o) => [COPY.frameCap(o, false), COPY.frameCap(o, true), COPY.marketsSub(o)]),
+      ...(['uniswap', 'robinhood', 'chainlink', 'demo', 'loading', 'none'] as const).flatMap((o) => [COPY.frameCap(o, false), COPY.frameCap(o, true), COPY.marketsSub(o)]),
       ...strings(LANDING),
       ...LANDING.stepsMini.flat(),
       ...Object.values(UI),
@@ -116,15 +116,15 @@ describe('privacy claims are labelled as simulated (owner decision of 2026-11-15
     expect(priceSourceText('robinhood')).toBe("Prices from Robinhood's public Stock Token API.");
     expect(priceSourceText('chainlink')).toBe('Prices from Chainlink price feeds.');
     expect(priceSourceText('demo')).toBe('Live prices are unavailable right now.');
-    expect(COPY.marketsSub('none')).toBe('Live prices are unavailable right now. Trading here is simulated until contracts launch.');
+    expect(COPY.marketsSub('none')).toBe("Live prices are unavailable right now. Spot trades are real Uniswap swaps; perps are simulated until Velum's contracts launch.");
     expect(COPY.marketsSub('demo')).not.toMatch(/Robinhood/);
   });
 
   it('connected on the landing page, the caption says what is simulated (F3)', () => {
     expect(COPY.frameCap('robinhood', true)).toBe(
-      "Prices from Robinhood's public Stock Token API. Demo mode: trades and your practice balance are simulated, and your tokens never leave your wallet.",
+      "Prices from Robinhood's public Stock Token API. Spot trades are real Uniswap swaps from your wallet; perps and your practice balance are simulated.",
     );
-    expect(COPY.frameCap('robinhood', false)).toMatch(/Connect your wallet to try a simulated private trade\.$/);
+    expect(COPY.frameCap('robinhood', false)).toMatch(/Connect your wallet to buy Stock Tokens through Uniswap or try a simulated private perp trade\.$/);
   });
 
   it('metrics stay dashes on mainnet; a demo flag from the API is honoured where they are shown', () => {

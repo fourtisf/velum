@@ -3,10 +3,10 @@ import { TIMEFRAMES } from '@velum/config';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { compact, fmt } from '@/lib/format';
-import { useMarket, useMarkets } from '@/lib/markets';
+import { PERP_VENUES, useMarket, useMarkets } from '@/lib/markets';
 import { METRICS } from '@/lib/copy';
 import { useApp } from '@/lib/store';
-import { Av, Chg, DemoTag, Px } from '../ui';
+import { Av, Chg, DemoTag, Px, RefTag } from '../ui';
 import { AccountCard } from './AccountCard';
 import { Chart } from './Chart';
 import { useTradeMode } from './mode';
@@ -45,6 +45,9 @@ function Strip({ sym, embedded }: { sym: string; embedded?: boolean }) {
 
 function ChartCard({ sym }: { sym: string }) {
   const m = useMarket(sym);
+  // Mainnet: the market's perp on another venue (Lighter) while the API has a fresh read of it; testnet: demo values.
+  const ref = !METRICS.real && m.ref ? PERP_VENUES[m.ref] : null;
+  const shown = METRICS.real || ref !== null;
   const mode = useTradeMode();
   const tf = useApp((s) => s.tf);
   const set = useApp((s) => s.set);
@@ -89,20 +92,22 @@ function ChartCard({ sym }: { sym: string }) {
           <Chg sym={sym} as="b" className="num" />
         </div>
         <div>
-          <small>Mark</small>
-          <b className="num">{METRICS.real ? fmt(m.mark) : METRICS.dash}</b>
+          <small>
+            Mark{ref ? <RefTag venue={ref} sym={sym} /> : null}
+          </small>
+          <b className="num">{shown ? fmt(m.mark) : METRICS.dash}</b>
         </div>
         <div className="hide-sm">
           <small>
-            Funding / h{METRICS.real ? <DemoTag flag={m.demo} /> : null}
+            Funding / h{ref ? <RefTag venue={ref} sym={sym} /> : METRICS.real ? <DemoTag flag={m.demo} /> : null}
           </small>
-          <b className="num">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.dash}</b>
+          <b className="num">{shown && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.dash}</b>
         </div>
         <div className="hide-sm">
           <small>
-            Open interest{METRICS.real ? <DemoTag flag={m.demo} /> : null}
+            Open interest{ref ? <RefTag venue={ref} sym={sym} /> : METRICS.real ? <DemoTag flag={m.demo} /> : null}
           </small>
-          <b className="num">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.dash}</b>
+          <b className="num">{shown && m.oi !== null ? compact(m.oi) : METRICS.dash}</b>
         </div>
       </div>
       <Chart sym={sym} />

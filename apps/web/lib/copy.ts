@@ -18,6 +18,10 @@ import { bpsPct } from './format';
  */
 export const METRICS = { real: !IS_MAINNET, dash: '—' } as const;
 
+/** The tooltip of a perps metric that comes from another venue's market (mainnet, lib/markets.ts `ref`). */
+export const refTitle = (venue: string, sym?: string): string =>
+  `${sym ? `${sym} perp` : "Each market's perp"} on ${venue}, the perps venue of Robinhood Chain: live mark, funding and open interest, shown as a market reference until Velum's own perps are live.`;
+
 /**
  * Whether a metric that is shown is demo data, and so carries a "Demo" label (DV-03): always on
  * testnet (Phase 2 has no real protocol data there), and wherever the API flags it `demo: true`.
@@ -102,24 +106,24 @@ export const COPY = {
   /** The line under the landing terminal; testnet always carries the test-token notice (F11). */
   frameCap: (origin: PriceOrigin, connected: boolean, mainnet = IS_MAINNET): string =>
     mainnet
-      ? `${priceSourceText(origin, true)} ${connected ? 'Demo mode: trades and your practice balance are simulated, and your tokens never leave your wallet.' : 'Connect your wallet to try a simulated private trade.'}`
+      ? `${priceSourceText(origin, true)} ${connected ? 'Spot trades are real Uniswap swaps from your wallet; perps and your practice balance are simulated.' : 'Connect your wallet to buy Stock Tokens through Uniswap or try a simulated private perp trade.'}`
       : `${origin === 'demo' || origin === 'loading' ? 'Live demo with test prices.' : priceSourceText(origin, false)} Connect a test wallet to try a simulated private trade. Testnet. Test tokens have no value.`,
   faqMoney: IS_MAINNET
-    ? 'Not yet. Velum connects to Robinhood Chain so you can see your real balances, but every trade here is simulated and your tokens never leave your wallet. Real trading starts only after an external audit.'
+    ? "For spot, yes: buying or selling on the Spot ticket or the Swap page is a real Uniswap trade from your own wallet on Robinhood Chain, public onchain, with the pool fee and gas to pay. Perps and the private account are still simulated; Velum's own contracts hold money only after an external audit."
     : 'No. Velum runs on Robinhood Chain testnet. Test tokens have no value, so you can learn how private trading works without risk.',
   ctaSub: IS_MAINNET
-    ? 'Connect your wallet and try a simulated private trade in under a minute.'
+    ? 'Connect your wallet to buy Stock Tokens through Uniswap, or try a simulated private perp trade, in under a minute.'
     : 'Get free test USDG from the faucet and make your first simulated private trade in under a minute.',
   // No claim about prices here (final audit W-07): this line is static, while prices can be closed,
   // stale or unavailable. The live state is said where prices are shown (frame caption, markets, banner).
   footer: IS_MAINNET
-    ? 'An independent project on Robinhood Chain, not affiliated with Robinhood. Trades are simulated and your tokens never leave your wallet. No contracts are deployed or audited yet.'
+    ? "An independent project on Robinhood Chain, not affiliated with Robinhood. Not affiliated with Uniswap or Lighter either. Spot trades are real Uniswap swaps from your wallet; perps and the private account are simulated. Velum's own contracts are not deployed or audited yet."
     : 'An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet with simulated trading. Test tokens have no value.',
   /** Required on every page (CLAUDE.md §1.7); the /app layout shows it as a small line (F11). */
   brand: 'An independent project on Robinhood Chain, not affiliated with Robinhood.',
   marketsSub: (origin: PriceOrigin, mainnet = IS_MAINNET): string =>
     mainnet
-      ? `${priceSourceText(origin, true)} Trading here is simulated until contracts launch.`
+      ? `${priceSourceText(origin, true)} Spot trades are real Uniswap swaps; perps are simulated until Velum's contracts launch.`
       : `${priceSourceText(origin, false)} Trading here is simulated.`,
   networkNotice: IS_MAINNET ? '' : ' Test tokens have no value.',
   notOnNetwork: (sym: string) => `${sym} isn't on ${CHAIN.label} yet.`,
@@ -253,10 +257,10 @@ export const LANDING = {
   stepSettle: 'The contract will check the proof and update your encrypted notes. Only you will be able to read the result.',
   privacyLead: "On a public chain anyone can copy your trades or hunt your liquidation price. Velum is designed so they can't.",
   faqLongShort: `In the demo, yes. Perps will let you go long or short on each stock with up to ${P.maxLev} leverage. A maker will take the other side, and you will be able to close on your own at any time.`,
-  faqWho: 'Today, nobody: demo trades are simulated and stay in this browser. Once Velum launches, the maker on the other side will see that one position, against a one-time address. Two risk services will read what they need to liquidate. The public will only see that a position changed.',
+  faqWho: `${IS_MAINNET ? 'Today, spot trades are public Uniswap swaps anyone can see onchain, and simulated perps stay in this browser.' : 'Today, nobody: demo trades are simulated and stay in this browser.'} Once Velum launches, the maker on the other side will see that one position, against a one-time address. Two risk services will read what they need to liquidate. The public will only see that a position changed.`,
   faqAnon: 'No. Moving tokens in and out will be public. If you want deposits harder to link, vary amounts and timing and withdraw to a fresh wallet.',
   faqLoss: 'No. Each position is designed to have its own margin, and losses stop there. You could lose all of it, so start small once real trading opens.',
-  faqOffline: `Nothing is at risk today: trades are simulated and your tokens never leave your wallet. Once Velum holds funds, it is designed so you can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.`,
+  faqOffline: `${IS_MAINNET ? 'Velum holds nothing today: spot trades settle straight to your wallet through Uniswap, and perps are simulated.' : 'Nothing is at risk today: trades are simulated and your tokens never leave your wallet.'} Once Velum holds funds, it is designed so you can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.`,
 } as const;
 
 /**

@@ -31,3 +31,22 @@ describe('Uniswap prices are live 24/7', () => {
     expect(priceState(snap('robinhood'), SUNDAY, 'mainnet')).toMatchObject({ stale: true, staleReason: 'marketClosed', marketOpen: false });
   });
 });
+
+describe('perps reference from Lighter (mainnet)', () => {
+  const ref = { symbol: 'TSLA', venue: 'lighter' as const, market: 112, mark: '385.64', index: '385.64', fundingPerHour: '0.000400', openInterest: '3127455.94', at: SUNDAY - 30_000 };
+  const seed = { symbol: 'TSLA', name: 'Tesla', seedPrice: '391.65', vol: 0, openInterest: '1', fundingPerHour: '0.0042', status: 'live' as const, token: null };
+  it('serves mark, funding and open interest from a fresh Lighter read, with the venue', async () => {
+    const { marketView } = await import('./lib/market-view');
+    const v = marketView(seed, snap('uniswap'), SUNDAY, 'mainnet', true, ref);
+    expect([v.mark, v.fundingPerHour, v.openInterest, v.demo]).toEqual(['385.64', '0.000400', '3127455.94', false]);
+    expect(v.perpsRef).toEqual({ venue: 'lighter', market: 112, index: '385.64', at: ref.at });
+  });
+  it('drops a stale read, a read for another market, and never uses one on testnet', async () => {
+    const { marketView } = await import('./lib/market-view');
+    const old = marketView(seed, snap('uniswap'), SUNDAY, 'mainnet', true, { ...ref, at: SUNDAY - 301_000 });
+    expect([old.fundingPerHour, old.openInterest, old.perpsRef]).toEqual([null, null, null]);
+    expect(marketView(seed, snap('uniswap'), SUNDAY, 'mainnet', true, { ...ref, symbol: 'AAPL' }).perpsRef).toBeNull();
+    const t = marketView(seed, snap('demo'), SUNDAY, 'testnet', true, ref);
+    expect([t.fundingPerHour, t.perpsRef]).toEqual(['0.0042', null]);
+  });
+});

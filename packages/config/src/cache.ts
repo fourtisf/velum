@@ -24,6 +24,8 @@ export const cacheKeys = {
   demoSeeded: () => `${CACHE_PREFIX}:demo:seeded`,
   /** Price source the workers last started with (informational; history decisions rest on Postgres). */
   priceSource: () => `${CACHE_PREFIX}:price-source`,
+  /** JSON PerpRef (authenticated): real perps metrics of the market on Lighter (perps-ref.ts), mainnet only. */
+  perpRef: (symbol: string) => `${CACHE_PREFIX}:perpref:${symbol}`,
 } as const;
 
 export const SPARK_POINTS = 60;

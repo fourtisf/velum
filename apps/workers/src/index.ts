@@ -24,6 +24,7 @@ import { loadOnchainSettings, type OnchainEnv } from './onchain/env';
 import { redisRefusal, removeOnchainSchedulers, startDisabledStatus, startOnchain, type OnchainHandle } from './onchain/index';
 import { pickSource, uniswapClient } from './sources';
 import { DexCandles } from './jobs/dex-candles';
+import { PERP_REF_EVERY_MS, runPerpRef } from './jobs/perp-ref';
 import { UNISWAP } from '@velum/config/src/uniswap';
 
 /** Start-up tags candles of unknown source whose bucket ended in this window; the rest follows in the background. */
@@ -33,6 +34,7 @@ const Q_PRICES = 'velum-prices';
 const Q_CANDLES = 'velum-candles';
 const Q_MAINTENANCE = 'velum-maintenance';
 const Q_DEX = 'velum-dex';
+const Q_PERP_REF = 'velum-perpref';
 const DEX_SCHEDULER = 'dex-candles';
 
 /** Set once SIGTERM/SIGINT arrived: start-up retries stop, and their rejection is not an error. */
@@ -105,6 +107,7 @@ async function main(): Promise<void> {
   const candles = new Queue<CandleJobData>(Q_CANDLES, { connection: redis, defaultJobOptions });
   const maintenance = new Queue(Q_MAINTENANCE, { connection: redis, defaultJobOptions });
   const dexQueue = new Queue(Q_DEX, { connection: redis, defaultJobOptions });
+  const perpRefQueue = new Queue(Q_PERP_REF, { connection: redis, defaultJobOptions });
   // PRICE_SOURCE=uniswap: candles come from real swaps (jobs/dex-candles.ts), not from price-relay's poll ticks.
   const dex = env.priceSource === 'uniswap' && UNISWAP ? new DexCandles({ client: uniswapClient(env.rpcUrl), cfg: UNISWAP, chainId: env.chainId }) : null;
 
@@ -136,6 +139,8 @@ async function main(): Promise<void> {
     await maintenance.upsertJobScheduler('prune-ticks', { every: 3_600_000 }, { name: 'prune', opts: defaultJobOptions });
     if (dex) await dexQueue.upsertJobScheduler(DEX_SCHEDULER, { every: Math.max(env.pricePollMs, 2000) }, { name: 'dex', opts: defaultJobOptions });
     else await dexQueue.removeJobScheduler(DEX_SCHEDULER);
+    if (env.perpsRef) await perpRefQueue.upsertJobScheduler('perp-ref', { every: PERP_REF_EVERY_MS }, { name: 'perp-ref', opts: defaultJobOptions });
+    else await perpRefQueue.removeJobScheduler('perp-ref');
   });
 
   // Candle writes and the background history reload below never overlap (one in-process queue), so a
@@ -170,6 +175,8 @@ async function main(): Promise<void> {
       },
       { connection: redis, concurrency: 1 },
     ),
+    // Lighter perps metrics (mainnet): mark, funding and open interest for the trade terminal, labelled as Lighter's.
+    new Worker(Q_PERP_REF, async () => (env.perpsRef ? (await runPerpRef({ redis, mac, log })).length : 0), { connection: redis, concurrency: 1 }),
   ];
   for (const w of workers) {
     w.on('failed', (job, err) => log.error('job failed', { queue: w.name, job: job?.name, err: err.message }));
@@ -206,7 +213,7 @@ async function main(): Promise<void> {
   const stopDisabledStatus = onchainDisabled ? startDisabledStatus({ redis, mac, chainId: env.chainId, reason: onchainDisabled, log }) : null;
 
   log.info('workers started', {
-    workers: [PRICE_WORKER, dex ? 'dex-candles' : CANDLES_WORKER, 'prune', ...(onchain ? ['onchain'] : [])],
+    workers: [PRICE_WORKER, dex ? 'dex-candles' : CANDLES_WORKER, 'prune', ...(env.perpsRef ? ['perp-ref'] : []), ...(onchain ? ['onchain'] : [])],
     onchainDisabled: onchainDisabled ?? undefined,
     source: ctx.source.name,
     pollMs: env.pricePollMs,
@@ -226,7 +233,7 @@ async function main(): Promise<void> {
     stopDisabledStatus?.();
     await onchain?.stop().catch(() => undefined);
     await Promise.allSettled(workers.map((w) => w.close()));
-    await Promise.allSettled([prices.close(), candles.close(), maintenance.close(), dexQueue.close()]);
+    await Promise.allSettled([prices.close(), candles.close(), maintenance.close(), dexQueue.close(), perpRefQueue.close()]);
     await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
     process.exit(0);
   };

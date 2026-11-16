@@ -1,4 +1,4 @@
-import { cacheKeys, type PriceSource } from '@velum/config';
+import { TIMEFRAME_MS, cacheKeys, type PriceSource, type Timeframe } from '@velum/config';
 import { toDecimalString } from '@velum/math';
 import type { WadCandle } from '../lib/candles';
 import { buildSnapshot, quoteConfirmed, quoteTime } from '../lib/snapshot';
@@ -12,51 +12,66 @@ const OPEN_REFRESH_MS = 60_000;
 export const tickSourceOf = (source: PriceSource): string => (source === 'chainlink' ? 'oracle' : source);
 
 /**
- * Refresh 24h opens from PriceTick once a minute. Live sources use the earliest tick of the
- * last 24h. Demo keeps its seeded open until about a full day of ticks exists.
+ * Refresh 24h opens once a minute. Live quote sources use the earliest tick of the last 24h. Uniswap uses its candles
+ * (real trades, backfilled from the chain; open24hFromSeries) and falls back to ticks only for a market whose candles
+ * do not reach back a day yet, never overwriting one that has them. Demo keeps its seeded open until about a full day
+ * of ticks exists.
  */
 export async function refreshOpen24h(ctx: WorkerContext, now: number): Promise<void> {
   if (now - ctx.lastOpenRefresh < OPEN_REFRESH_MS) return;
   ctx.lastOpenRefresh = now;
   const since = now - DAY;
+  const fromTicks = new Set(ctx.marketIds.keys());
   if (ctx.source.name === 'uniswap') {
-    // The DEX candles hold the real trade history (backfilled from the chain): the price 24h ago is the close of the
-    // last 15-minute bucket that started at or before then. Without one (history still building), the ticks below.
-    let missing = false;
     for (const symbol of ctx.marketIds.keys()) {
-      const open = open24hFromCandles(ctx.series.get(seriesKey(symbol, '15m')) ?? [], since);
-      if (open) ctx.open24h.set(symbol, open);
-      else missing = true;
+      const open = open24hFromSeries((tf) => ctx.series.get(seriesKey(symbol, tf)), since);
+      if (open) {
+        ctx.open24h.set(symbol, open);
+        fromTicks.delete(symbol);
+      }
     }
-    if (!missing) return;
+    if (!fromTicks.size) return;
   }
   await Promise.all(
-    [...ctx.marketIds].map(async ([symbol, marketId]) => {
-      const first = await ctx.prisma.priceTick.findFirst({
-        where: { marketId, at: { gte: new Date(since) } },
-        orderBy: { at: 'asc' },
-        select: { price: true, at: true },
-      });
-      if (!first) return;
-      const fullDay = first.at.getTime() <= since + HOUR;
-      const demo = ctx.source.name === 'demo';
-      if (!demo || fullDay || !ctx.open24h.has(symbol)) ctx.open24h.set(symbol, first.price.toFixed());
-    }),
+    [...ctx.marketIds]
+      .filter(([symbol]) => fromTicks.has(symbol))
+      .map(async ([symbol, marketId]) => {
+        const first = await ctx.prisma.priceTick.findFirst({
+          where: { marketId, at: { gte: new Date(since) } },
+          orderBy: { at: 'asc' },
+          select: { price: true, at: true },
+        });
+        if (!first) return;
+        const fullDay = first.at.getTime() <= since + HOUR;
+        const demo = ctx.source.name === 'demo';
+        if (!demo || fullDay || !ctx.open24h.has(symbol)) ctx.open24h.set(symbol, first.price.toFixed());
+      }),
   );
 }
 
+/** Timeframes tried for the price 24h ago, finest first. */
+const OPEN_TFS: readonly Timeframe[] = ['15m', '1h', '4h', '1D'];
+
 /**
- * The price at `since` from a 15-minute series (oldest first): the close of the last bucket starting at or before
- * `since` (the last trade by then), or null when the series does not reach back that far.
+ * The price at `since` (the last trade by then) from the candle series of one market (each oldest first), or null
+ * when none reaches back that far: the close of the last 15-minute bucket starting at or before `since`, else of the
+ * last 1h, 4h or 1D bucket that ended by then (a coarser bucket still open at `since` holds later trades).
  */
-export function open24hFromCandles(series: readonly WadCandle[], since: number): string | null {
-  let pick: WadCandle | undefined;
-  for (const c of series) {
-    if (c.t > since) break;
-    pick = c;
+export function open24hFromSeries(get: (tf: Timeframe) => readonly WadCandle[] | undefined, since: number): string | null {
+  for (const tf of OPEN_TFS) {
+    const span = tf === '15m' ? 0 : TIMEFRAME_MS[tf];
+    let pick: WadCandle | undefined;
+    for (const c of get(tf) ?? []) {
+      if (c.t + span > since) break;
+      pick = c;
+    }
+    if (pick) return toDecimalString(pick.c);
   }
-  return pick ? toDecimalString(pick.c) : null;
+  return null;
 }
+
+/** The price at `since` from a 15-minute series alone (see open24hFromSeries). */
+export const open24hFromCandles = (series: readonly WadCandle[], since: number): string | null => open24hFromSeries((tf) => (tf === '15m' ? series : undefined), since);
 
 /**
  * One price tick: read prices, publish snapshots, store ticks, hand the tick to the candles job.

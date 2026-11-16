@@ -79,7 +79,7 @@ const ALLOW = {
   'velum-workers': {
     keys: [
       'NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE',
-      'PRICE_POLL_MS', 'PRICE_SOURCE', 'PRICE_TICK_RETENTION_DAYS', 'LOG_LEVEL',
+      'PRICE_POLL_MS', 'PRICE_SOURCE', 'PRICE_TICK_RETENTION_DAYS', 'PERPS_REF', 'LOG_LEVEL',
       // Phase 3 indexer (no secrets): off unless ONCHAIN_WORKERS=true and the deployment file exists. The shared
       // on-chain settings are validated here too, so the workers and the signer agree on what is valid.
       'ONCHAIN_WORKERS', 'ONCHAIN_MAINNET_CONFIRMED', 'DEPLOYMENTS_DIR', 'PRICE_PUSH_INTERVAL_MS',

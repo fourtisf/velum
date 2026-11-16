@@ -178,3 +178,16 @@ describe('price source wording', () => {
     expect(UNI.banner).toMatch(/Perps and the private account are simulated/);
   });
 });
+
+describe('perps reference (Lighter) in the web', () => {
+  it('reads only known venues from the API and words the reference', async () => {
+    const { apiPerpVenue, PERP_VENUES } = await import('@/lib/markets');
+    const { refTitle } = await import('@/lib/copy');
+    expect(apiPerpVenue({ venue: 'lighter', market: 112 })).toBe('lighter');
+    expect(apiPerpVenue({ venue: 'binance' })).toBeNull();
+    expect(apiPerpVenue({ venue: '__proto__' })).toBeNull();
+    expect(apiPerpVenue(null)).toBeNull();
+    expect(PERP_VENUES.lighter).toBe('Lighter');
+    expect(refTitle('Lighter', 'TSLA')).toMatch(/TSLA perp on Lighter.*until Velum's own perps are live/);
+  });
+});

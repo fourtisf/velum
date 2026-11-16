@@ -46,6 +46,9 @@ body.veiled .pv,.veil .pv,.pvd{filter:blur(6px);user-select:none}
 .iconbtn:hover{color:var(--text);border-color:var(--line3)}
 .iconbtn svg{width:17px;height:17px}
 .iconbtn.iconbtn-x svg{width:15px;height:15px}
+.linkbtn{all:unset;cursor:pointer;margin-left:8px;color:var(--acc);font-weight:500;font-size:inherit}
+.linkbtn:hover{text-decoration:underline}
+.linkbtn:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}
 .iconbtn[aria-pressed=true]{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent);background:var(--acc-bg)}
 .seg{display:inline-flex;gap:2px;padding:3px;border-radius:9px;background:var(--bg2);border:1px solid var(--line)}
 .seg button{height:28px;padding:0 11px;border-radius:6px;color:var(--muted);font-size:13px;font-weight:500;transition:background .12s,color .12s}

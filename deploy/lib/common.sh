@@ -228,9 +228,10 @@ official_rpc() {
 #    https://rpc.wallet.coinbase.com. keys.coinbase.com opens as a popup window, not a frame, and the
 #    web turns telemetry off (no cca-lite/as.coinbase.com).
 CSP_COINBASE_CONNECT='https://www.walletlink.org wss://www.walletlink.org https://rpc.wallet.coinbase.com'
-# Real perps on mainnet go from the browser straight to Hyperliquid's API (apps/web/lib/hyperliquid), unless the build
-# turns them off with NEXT_PUBLIC_HL_PERPS=off.
-CSP_HL_CONNECT='https://api.hyperliquid.xyz'
+# Real perps on mainnet go from the browser straight to Hyperliquid's API (apps/web/lib/hyperliquid), and deposits read
+# the user's USDC and confirm the transfer on Arbitrum's public RPC, unless the build turns perps off with
+# NEXT_PUBLIC_HL_PERPS=off.
+CSP_HL_CONNECT='https://api.hyperliquid.xyz https://arb1.arbitrum.io'
 #  - WalletConnect 2.21.1 (@walletconnect/ethereum-provider, Apache-2.0, a direct pinned web dependency;
 #    @walletconnect/core: relay, Verify API iframe + attestation fetch; its own telemetry is off in
 #    lib/wagmi.ts) and Reown AppKit 1.7.8 (Apache-2.0), the QR modal (appkit-common ConstantsUtil: blockchain API

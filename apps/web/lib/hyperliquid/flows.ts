@@ -30,6 +30,8 @@ export interface HlStep {
   d?: string;
   /** The step may ask the user's wallet to sign (said while it runs). */
   wallet?: boolean;
+  /** What the dialog says while the step runs, when neither the wallet line nor "Sending to Hyperliquid" fits. */
+  active?: string;
   /** Runs the step; returns the line shown when done, or null when it was not needed (shown as "Already done"). */
   run: (ctx: HlCtx) => Promise<string | null>;
 }
@@ -55,6 +57,9 @@ export function hlErrorText(e: unknown): string {
   if (/minimum value of \$10/i.test(msg)) return 'Hyperliquid accepts orders of at least 10 USD.';
   if (/does not exist|not approved|agent/i.test(msg) && /wallet|agent/i.test(msg)) return 'This browser is no longer approved to trade for your account. Start again to approve it.';
   if (/switched to another account/i.test(msg)) return msg;
+  if (/insufficient funds for (gas|intrinsic)|gas required exceeds/i.test(msg)) return 'Your wallet needs a little ETH on Arbitrum to pay the gas. Nothing was sent.';
+  if (/transfer amount exceeds balance/i.test(msg)) return 'Not enough USDC on Arbitrum for this deposit. Nothing was sent.';
+  if (/Nothing was sent|credited|Arbiscan|not shown the deposit/i.test(msg)) return msg;
   const short = msg.replace(/^order \d+: /, '').split('\n')[0]!.slice(0, 200);
   return short ? `Hyperliquid refused the request: ${short}` : 'Hyperliquid did not answer. Nothing was traded; try again.';
 }

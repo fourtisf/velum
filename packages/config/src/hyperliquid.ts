@@ -33,6 +33,22 @@ export const HL_MIN_ORDER_USD = 10;
 /** Hyperliquid caps funding at 0.5% per hour: anything beyond is not a funding rate. */
 export const HL_MAX_FUNDING_PCT = 0.5;
 
+/**
+ * Deposits from inside Velum. Hyperliquid's USDC bridge on Arbitrum ("Bridge2"; docs for-developers/api/usdc, read
+ * 2026-11-16): "The user sends native USDC to the bridge, and it is credited to the account that sent it in less than
+ * 1 minute. The minimum deposit amount is 5 USDC. If you send an amount less than this, it will not be credited and be
+ * lost forever." The docs call it the legacy bridge; on 2026-11-16 it held about 58M USDC and took about 105 deposits
+ * an hour (checked onchain), and it is the route Hyperliquid documents for wallet deposits ("via Arbitrum only").
+ */
+export const HL_BRIDGE = '0x2df1c51e09aecf9cacb7bc98cb1742757f163df7' as const;
+/** Native USDC on Arbitrum One (the only token the bridge credits). */
+export const ARB_USDC = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' as const;
+export const ARB_USDC_DECIMALS = 6;
+export const ARB_CHAIN_ID = 42161;
+export const ARB_RPC = 'https://arb1.arbitrum.io/rpc';
+/** Velum refuses anything under Hyperliquid's 5 USDC minimum (smaller deposits are lost). */
+export const HL_MIN_DEPOSIT_USDC = 5;
+
 export interface HlMarket {
   symbol: string;
   /** The coin name in the xyz dex, e.g. "xyz:TSLA". */

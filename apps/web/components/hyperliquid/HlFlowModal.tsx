@@ -118,7 +118,7 @@ export function HlFlowModal({ flow }: { flow: HlFlowSpec }) {
             {flow.steps.map((st, i) => {
               const s = states[i]!;
               const cls = s.stage === 'done' || s.stage === 'skipped' ? 'done' : s.stage === 'failed' ? 'fail' : s.stage === 'idle' ? '' : 'active';
-              const line = s.stage === 'skipped' ? 'Already done' : s.stage === 'active' ? (st.wallet ? 'Checking, then your wallet may ask to sign…' : 'Sending to Hyperliquid…') : s.stage === 'failed' ? <span className="down">{s.text}</span> : (s.text ?? st.d ?? '');
+              const line = s.stage === 'skipped' ? 'Already done' : s.stage === 'active' ? (st.active ?? (st.wallet ? 'Checking, then your wallet may ask to sign…' : 'Sending to Hyperliquid…')) : s.stage === 'failed' ? <span className="down">{s.text}</span> : (s.text ?? st.d ?? '');
               return (
                 <li key={i} className={cls}>
                   <span className="ic">{cls === 'done' ? <I.check /> : cls === 'fail' ? <I.x /> : null}</span>

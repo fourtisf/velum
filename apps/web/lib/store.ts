@@ -105,6 +105,8 @@ export type ModalState =
   | { kind: 'tx'; flow: TxFlowSpec; id: number }
   /** A real perps flow on Hyperliquid: review, signed API actions, receipt (components/hyperliquid/HlFlowModal.tsx). */
   | { kind: 'hl'; flow: HlFlowSpec; id: number }
+  /** Deposit USDC into the user's Hyperliquid account from Arbitrum (components/hyperliquid/HlDeposit.tsx). */
+  | { kind: 'hl-deposit' }
   /** Phase 3 position management: add or remove margin, forced exit. */
   | { kind: 'manage'; id: string };
 

@@ -155,8 +155,13 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   user's own Hyperliquid balances. Hyperliquid does not let an agent withdraw or transfer funds out, and the key
   never reaches Velum's server (CLAUDE.md §1.6). A Velum builder fee is optional and off by default
   (`NEXT_PUBLIC_HL_BUILDER_ADDRESS` / `NEXT_PUBLIC_HL_BUILDER_FEE`; with a fee set, each wallet approves it once).
-- **Deposits** happen on Hyperliquid itself (USDC from Arbitrum, app.hyperliquid.xyz, same wallet): the ticket
-  links there until the account has a first deposit, which Hyperliquid requires before any approval.
+- **Deposits inside Velum** (`apps/web/lib/hyperliquid/deposit.ts`, November 16): "Deposit USDC" in the ticket,
+  the positions card and "+ Deposit" next to the balance open Velum's own dialog. The user's wallet switches to
+  Arbitrum, sends native USDC to Hyperliquid's bridge (credited to the same address in under a minute; at least 5 USDC,
+  since less is lost; balance and gas checked first; never sent twice on retry), Velum waits for the credit and switches
+  the wallet back to Robinhood Chain. Rehearsed against the real USDC contract and bridge on an Arbitrum fork
+  (`apps/web/e2e/hyperliquid-deposit.e2e.cjs`: 18 checks, exact balances on the fork). The USDC itself must already
+  be on Arbitrum.
 - **Metrics**: Mark, Funding / h and Open interest now default to the same Hyperliquid markets (`PERPS_REF=hyperliquid`;
   `lighter` keeps the Lighter reference).
 - **Checked**: unit tests for the order math, agent storage, account reads (trimmed real answers) and every flow
@@ -166,7 +171,7 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   test wallet against a model of the API (open, close, a cancelled order and retry, no deposit, 360 px), verifying
   every signature and payload. A real fill with real money has not been run: the owner's first small trade is
   the final check.
-- **CSP**: `deploy/lib/common.sh` adds `https://api.hyperliquid.xyz` to `connect-src` on mainnet.
+- **CSP**: `deploy/lib/common.sh` adds `https://api.hyperliquid.xyz` and `https://arb1.arbitrum.io` (deposits) to `connect-src` on mainnet.
 - **Account card (mainnet)**: the trade page's right column shows the wallet's real balances (USDG, Stock Tokens at the
   live price, ETH for gas) and the Hyperliquid USDC and open positions, instead of the simulated private account; the
   private account is named only as in development.

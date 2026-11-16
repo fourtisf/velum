@@ -129,6 +129,11 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
   agent. Optional builder fee (`NEXT_PUBLIC_HL_BUILDER_ADDRESS`, `NEXT_PUBLIC_HL_BUILDER_FEE` in tenths of a bp):
   each wallet approves it once (`approveBuilderFee`), orders carry it. Checked against the live API with throwaway
   keys (`apps/web/e2e/hyperliquid-live.e2e.ts`) and in the browser (`apps/web/e2e/hyperliquid-browser.e2e.cjs`).
+  Deposits stay inside Velum (`apps/web/lib/hyperliquid/deposit.ts`): the user's wallet switches to Arbitrum and
+  transfers native USDC (0xaf88…5831) to Hyperliquid's bridge (0x2df1…3df7, packages/config/src/hyperliquid.ts), which
+  credits the sender's address; at least 5 USDC (less is lost), balance and gas checked first, the transfer read back
+  from its receipt and never re-sent on retry; Velum then waits for Hyperliquid to show the USDC and switches the wallet
+  back. The browser reads Arbitrum through arb1.arbitrum.io (allowed in the CSP on mainnet).
 - **Real spot through Uniswap (mainnet, web).** The Spot ticket and the swap page trade from the connected wallet
   through the Universal Router (`apps/web/lib/uniswap`): the best on-chain quote among the market's curated pools,
   an exact ERC-20 approval to Permit2 and an exact 30-minute Permit2 allowance for the router (each only when

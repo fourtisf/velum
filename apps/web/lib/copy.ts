@@ -106,13 +106,13 @@ export const HL = {
   perpsNote: 'A real leveraged trade from your own Hyperliquid account on its XYZ stock perps, isolated margin. Public on Hyperliquid, not private. Velum never holds your funds. Funding is paid hourly and a position can be liquidated.',
   unavailable: 'Hyperliquid cannot be reached right now. Try again in a moment.',
   noMarket: (sym: string) => `${sym} has no stock perp on Hyperliquid's XYZ market right now.`,
-  depositHint: 'Hyperliquid needs a first USDC deposit before this wallet can trade there. Deposit USDC (from Arbitrum) on Hyperliquid with this same wallet, then come back.',
+  depositHint: 'Fund your Hyperliquid account from here: deposit USDC from your wallet on Arbitrum (at least 5 USDC).',
   crossHint: (sym: string) => `You hold a cross-margin ${sym} position on Hyperliquid. Manage it on Hyperliquid: Velum trades isolated margin only.`,
   levLocked: (sym: string, lev: number) => `Adding to your ${sym} position keeps its ${lev}× leverage.`,
   levHint: (sym: string, lev: number) => `Your ${sym} position uses ${lev}× leverage, above Velum's ${HL_MAX_LEVERAGE}× limit. Add to it on Hyperliquid.`,
   notEnough: (amount: string) => `You have ${amount} USDC available on Hyperliquid. Deposit more, or lower the size.`,
   connectPositions: 'Connect your wallet to see your positions on Hyperliquid.',
-  noAccount: 'No Hyperliquid account for this wallet yet. Deposit USDC on Hyperliquid to start trading perps.',
+  noAccount: 'No perps balance for this wallet yet. Deposit USDC from Arbitrum to start trading perps.',
   noPositions: 'No open positions on Hyperliquid. Pick long or short in the ticket to open one.',
   noFills: 'No Hyperliquid trades in these markets yet.',
 } as const;
@@ -130,6 +130,18 @@ export const ACCT = {
   privateLabel: 'Private account',
   privateState: 'In development',
   privateNote: 'Trades today are public. Encrypted balances and positions come next.',
+} as const;
+
+/** Depositing USDC into the user's own Hyperliquid account from inside Velum (components/hyperliquid/HlDeposit.tsx). */
+export const DEPOSIT = {
+  title: 'Deposit USDC',
+  intro: 'Move USDC from your wallet on Arbitrum into your Hyperliquid account, without leaving Velum. It arrives at this same address, usually within a minute.',
+  minHint: 'Hyperliquid loses deposits under 5 USDC, so Velum asks for at least 5.',
+  noUsdc: 'This wallet has no USDC on Arbitrum yet. Send USDC on Arbitrum to this address (from an exchange or a bridge), then deposit it here.',
+  holds: (amount: string) => `Your wallet holds ${amount} USDC on Arbitrum.`,
+  gasHint: 'Your wallet needs a little ETH on Arbitrum to pay the gas.',
+  arbDown: 'Arbitrum cannot be reached right now. Try again in a moment.',
+  footer: 'Your wallet signs the transfer on Arbitrum. Velum never holds your funds.',
 } as const;
 
 export const CLOSED = {

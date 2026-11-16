@@ -7,7 +7,7 @@
  * signed (lib/hyperliquid/flows.ts).
  */
 import { PROTOCOL } from '@velum/config';
-import { HL_APP, HL_MAX_LEVERAGE, HL_MAX_TOKENS, HL_MIN_ORDER_USD } from '@velum/config/src/hyperliquid';
+import { HL_MAX_LEVERAGE, HL_MAX_TOKENS, HL_MIN_ORDER_USD } from '@velum/config/src/hyperliquid';
 import { parseWad, toDecimalString } from '@velum/math';
 import { amountHint, amountInputProps } from '@/lib/amount';
 import { HL } from '@/lib/copy';
@@ -77,7 +77,7 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
     hint = HL.unavailable;
   } else if (!bal.data) b = { label: 'Reading your Hyperliquid account…', cls: 'btn-dark', disabled: true };
   else if (!bal.data.funded) {
-    b = { label: 'Deposit USDC on Hyperliquid', cls: 'btn-white', disabled: false, href: HL_APP };
+    b = { label: 'Deposit USDC', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'hl-deposit' }) };
     hint = HL.depositHint;
   } else if (pos && !pos.isolated) {
     b = { label: 'Cross position open', cls: 'btn-dark', disabled: true };
@@ -141,6 +141,11 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
         <label htmlFor="t-size">Size</label>
         <span>
           Hyperliquid <b className="num">{connected && avail !== null ? `${fmt(usdWad(avail))} USDC` : '—'}</b>
+          {connected && bal.data?.funded ? (
+            <button type="button" className="linkbtn" onClick={() => s.openModal({ kind: 'hl-deposit' })}>
+              + Deposit
+            </button>
+          ) : null}
         </span>
       </div>
       <div className="inp">

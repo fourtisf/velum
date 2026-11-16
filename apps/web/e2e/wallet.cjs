@@ -37,17 +37,28 @@ const READS = new Set([
 
 /**
  * opts.privateKey (throwaway), opts.rpc (anvil URL), opts.chainId (where the wallet starts), opts.anvilChainId,
- * opts.name (the name it announces; default "Test Wallet").
- * Returns the wallet state: { log, sent, typed (EIP-712 requests), wrongChainSends, setChain(id), rejectNext }.
+ * opts.name (the name it announces; default "Test Wallet"), opts.chains ({ chainId: anvil URL } when the wallet knows
+ * several local chains, e.g. Robinhood Chain and Arbitrum forks: it signs on whichever it is switched to and refuses a
+ * switch to any other chain with 4902, like a real wallet that does not know it).
+ * Returns the wallet state: { log, sent, sentOn ([{ hash, chainId }]), typed (EIP-712 requests), wrongChainSends,
+ * setChain(id), rejectNext }.
  */
 async function installWallet(context, opts) {
   const account = privateKeyToAccount(opts.privateKey);
   const anvilChainId = opts.anvilChainId ?? 31337;
   const chain = { id: anvilChainId, name: 'anvil', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [opts.rpc] } } };
-  const signer = createWalletClient({ account, chain, transport: http(opts.rpc) });
-  const state = { chainId: opts.chainId ?? anvilChainId, connected: false, log: [], sent: [], typed: [], wrongChainSends: 0, rejectNext: false, address: account.address };
+  const chains = opts.chains ?? { [anvilChainId]: opts.rpc };
+  const signers = {};
+  const signerFor = (id) => {
+    if (!signers[id]) {
+      const c = id === anvilChainId ? chain : { id, name: `anvil-${id}`, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [chains[id]] } } };
+      signers[id] = { client: createWalletClient({ account, chain: c, transport: http(chains[id]) }), chain: c };
+    }
+    return signers[id];
+  };
+  const state = { chainId: opts.chainId ?? anvilChainId, connected: false, log: [], sent: [], sentOn: [], typed: [], wrongChainSends: 0, rejectNext: false, address: account.address };
   const forward = async (method, params) => {
-    const res = await fetch(opts.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+    const res = await fetch(chains[state.chainId] ?? opts.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
     return res.json();
   };
   await context.exposeBinding('__walletRpc', async (_src, raw) => {
@@ -71,9 +82,16 @@ async function installWallet(context, opts) {
       case 'wallet_revokePermissions':
         state.connected = false;
         return ok(null);
-      case 'wallet_switchEthereumChain':
-        state.chainId = Number.parseInt(params[0].chainId, 16);
+      case 'wallet_switchEthereumChain': {
+        const id = Number.parseInt(params[0].chainId, 16);
+        if (opts.chains && !chains[id]) return err(4902, 'Unrecognized chain ID');
+        if (state.rejectNext) {
+          state.rejectNext = false;
+          return err(4001, 'User rejected the request.');
+        }
+        state.chainId = id;
         return ok(null);
+      }
       case 'wallet_addEthereumChain':
         state.added = params[0];
         return ok(null);
@@ -91,7 +109,7 @@ async function installWallet(context, opts) {
         return ok(await account.signTypedData({ domain: typed.domain, types, primaryType: typed.primaryType, message: typed.message }));
       }
       case 'eth_sendTransaction': {
-        if (state.chainId !== anvilChainId) {
+        if (!chains[state.chainId]) {
           state.wrongChainSends++;
           return err(4901, 'wallet is on another chain');
         }
@@ -101,8 +119,10 @@ async function installWallet(context, opts) {
         }
         const tx = params[0];
         try {
-          const hash = await signer.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ? BigInt(tx.value) : 0n, gas: tx.gas ? BigInt(tx.gas) : undefined, chain });
+          const { client, chain: c } = signerFor(state.chainId);
+          const hash = await client.sendTransaction({ to: tx.to, data: tx.data, value: tx.value ? BigInt(tx.value) : 0n, gas: tx.gas ? BigInt(tx.gas) : undefined, chain: c });
           state.sent.push(hash);
+          state.sentOn.push({ hash, chainId: state.chainId });
           return ok(hash);
         } catch (e) {
           return err(-32000, String(e.shortMessage || e.message).split('\n')[0]);

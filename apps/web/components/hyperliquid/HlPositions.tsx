@@ -4,7 +4,6 @@
  * stock perps, read from Hyperliquid every 6 s, each with a Close (a reduce-only immediate order, lib/hyperliquid/flows),
  * and their recent fills under Activity. Same layout as the simulated card (components/trade/Positions.tsx).
  */
-import { HL_APP } from '@velum/config/src/hyperliquid';
 import { parseWad } from '@velum/math';
 import { HL } from '@/lib/copy';
 import { ago, fmt, fmtLev } from '@/lib/format';
@@ -134,7 +133,7 @@ function Fills({ list }: { list: HlFill[] }) {
 }
 
 /** The positions body: connect, account state, empty or the table. */
-function PositionsBody({ user, onConnect }: { user: `0x${string}` | undefined; onConnect: () => void }) {
+function PositionsBody({ user, onConnect, onDeposit }: { user: `0x${string}` | undefined; onConnect: () => void; onDeposit: () => void }) {
   const mode = useHlMode(user);
   const bal = useHlBalances(user, mode.data);
   if (!user)
@@ -162,9 +161,9 @@ function PositionsBody({ user, onConnect }: { user: `0x${string}` | undefined; o
     return (
       <div className="empty">
         <p>{HL.noAccount}</p>
-        <a className="btn btn-white btn-sm" href={HL_APP} target="_blank" rel="noopener noreferrer">
-          Open Hyperliquid
-        </a>
+        <button className="btn btn-white btn-sm" onClick={onDeposit}>
+          Deposit USDC
+        </button>
       </div>
     );
   if (!bal.data.positions.length)
@@ -179,7 +178,7 @@ function PositionsBody({ user, onConnect }: { user: `0x${string}` | undefined; o
 /** The Portfolio page's open positions on mainnet: the same real positions, read from Hyperliquid. */
 export function HlPortfolioPositions() {
   const s = useApp();
-  return <PositionsBody user={s.account?.addr} onConnect={() => s.openModal({ kind: 'connect' })} />;
+  return <PositionsBody user={s.account?.addr} onConnect={() => s.openModal({ kind: 'connect' })} onDeposit={() => s.openModal({ kind: 'hl-deposit' })} />;
 }
 
 export function HlPositionsCard() {
@@ -191,7 +190,7 @@ export function HlPositionsCard() {
   const positions = bal.data?.positions ?? [];
   const onConnect = () => s.openModal({ kind: 'connect' });
   let body: React.ReactNode;
-  if (s.ptab === 'pos' || !user) body = <PositionsBody user={user} onConnect={onConnect} />;
+  if (s.ptab === 'pos' || !user) body = <PositionsBody user={user} onConnect={onConnect} onDeposit={() => s.openModal({ kind: 'hl-deposit' })} />;
   else if (fills.isError)
     body = (
       <div className="empty">

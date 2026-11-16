@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Velum article cover: Introducing Velum</title>
+<!--
+  Source of the article covers (design/marketing/velum-article-cover-*.png) for article-introducing-velum.md. Brand tokens from design/tokens.css, the "Curtain" mark
+  from apps/web/components/icons.tsx, fonts from apps/web/app/fonts (OFL). Rendered by render-banners.cjs at 2x.
+  Claims follow what is live on mainnet (README): real spot through Uniswap, real perps through the user's own
+  Hyperliquid account, the privacy layer marked as next. No third-party logos.
+-->
+<style>
+  @font-face { font-family: "Inter"; src: url("../../apps/web/app/fonts/Inter-latin.woff2") format("woff2"); font-weight: 400 600; }
+  @font-face { font-family: "Inter Tight"; src: url("../../apps/web/app/fonts/InterTight-latin.woff2") format("woff2"); font-weight: 500 600; }
+  :root {
+    --bg: #08090B; --bg1: #0D0E11; --bg2: #131418;
+    --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.11); --line3: rgba(255,255,255,.17);
+    --text: #F4F5F6; --muted: #8B9099; --faint: #5E626A;
+    --acc: #8F96FF; --acc-bg: rgba(143,150,255,.12); --acc-deep: #6E79F3; --up: #3FCF8E; --down: #F25C61;
+    --sans: "Inter", system-ui, sans-serif; --display: "Inter Tight", "Inter", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; color: var(--text); font-family: var(--sans); font-feature-settings: "cv11","ss01","ss03"; -webkit-font-smoothing: antialiased; padding: 40px; display: grid; gap: 40px; justify-content: start; }
+
+  .art { position: relative; overflow: hidden; background: var(--bg); isolation: isolate; }
+  /* Atmosphere: a soft accent glow and the curtain (fine horizontal scan lines, fading out). */
+  .glow { position: absolute; border-radius: 50%; filter: blur(10px); z-index: -2; pointer-events: none; }
+  .curtain { position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: repeating-linear-gradient(180deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px); }
+  .bigmark { position: absolute; z-index: -1; pointer-events: none; }
+  .vignette { position: absolute; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(120% 90% at 30% 40%, transparent 55%, rgba(0,0,0,.55)); }
+
+  .brand { display: flex; align-items: center; gap: 12px; font-family: var(--display); font-weight: 600; letter-spacing: -.02em; }
+  .brand svg { display: block; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--acc); }
+  .eyebrow::before { content: ""; width: 22px; height: 1px; background: linear-gradient(90deg, transparent, var(--acc)); }
+  h1 { font-family: var(--display); font-weight: 600; letter-spacing: -.047em; line-height: 1.0;
+    background: linear-gradient(180deg, #FFFFFF 30%, #9EA3AD); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: .06em; }
+  h1 em { font-style: normal; background: linear-gradient(100deg, #C2B8FF, #8F96FF 55%, #6E79F3); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); line-height: 1.5; letter-spacing: -.005em; }
+  .sub b { color: var(--text); font-weight: 500; }
+
+  .step { position: relative; display: grid; grid-template-columns: 52px 1fr; gap: 18px; align-items: start; border-radius: 16px; border: 1px solid var(--line2);
+    background: linear-gradient(180deg, rgba(23,24,29,.94), rgba(14,15,18,.94)); box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 20px 40px -20px rgba(0,0,0,.6); }
+  .ico { width: 52px; height: 52px; border-radius: 13px; display: grid; place-items: center; background: var(--acc-bg); border: 1px solid rgba(143,150,255,.22); color: var(--acc); }
+  .ico svg { width: 24px; height: 24px; }
+  .num { font-family: var(--display); font-size: 13px; font-weight: 600; letter-spacing: .12em; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .step h3 { font-family: var(--display); font-weight: 600; letter-spacing: -.025em; line-height: 1.15; display: flex; align-items: center; gap: 10px; }
+  .step p { color: var(--muted); line-height: 1.45; }
+  .tag { font-family: var(--sans); font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--acc); background: var(--acc-bg); border: 1px solid rgba(143,150,255,.25); padding: 3px 8px; border-radius: 6px; }
+  .live { color: var(--up); background: rgba(63,207,142,.1); border-color: rgba(63,207,142,.25); }
+  .next { border-style: dashed; border-color: rgba(143,150,255,.32); background: linear-gradient(180deg, rgba(26,27,44,.95), rgba(15,16,22,.95)); }
+  .next::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: repeating-linear-gradient(180deg, rgba(143,150,255,.05) 0 1px, transparent 1px 4px); }
+
+  .foot { color: var(--faint); letter-spacing: .005em; }
+  .foot b { color: var(--muted); font-weight: 500; }
+  .chips { display: flex; gap: 12px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line2); background: rgba(255,255,255,.035); border-radius: 999px; padding: 10px 18px 10px 14px; font-size: 17px; color: var(--text); font-weight: 500; letter-spacing: -.01em; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--up); box-shadow: 0 0 12px var(--up); }
+  .chip i.n { background: var(--acc); box-shadow: 0 0 12px var(--acc); }
+  .chip span { color: var(--muted); font-weight: 400; }
+
+  .tickers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .tickers .lbl { font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin-right: 6px; }
+  .tickers.grid5 { display: grid; grid-template-columns: repeat(5, auto); justify-content: start; }
+  .tickers.grid5 .lbl { grid-column: 1 / -1; margin: 0 0 4px; }
+  .tk { text-align: center; font-family: var(--display); font-weight: 600; font-size: 15px; letter-spacing: .01em; color: #C9CCD2; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line2); background: rgba(255,255,255,.03); }
+  /* The private position card (illustration: values veiled). */
+  .pcard { position: absolute; border-radius: 18px; border: 1px solid var(--line2); background: linear-gradient(180deg, rgba(19,20,24,.92), rgba(13,14,17,.92)); box-shadow: 0 40px 80px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); backdrop-filter: blur(8px); }
+  .row { display: flex; justify-content: space-between; align-items: center; }
+  .veil { display: inline-block; height: 12px; border-radius: 4px; background: repeating-linear-gradient(90deg, rgba(143,150,255,.55) 0 2px, rgba(143,150,255,.18) 2px 4px); filter: blur(.3px); }
+</style>
+<style>
+  /* Review card: the shape of Velum's real review dialog (illustrative values). */
+  .rcard { position: absolute; border-radius: 20px; border: 1px solid var(--line3); background: linear-gradient(180deg, #15161B, #0D0E11);
+    box-shadow: 0 50px 100px -30px rgba(0,0,0,.85), 0 0 0 1px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.07); }
+  .rcard .rh { font-family: var(--display); font-weight: 600; letter-spacing: -.02em; display: flex; justify-content: space-between; align-items: center; }
+  .rcard .x { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line2); display: grid; place-items: center; color: var(--faint); font-size: 13px; }
+  .rlist { border: 1px solid var(--line2); border-radius: 12px; background: rgba(255,255,255,.015); }
+  .rrow { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); }
+  .rrow:last-child { border-bottom: 0; }
+  .rrow span { color: var(--muted); }
+  .rrow b { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+  .rrow b.up { color: var(--up); }
+  .ack { display: flex; gap: 10px; align-items: flex-start; border: 1px solid rgba(242,92,97,.22); background: rgba(242,92,97,.06); border-radius: 12px; color: var(--text); }
+  .ack i { flex: none; border-radius: 4px; background: var(--acc); display: grid; place-items: center; color: #0B0C10; font-style: normal; font-weight: 700; }
+  .rbtn { border-radius: 11px; background: #F4F5F6; color: #0B0C10; font-weight: 600; display: grid; place-items: center; letter-spacing: -.01em; }
+  .ghostcard { position: absolute; border-radius: 20px; border: 1px solid var(--line2); background: linear-gradient(180deg, rgba(21,22,27,.7), rgba(13,14,17,.7)); }
+  .bar { height: 10px; border-radius: 5px; background: rgba(255,255,255,.07); }
+  .meta { display: flex; align-items: center; gap: 14px; color: var(--muted); }
+  .meta .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--faint); }
+  .illus { position: absolute; color: var(--faint); letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- Reusable SVG symbols: the Curtain mark and step icons (original line icons). -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="veilg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C2B8FF"/><stop offset=".55" stop-color="#8F96FF"/><stop offset="1" stop-color="#6E79F3"/></linearGradient>
+    <pattern id="scan" width="64" height="4" patternUnits="userSpaceOnUse"><rect width="64" height="2" fill="#fff"/></pattern>
+    <mask id="curtain" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="35" fill="#fff"/><rect y="35" width="64" height="29" fill="url(#scan)"/></mask>
+    <pattern id="scanfine" width="64" height="1.5" patternUnits="userSpaceOnUse"><rect width="64" height=".75" fill="#fff"/></pattern>
+    <mask id="curtainfine" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="34" fill="#fff"/><rect y="34" width="64" height="30" fill="url(#scanfine)"/></mask>
+    <symbol id="markfine" viewBox="6 6 52 52"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#veilg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#curtainfine)"/></symbol>
+    <symbol id="mark" viewBox="6 6 52 52"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#veilg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#curtain)"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M16 13.5h.01"/></g></symbol>
+    <symbol id="i-spot" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/></g></symbol>
+    <symbol id="i-perps" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 3.5 3.5L20 7"/><path d="M15 7h5v5"/></g></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></g></symbol>
+  </defs>
+</svg>
+
+
+<!-- Cover 1500 x 600 (5:2): X Articles, Mirror -->
+<section class="art" id="cover" style="width:1500px;height:600px">
+  <div class="glow" style="width:1000px;height:1000px;right:-260px;top:-360px;background:radial-gradient(circle, rgba(143,150,255,.26), rgba(110,121,243,.07) 45%, transparent 68%)"></div>
+  <div class="glow" style="width:700px;height:700px;left:-300px;bottom:-460px;background:radial-gradient(circle, rgba(194,184,255,.08), transparent 65%)"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(60% 90% at 78% 30%, #000, transparent 75%);mask-image:radial-gradient(60% 90% at 78% 30%, #000, transparent 75%)"></div>
+  <svg class="bigmark" style="width:620px;height:620px;right:40px;top:-40px;opacity:.10"><use href="#markfine"/></svg>
+  <div class="vignette"></div>
+  <div style="position:absolute;left:76px;top:62px;bottom:56px;width:760px;display:flex;flex-direction:column">
+    <div class="brand" style="font-size:24px"><svg width="30" height="30"><use href="#mark"/></svg>Velum</div>
+    <div class="eyebrow" style="margin-top:58px">Article &middot; How Velum works</div>
+    <h1 style="font-size:82px;margin-top:16px">Introducing <em>Velum</em></h1>
+    <p class="sub" style="font-size:22px;margin-top:18px;max-width:640px"><b>Stock Tokens, traded from accounts you control.</b> How spot and perpetual trading work today, and what comes next.</p>
+    <div class="meta" style="margin-top:auto;font-size:15px"><b style="color:var(--text);font-weight:500">@veliumtrade</b><span class="dot"></span>5 min read<span class="dot"></span>Robinhood Chain</div>
+  </div>
+  
+  <div class="ghostcard" style="left:1037px;top:59px;width:400px;height:421px;transform:perspective(1400px) rotateY(-14deg) rotateX(5deg);opacity:.55">
+    <div style="padding:23.5px"><div class="bar" style="width:44%;height:11.8px"></div><div class="bar" style="width:80%;margin-top:25.5px"></div><div class="bar" style="width:64%;margin-top:13.7px"></div><div class="bar" style="width:72%;margin-top:13.7px"></div></div>
+  </div>
+  <div class="rcard" style="left:1000px;top:92px;width:400px;padding:21.6px;transform:perspective(1400px) rotateY(-14deg) rotateX(5deg)">
+    <div class="rh" style="font-size:18.6px">Long TSLA on Hyperliquid<span class="x">&#x2715;</span></div>
+    <div class="rlist" style="margin-top:15.7px"><div class="rrow" style="padding:10.8px 13.7px;font-size:14.2px"><span>Side</span><b class="up">Long</b></div><div class="rrow" style="padding:10.8px 13.7px;font-size:14.2px"><span>Size</span><b class="">2.604 TSLA</b></div><div class="rrow" style="padding:10.8px 13.7px;font-size:14.2px"><span>Leverage</span><b class="">3x isolated</b></div><div class="rrow" style="padding:10.8px 13.7px;font-size:14.2px"><span>Margin</span><b class="">334.26 USDC</b></div><div class="rrow" style="padding:10.8px 13.7px;font-size:14.2px"><span>Price limit</span><b class="">At most 385.84</b></div><div class="rrow" style="padding:10.8px 13.7px;font-size:14.2px"><span>Liquidation (est.)</span><b class="">262.52</b></div></div>
+    <div class="ack" style="margin-top:11.8px;padding:10.8px 12.7px;font-size:12.2px;line-height:1.45"><i style="width:14.7px;height:14.7px;font-size:9.8px;margin-top:1.0px">&#x2713;</i>I understand this is a real leveraged trade and that I can lose my margin.</div>
+    <div class="rbtn" style="margin-top:13.7px;height:43.1px;font-size:14.7px">Start trade</div>
+  </div>
+  <div class="illus" style="right:72px;bottom:28px;font-size:10.5px">Illustrative</div>
+</section>
+
+<!-- Wide 1600 x 900 (16:9): Medium, blog, link previews -->
+<section class="art" id="wide" style="width:1600px;height:900px">
+  <div class="glow" style="width:1200px;height:1200px;right:-360px;top:-420px;background:radial-gradient(circle, rgba(143,150,255,.26), rgba(110,121,243,.07) 45%, transparent 68%)"></div>
+  <div class="glow" style="width:800px;height:800px;left:-320px;bottom:-480px;background:radial-gradient(circle, rgba(194,184,255,.08), transparent 65%)"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(60% 80% at 78% 30%, #000, transparent 75%);mask-image:radial-gradient(60% 80% at 78% 30%, #000, transparent 75%)"></div>
+  <svg class="bigmark" style="width:860px;height:860px;right:-20px;top:-60px;opacity:.10"><use href="#markfine"/></svg>
+  <div class="vignette"></div>
+  <div style="position:absolute;left:88px;top:80px;bottom:76px;width:800px;display:flex;flex-direction:column">
+    <div class="brand" style="font-size:28px"><svg width="36" height="36"><use href="#mark"/></svg>Velum</div>
+    <div class="eyebrow" style="margin-top:120px">Article &middot; How Velum works</div>
+    <h1 style="font-size:104px;margin-top:20px">Introducing<br><em>Velum</em></h1>
+    <p class="sub" style="font-size:25px;margin-top:26px;max-width:720px"><b>Stock Tokens, traded from accounts you control.</b><br>How spot and perpetual trading work today,<br>and what comes next.</p>
+    <div class="meta" style="margin-top:auto;font-size:16px"><b style="color:var(--text);font-weight:500">@veliumtrade</b><span class="dot"></span>5 min read<span class="dot"></span>Robinhood Chain</div>
+  </div>
+  
+  <div class="ghostcard" style="left:1055px;top:160px;width:480px;height:507px;transform:perspective(1400px) rotateY(-14deg) rotateX(5deg);opacity:.55">
+    <div style="padding:28.3px"><div class="bar" style="width:44%;height:14.2px"></div><div class="bar" style="width:80%;margin-top:30.7px"></div><div class="bar" style="width:64%;margin-top:16.5px"></div><div class="bar" style="width:72%;margin-top:16.5px"></div></div>
+  </div>
+  <div class="rcard" style="left:1010px;top:200px;width:480px;padding:26.0px;transform:perspective(1400px) rotateY(-14deg) rotateX(5deg)">
+    <div class="rh" style="font-size:22.4px">Long TSLA on Hyperliquid<span class="x">&#x2715;</span></div>
+    <div class="rlist" style="margin-top:18.9px"><div class="rrow" style="padding:13.0px 16.5px;font-size:17.1px"><span>Side</span><b class="up">Long</b></div><div class="rrow" style="padding:13.0px 16.5px;font-size:17.1px"><span>Size</span><b class="">2.604 TSLA</b></div><div class="rrow" style="padding:13.0px 16.5px;font-size:17.1px"><span>Leverage</span><b class="">3x isolated</b></div><div class="rrow" style="padding:13.0px 16.5px;font-size:17.1px"><span>Margin</span><b class="">334.26 USDC</b></div><div class="rrow" style="padding:13.0px 16.5px;font-size:17.1px"><span>Price limit</span><b class="">At most 385.84</b></div><div class="rrow" style="padding:13.0px 16.5px;font-size:17.1px"><span>Liquidation (est.)</span><b class="">262.52</b></div></div>
+    <div class="ack" style="margin-top:14.2px;padding:13.0px 15.3px;font-size:14.8px;line-height:1.45"><i style="width:17.7px;height:17.7px;font-size:11.8px;margin-top:1.2px">&#x2713;</i>I understand this is a real leveraged trade and that I can lose my margin.</div>
+    <div class="rbtn" style="margin-top:16.5px;height:51.9px;font-size:17.7px">Start trade</div>
+  </div>
+  <div class="illus" style="right:88px;bottom:40px;font-size:11px">Illustrative</div>
+</section>
+
+</body>
+</html>

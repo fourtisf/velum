@@ -126,6 +126,9 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   `banners.html`, the copy deck (`how-velum-works-copy.md`) and ready-to-post X posts (`x-posts.md`: pinned post,
   launch thread, daily posts, reply templates, a two-week schedule, English and Bahasa Indonesia), each checked
   against X's 280-character count by `check-x-posts.cjs`.
+  A professional-tone set (`banners-pro.html`, `how-it-works-professional.md`) and an article, "Introducing Velum"
+  (`article-introducing-velum.md`, English and Bahasa Indonesia), with premium covers (`article-cover.html`: 5:2 for
+  X Articles, 16:9 for Medium, blogs and link previews). `node design/marketing/render-banners.cjs` renders them all.
 
 ## What changed: real perps through Hyperliquid (mainnet, November 16 2026)
 

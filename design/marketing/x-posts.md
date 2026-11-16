@@ -1,6 +1,6 @@
-# X posts for @veliumtrade
+# X posts for @velumtrade
 
-Ready to post on https://x.com/veliumtrade. Every post fits X's 280 characters (checked by `check-x-posts.cjs`, counting
+Ready to post on https://x.com/velumtrade. Every post fits X's 280 characters (checked by `check-x-posts.cjs`, counting
 `[link]` as a 23-character URL the way X does). Replace `[link]` with the site URL. Images are in this folder.
 
 Same rules as `how-velum-works-copy.md`: say "Stock Tokens"; spot and perps are **live**, privacy is **next**; no

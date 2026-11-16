@@ -119,8 +119,8 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
 
 ## What changed: Velum on X, marketing kit (November 16 2026)
 
-- **X on the site**: an X button (`@veliumtrade`) in the top navigation of every page (on phones in the app it stays
-  in the brand line under the page, so the nav keeps room for the wallet button) and a "Follow @veliumtrade" button
+- **X on the site**: an X button (`@velumtrade`) in the top navigation of every page (on phones in the app it stays
+  in the brand line under the page, so the nav keeps room for the wallet button) and a "Follow @velumtrade" button
   in the landing page's closing call to action. The footer link and the link metadata were already there.
 - **Marketing** (`design/marketing/`): "How Velum works" banners (16:9 post, 4:5 portrait, X header) rendered from
   `banners.html`, the copy deck (`how-velum-works-copy.md`) and ready-to-post X posts (`x-posts.md`: pinned post,

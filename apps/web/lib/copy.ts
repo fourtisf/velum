@@ -34,9 +34,9 @@ export const isDemoMetric = (flag?: boolean, mainnet = IS_MAINNET): boolean => !
 
 /** Velum's social profiles: the one place their URLs and handles live (footer, /app brand line, link metadata). */
 export const SOCIAL = {
-  /** Velum on X (owner-provided, spelled "velium"). */
-  x: 'https://x.com/veliumtrade',
-  xHandle: '@veliumtrade',
+  /** Velum on X (owner-provided; corrected to @velumtrade on 2026-11-16). */
+  x: 'https://x.com/velumtrade',
+  xHandle: '@velumtrade',
   xLabel: 'Velum on X',
 } as const;
 

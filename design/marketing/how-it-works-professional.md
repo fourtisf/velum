@@ -40,7 +40,7 @@ custodian.
 - Perpetuals up to 5x, isolated margin.
 - Full review before signing: size, margin, price limit, estimated liquidation price and fees.
 
-**Call to action:** Start trading · Read how it works · Follow @veliumtrade
+**Call to action:** Start trading · Read how it works · Follow @velumtrade
 
 **Disclaimer (long):** Velum is an independent project on Robinhood Chain and is not affiliated with Robinhood, Uniswap
 or Hyperliquid. Leveraged trading involves significant risk, including the loss of margin. Nothing here is investment

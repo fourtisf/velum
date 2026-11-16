@@ -313,7 +313,7 @@ describe('W-07 / DV-F3 / W-06: copy', () => {
 
 describe("Velum on X (owner request): one constant, the owner's exact URL", () => {
   it('URL, handle and accessible name', () => {
-    expect(SOCIAL).toEqual({ x: 'https://x.com/veliumtrade', xHandle: '@veliumtrade', xLabel: 'Velum on X' });
+    expect(SOCIAL).toEqual({ x: 'https://x.com/velumtrade', xHandle: '@velumtrade', xLabel: 'Velum on X' });
   });
 });
 

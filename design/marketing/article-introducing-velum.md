@@ -123,7 +123,7 @@ Hyperliquid's trading fee and funding.
 2. For spot, hold USDG and a little ETH for gas on Robinhood Chain.
 3. For perpetuals, deposit USDC on Hyperliquid with the same wallet, then open the Perps tab.
 
-Follow [@veliumtrade](https://x.com/veliumtrade) for updates on the privacy layer.
+Follow [@velumtrade](https://x.com/velumtrade) for updates on the privacy layer.
 
 ---
 
@@ -249,7 +249,7 @@ Anda membayar biaya trading Hyperliquid dan funding.
 2. Untuk spot, siapkan USDG dan sedikit ETH untuk gas di Robinhood Chain.
 3. Untuk perpetual, deposit USDC di Hyperliquid dengan wallet yang sama, lalu buka tab Perps.
 
-Ikuti [@veliumtrade](https://x.com/veliumtrade) untuk kabar terbaru tentang lapisan privasi.
+Ikuti [@velumtrade](https://x.com/velumtrade) untuk kabar terbaru tentang lapisan privasi.
 
 ---
 

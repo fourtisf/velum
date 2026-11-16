@@ -129,6 +129,11 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
   A professional-tone set (`banners-pro.html`, `how-it-works-professional.md`) and an article, "Introducing Velum"
   (`article-introducing-velum.md`, English and Bahasa Indonesia), with premium covers (`article-cover.html`: 5:2 for
   X Articles, 16:9 for Medium, blogs and link previews). `node design/marketing/render-banners.cjs` renders them all.
+- **Introduction video** (`design/marketing/video/velum-introduction-1080p.mp4`, 2:02, 1080p, no audio): logo intro,
+  then the real app with a test wallet: connect, buy and sell TSLA (real Uniswap swaps on a local mainnet fork),
+  a 3x long on the Hyperliquid perps ticket, P&L moving and a close in profit (the Hyperliquid account and its price
+  move are a labelled, illustrative model), the privacy layer as "in development", and an outro with the disclaimer.
+  Rebuild: `record-demo.cjs` (needs the mainnet web build, a fork and a local API, see its header), then `edit.cjs`.
 
 ## What changed: real perps through Hyperliquid (mainnet, November 16 2026)
 

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Velum video scenes</title>
+<!--
+  Title scenes of the Velum introduction video, rendered frame by frame by edit.cjs (each scene's animations are
+  paused and seeked to each frame's time). Brand tokens from design/tokens.css, the Curtain mark from
+  apps/web/components/icons.tsx, fonts from apps/web/app/fonts (OFL).
+-->
+<style>
+  @font-face { font-family: "Inter"; src: url("../../../apps/web/app/fonts/Inter-latin.woff2") format("woff2"); font-weight: 400 600; }
+  @font-face { font-family: "Inter Tight"; src: url("../../../apps/web/app/fonts/InterTight-latin.woff2") format("woff2"); font-weight: 500 600; }
+  :root { --bg: #08090B; --text: #F4F5F6; --muted: #8B9099; --faint: #5E626A; --acc: #8F96FF; --up: #3FCF8E; --line2: rgba(255,255,255,.12);
+    --sans: "Inter", system-ui, sans-serif; --display: "Inter Tight", "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased; font-feature-settings: "cv11","ss01","ss03"; }
+  .scene { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); isolation: isolate; display: none; }
+  .scene.on { display: block; }
+  .glow { position: absolute; border-radius: 50%; z-index: -2; }
+  .curtain { position: absolute; inset: 0; z-index: -1; background: repeating-linear-gradient(180deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px); }
+  .vig { position: absolute; inset: 0; z-index: -1; background: radial-gradient(110% 90% at 50% 45%, transparent 55%, rgba(0,0,0,.6)); }
+  .eyebrow { display: inline-flex; align-items: center; gap: 14px; font-size: 20px; font-weight: 600; letter-spacing: .2em; text-transform: uppercase; color: var(--acc); }
+  .eyebrow::before { content: ""; width: 34px; height: 1.5px; background: linear-gradient(90deg, transparent, var(--acc)); }
+  h1 { font-family: var(--display); font-weight: 600; letter-spacing: -.048em; line-height: 1.0; }
+  .grad { background: linear-gradient(180deg, #FFFFFF 30%, #9EA3AD); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: .08em; }
+  .acc { background: linear-gradient(100deg, #C2B8FF, #8F96FF 55%, #6E79F3); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: .08em; }
+  .line { display: block; overflow: hidden; }
+  .line > span { display: inline-block; }
+  .sub { color: var(--muted); letter-spacing: -.005em; line-height: 1.45; }
+  .chip { display: inline-flex; align-items: center; gap: 12px; border: 1px solid var(--line2); background: rgba(255,255,255,.04); border-radius: 999px; padding: 13px 24px 13px 18px; font-size: 23px; font-weight: 500; letter-spacing: -.01em; }
+  .chip i { width: 10px; height: 10px; border-radius: 50%; background: var(--up); box-shadow: 0 0 14px var(--up); }
+  .chip i.n { background: var(--acc); box-shadow: 0 0 14px var(--acc); }
+  .chip span { color: var(--muted); font-weight: 400; }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes rise { from { transform: translateY(105%); } to { transform: none; } }
+  @keyframes glowIn { from { opacity: 0; transform: scale(.75); } to { opacity: 1; transform: scale(1); } }
+  @keyframes draw { from { stroke-dashoffset: 120; } to { stroke-dashoffset: 0; } }
+  @keyframes pulse { 0% { filter: drop-shadow(0 0 0 rgba(143,150,255,0)); } 50% { filter: drop-shadow(0 0 60px rgba(143,150,255,.55)); } 100% { filter: drop-shadow(0 0 28px rgba(143,150,255,.3)); } }
+  @keyframes veil { from { transform: translateY(-101%); } to { transform: none; } }
+  @keyframes drift { from { transform: translateX(0); } to { transform: translateX(-40px); } }
+  .a { animation-fill-mode: both; animation-timing-function: cubic-bezier(.22,.8,.2,1); }
+
+  .card { border-radius: 24px; border: 1px solid rgba(255,255,255,.16); background: linear-gradient(180deg, #16171C, #0D0E11); box-shadow: 0 60px 120px -40px rgba(0,0,0,.9), inset 0 1px 0 rgba(255,255,255,.07); }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 20px 26px; border-bottom: 1px solid rgba(255,255,255,.07); font-size: 24px; }
+  .row:last-child { border-bottom: 0; }
+  .row span { color: var(--muted); }
+  .row b { font-weight: 500; font-variant-numeric: tabular-nums; position: relative; }
+  .row b .v { position: absolute; inset: -4px -10px; border-radius: 7px; overflow: hidden; }
+  .row b .v::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(180deg, #8F96FF 0 3px, #3B3F7A 3px 6px); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="vg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C2B8FF"/><stop offset=".55" stop-color="#8F96FF"/><stop offset="1" stop-color="#6E79F3"/></linearGradient>
+    <pattern id="sc" width="64" height="4" patternUnits="userSpaceOnUse"><rect width="64" height="2" fill="#fff"/></pattern>
+    <mask id="cm" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="35" fill="#fff"/><rect y="35" width="64" height="29" fill="url(#sc)"/></mask>
+  </defs>
+</svg>
+
+<!-- INTRO 5.5 s -->
+<section class="scene" id="intro" data-dur="5.5">
+  <div class="glow a" style="width:1400px;height:1400px;left:260px;top:-160px;background:radial-gradient(circle, rgba(143,150,255,.26), rgba(110,121,243,.07) 45%, transparent 68%);animation:glowIn 2s .1s both"></div>
+  <div class="curtain a" style="animation:fadeIn 1.6s .4s both;-webkit-mask-image:radial-gradient(50% 60% at 50% 45%, #000, transparent 75%);mask-image:radial-gradient(50% 60% at 50% 45%, #000, transparent 75%)"></div>
+  <div class="vig"></div>
+  <div style="position:absolute;left:0;right:0;top:330px;display:flex;justify-content:center;align-items:center;gap:40px">
+    <svg viewBox="6 6 52 52" width="190" height="190" class="a" style="animation:pulse 2.4s 1.5s both"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#vg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#cm)" stroke-dasharray="120" class="a" style="animation:draw 1.5s .35s both"/></svg>
+    <div class="a" style="font-family:var(--display);font-weight:600;font-size:150px;letter-spacing:-.05em;animation:fadeUp 1s 1.3s both">Velum</div>
+  </div>
+  <div style="position:absolute;left:0;right:0;top:640px;text-align:center"><div class="eyebrow a" style="animation:fadeUp .9s 2.1s both">Stock Tokens &middot; Robinhood Chain</div></div>
+</section>
+
+<!-- HEADLINE 5 s -->
+<section class="scene" id="headline" data-dur="5">
+  <div class="glow a" style="width:1300px;height:1300px;right:-380px;top:-460px;background:radial-gradient(circle, rgba(143,150,255,.24), rgba(110,121,243,.06) 45%, transparent 68%);animation:glowIn 2s 0s both"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(60% 70% at 85% 15%, #000, transparent 75%);mask-image:radial-gradient(60% 70% at 85% 15%, #000, transparent 75%)"></div>
+  <div class="vig"></div>
+  <div style="position:absolute;left:160px;top:250px;width:1600px">
+    <div class="eyebrow a" style="animation:fadeUp .8s .1s both">Introducing Velum</div>
+    <h1 style="font-size:150px;margin-top:34px">
+      <span class="line"><span class="grad a" style="animation:rise 1s .3s both">Trade Stock Tokens.</span></span>
+      <span class="line"><span class="acc a" style="animation:rise 1s .65s both">Keep full custody.</span></span>
+    </h1>
+    <p class="sub a" style="font-size:34px;margin-top:40px;animation:fadeUp .9s 1.4s both">Spot and perpetual trading for Stock Tokens, from accounts you control.</p>
+    <div style="display:flex;gap:16px;margin-top:44px">
+      <div class="chip a" style="animation:fadeUp .7s 2.0s both"><i></i>Spot <span>24/7</span></div>
+      <div class="chip a" style="animation:fadeUp .7s 2.15s both"><i></i>Perpetuals <span>up to 5x</span></div>
+      <div class="chip a" style="animation:fadeUp .7s 2.3s both"><i class="n"></i>Your keys <span>your funds</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- PRIVACY 5.5 s -->
+<section class="scene" id="privacy" data-dur="5.5">
+  <div class="glow a" style="width:1300px;height:1300px;right:-200px;top:-300px;background:radial-gradient(circle, rgba(143,150,255,.24), rgba(110,121,243,.06) 45%, transparent 68%);animation:glowIn 2s 0s both"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(55% 80% at 75% 45%, #000, transparent 75%);mask-image:radial-gradient(55% 80% at 75% 45%, #000, transparent 75%)"></div>
+  <div class="vig"></div>
+  <div style="position:absolute;left:160px;top:300px;width:860px">
+    <div class="eyebrow a" style="animation:fadeUp .8s .1s both">Next &middot; In development</div>
+    <h1 style="font-size:116px;margin-top:30px">
+      <span class="line"><span class="grad a" style="animation:rise 1s .3s both">Private</span></span>
+      <span class="line"><span class="acc a" style="animation:rise 1s .55s both">execution.</span></span>
+    </h1>
+    <p class="sub a" style="font-size:31px;margin-top:34px;animation:fadeUp .9s 1.2s both">Encrypted balances and positions, verified by zero-knowledge proofs. Your strategy stays yours.</p>
+  </div>
+  <div class="card a" style="position:absolute;left:1120px;top:300px;width:620px;animation:fadeUp 1s .5s both">
+    <div style="padding:26px 26px 6px;font-family:var(--display);font-weight:600;font-size:28px;letter-spacing:-.02em;display:flex;justify-content:space-between;align-items:center">TSLA position
+      <span style="font-family:var(--sans);font-size:15px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--acc);border:1px solid rgba(143,150,255,.3);background:rgba(143,150,255,.12);padding:6px 11px;border-radius:8px;animation:fadeIn .5s 3.3s both" class="a">Encrypted</span></div>
+    <div style="margin:16px 20px 22px;border:1px solid rgba(255,255,255,.1);border-radius:16px">
+      <div class="row"><span>Side</span><b>Long<span class="v"><span class="a" style="position:absolute;inset:0;background:repeating-linear-gradient(180deg,#8F96FF 0 3px,#2E3166 3px 6px);animation:veil .7s 2.2s both"></span></span></b></div>
+      <div class="row"><span>Size</span><b>2.600 TSLA<span class="v"><span class="a" style="position:absolute;inset:0;background:repeating-linear-gradient(180deg,#8F96FF 0 3px,#2E3166 3px 6px);animation:veil .7s 2.4s both"></span></span></b></div>
+      <div class="row"><span>Entry</span><b>384.61<span class="v"><span class="a" style="position:absolute;inset:0;background:repeating-linear-gradient(180deg,#8F96FF 0 3px,#2E3166 3px 6px);animation:veil .7s 2.6s both"></span></span></b></div>
+      <div class="row"><span>P&amp;L</span><b style="color:var(--up)">+$25.58<span class="v"><span class="a" style="position:absolute;inset:0;background:repeating-linear-gradient(180deg,#8F96FF 0 3px,#2E3166 3px 6px);animation:veil .7s 2.8s both"></span></span></b></div>
+    </div>
+  </div>
+</section>
+
+<!-- OUTRO 7 s -->
+<section class="scene" id="outro" data-dur="7">
+  <div class="glow a" style="width:1500px;height:1500px;left:210px;top:-420px;background:radial-gradient(circle, rgba(143,150,255,.24), rgba(110,121,243,.06) 45%, transparent 68%);animation:glowIn 2.2s 0s both"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(50% 55% at 50% 38%, #000, transparent 75%);mask-image:radial-gradient(50% 55% at 50% 38%, #000, transparent 75%)"></div>
+  <div class="vig"></div>
+  <div style="position:absolute;left:0;right:0;top:200px;display:flex;flex-direction:column;align-items:center;text-align:center">
+    <div class="a" style="display:flex;align-items:center;gap:22px;font-family:var(--display);font-weight:600;font-size:64px;letter-spacing:-.04em;animation:fadeUp .9s .1s both"><svg viewBox="6 6 52 52" width="78" height="78" style="filter:drop-shadow(0 0 30px rgba(143,150,255,.35))"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#vg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#cm)"/></svg>Velum</div>
+    <h1 style="font-size:104px;margin-top:56px">
+      <span class="line"><span class="grad a" style="animation:rise 1s .5s both">Trade Stock Tokens.</span></span>
+      <span class="line"><span class="acc a" style="animation:rise 1s .75s both">Keep full custody.</span></span>
+    </h1>
+    <div class="a" style="margin-top:56px;display:inline-flex;align-items:center;gap:14px;background:#F4F5F6;color:#0B0C10;font-weight:600;font-size:30px;letter-spacing:-.01em;padding:20px 34px;border-radius:16px;animation:fadeUp .8s 1.5s both">
+      <svg viewBox="0 0 24 24" width="26" height="26" fill="#0B0C10"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+      Follow @velumtrade
+    </div>
+    <p class="sub a" style="font-size:24px;margin-top:26px;animation:fadeUp .8s 1.8s both">Spot through Uniswap &middot; Perpetuals through Hyperliquid &middot; On Robinhood Chain</p>
+  </div>
+  <p class="a" style="position:absolute;left:200px;right:200px;bottom:56px;text-align:center;color:var(--faint);font-size:17px;line-height:1.55;animation:fadeIn 1s 2.2s both">Product demo recorded in a test environment; the perpetuals price move is illustrative. Velum is an independent project on Robinhood Chain and is not affiliated with Robinhood, Uniswap or Hyperliquid. Leveraged trading involves significant risk, including the loss of margin. Not investment advice.</p>
+</section>
+
+<!-- Caption overlay template (filled by edit.cjs, rendered on a transparent page) -->
+<section id="captpl" style="display:none;position:absolute;left:0;top:0;width:1920px;height:1080px;background:transparent">
+  <div style="position:absolute;left:56px;bottom:56px;max-width:820px;padding:24px 30px 26px;border-radius:22px;background:linear-gradient(180deg,rgba(19,20,26,.9),rgba(10,11,15,.93));border:1px solid rgba(255,255,255,.13);box-shadow:0 30px 70px -20px rgba(0,0,0,.85),inset 0 1px 0 rgba(255,255,255,.06)">
+    <div id="cap-e" style="font-size:16px;font-weight:600;letter-spacing:.17em;text-transform:uppercase;color:#8F96FF"></div>
+    <div id="cap-t" style="font-family:var(--display);font-weight:600;font-size:38px;letter-spacing:-.03em;color:#F4F5F6;margin-top:8px;line-height:1.12"></div>
+    <div id="cap-s" style="font-size:21px;color:#A3A8B2;margin-top:8px;line-height:1.45"></div>
+    <div style="display:flex;align-items:center;gap:9px;margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);font-size:13px;font-weight:600;letter-spacing:.13em;text-transform:uppercase;color:rgba(244,245,246,.5)"><span style="width:7px;height:7px;border-radius:50%;background:#F2C46B"></span>Product demo &middot; test environment</div>
+  </div>
+</section>
+<section id="tagtpl" style="display:none;position:absolute;left:0;top:0;width:1920px;height:1080px;background:transparent">
+  <div style="position:absolute;right:34px;bottom:30px;display:inline-flex;align-items:center;gap:10px;padding:9px 14px;border-radius:10px;background:rgba(8,9,11,.72);border:1px solid rgba(255,255,255,.1);font-size:14px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:rgba(244,245,246,.7)"><span style="width:7px;height:7px;border-radius:50%;background:#F2C46B"></span>Product demo &middot; test environment</div>
+</section>
+</body>
+</html>

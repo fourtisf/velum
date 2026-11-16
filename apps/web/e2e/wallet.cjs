@@ -36,7 +36,8 @@ const READS = new Set([
 ]);
 
 /**
- * opts.privateKey (throwaway), opts.rpc (anvil URL), opts.chainId (where the wallet starts), opts.anvilChainId.
+ * opts.privateKey (throwaway), opts.rpc (anvil URL), opts.chainId (where the wallet starts), opts.anvilChainId,
+ * opts.name (the name it announces; default "Test Wallet").
  * Returns the wallet state: { log, sent, typed (EIP-712 requests), wrongChainSends, setChain(id), rejectNext }.
  */
 async function installWallet(context, opts) {
@@ -115,7 +116,7 @@ async function installWallet(context, opts) {
         return err(4200, `Unsupported method ${method}`);
     }
   });
-  await context.addInitScript(INJECT({ uuid: '00000000-0000-4000-8000-000000000002', name: 'Test Wallet', icon: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E', rdns: 'test.velum.wallet' }));
+  await context.addInitScript(INJECT({ uuid: '00000000-0000-4000-8000-000000000002', name: opts.name ?? 'Test Wallet', icon: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E', rdns: 'test.velum.wallet' }));
   state.setChain = async (page, id) => {
     state.chainId = id;
     await page.evaluate((hex) => window.__walletEmit('chainChanged', hex), '0x' + id.toString(16));

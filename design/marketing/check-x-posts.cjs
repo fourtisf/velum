@@ -1,6 +1,6 @@
-// Checks every post in x-posts.md (the text between <!-- post --> and <!-- /post -->) against X's 280 limit, counted
+// Checks every post in x-posts.md, or the file given as the first argument (the text between <!-- post --> and <!-- /post -->) against X's 280 limit, counted
 // the way X counts: a URL ([link]) is 23 characters; code points in X's light ranges weigh 1, everything else
-// (emoji, arrows, most symbols, CJK) weighs 2. Run: node design/marketing/check-x-posts.cjs
+// (emoji, arrows, most symbols, CJK) weighs 2. Run: node design/marketing/check-x-posts.cjs [file.md]
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 
@@ -23,7 +23,8 @@ function xLength(text) {
   return n;
 }
 
-const md = readFileSync(path.join(__dirname, 'x-posts.md'), 'utf8');
+const file = process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, 'x-posts.md');
+const md = readFileSync(file, 'utf8');
 const posts = [...md.matchAll(/<!-- post -->\n([\s\S]*?)\n<!-- \/post -->/g)].map((m) => m[1]);
 let bad = 0;
 for (const p of posts) {

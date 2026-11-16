@@ -37,6 +37,13 @@ export interface MarketDTO {
   updatedAt?: number | string;
   /** The API marks protocol metrics (OI, funding) that are demo data. */
   demo?: boolean;
+  /** The change to show on `changeBasis` (docs/03): rolling 24 h while open, the last session or the DEX price vs the last close while closed. */
+  change?: string | null;
+  changeBasis?: '24h' | 'lastSession' | 'dexSinceClose' | string;
+  /** While closed (real prices): the last session's close and change. */
+  lastSession?: { tradingDay?: string; end?: number; close?: string | null; prevClose?: string | null; change?: string | null } | null;
+  /** While closed: the last on-chain DEX trade of the market's pool (display only, never tradable). */
+  dex?: { price?: string; change?: string | null; closeRef?: string | null; closeAt?: number | null; tradeAt?: number; block?: number; pool?: string; liquidityUsdg?: string } | null;
 }
 
 export interface PoolDTO {
@@ -141,8 +148,9 @@ export const api = {
     const r = await getAt<MarketDTO[]>('/v1/markets', signal);
     return { list: r.body, serverNow: r.serverNow };
   },
+  /** The session view (docs/03): closed time that only repeats the last price left out, 1D per trading day, DEX candles in closed periods. */
   candles: (symbol: string, tf: Timeframe, limit = 110, signal?: AbortSignal) =>
-    get<Candle[]>(`/v1/markets/${encodeURIComponent(symbol)}/candles?tf=${tf}&limit=${limit}`, signal),
+    get<Candle[]>(`/v1/markets/${encodeURIComponent(symbol)}/candles?tf=${tf}&limit=${limit}&sessions=true`, signal),
   pools: (signal?: AbortSignal) => get<PoolDTO[]>('/v1/pools', signal),
   stats: (signal?: AbortSignal) => get<StatsDTO>('/v1/stats', signal),
   /** Phase 3: the deployment the API serves (validated by lib/onchain/deployment.ts, never trusted as is). */

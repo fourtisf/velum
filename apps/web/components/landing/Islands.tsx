@@ -8,7 +8,7 @@ import { compact, fmt, sgnUsd } from '@/lib/format';
 import { useLivePrice, useMarkets, usePriceOrigin } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp } from '@/lib/store';
-import { Av, Chg, ComingSoon, Px, Spark } from '../ui';
+import { Av, Chg, ComingSoon, PerpsDash, Px, Spark } from '../ui';
 import { Terminal } from '../trade/Terminal';
 
 /** Live demo terminal: starts tilted, settles flat when 18% visible. */
@@ -124,7 +124,7 @@ export function LandingMarkets() {
             <td className="hide-sm">
               <Spark sym={s} />
             </td>
-            <td className="r num hide-sm">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.dash}</td>
+            <td className="r num hide-sm">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.real ? METRICS.dash : <PerpsDash inline />}</td>
             <td className="r">
               {m.status === 'live' ? (
                 <Link className="btn btn-dark btn-sm" href={`/app/trade/${s}?mode=perps`}>

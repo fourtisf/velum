@@ -35,5 +35,19 @@
   "comingSoon": [],
   "priceFeeds": {
     "_note": "Chainlink AggregatorV3 proxy per symbol. Only add addresses copied from Chainlink's official Robinhood Chain list."
+  },
+  "dexPools": {
+    "_note": "On-chain DEX pools shown (display only) while the stock market is closed: never a price for quotes, the oracle, the relayer or anything tradable. One Stock Token / USDG pool per market, chosen by liquidity alone; Velum names no DEX (owner rule of 2026-11-15). Every pool is a concentrated-liquidity pool emitting Swap(address,address,int256,int256,uint160,uint128,int24); the workers check token0()/token1() on start.",
+    "_verification": "2026-11-15, read-only over the public RPC: pools enumerated from the creation events of every factory and pool manager that traded Stock Tokens in the last 24 h; liquidity = USDG and token balances held by the pool, valued at the pool price; the deepest USDG pool per token, 24 h swap count in brackets. TSLA 444,535 (189), AMZN 418,019 (148), PLTR 115,608 (330), NVDA 1,922,052 (8,612), NFLX 98,258 (51), AMD 237,198 (840), AAPL 88,807 (459), META 203,218 (429), MSFT 322,419 (108), COIN 76,747 (3,748) USDG. Singleton-manager pools were left out: their liquidity is not held per pool and hooked pools can settle outside the Swap event.",
+    "TSLA": { "pool": "0xf4acdaeeb7022862a763c9b1b885e11191c889e3", "kind": "cl", "feePpm": 3000, "usdgIsToken0": false },
+    "AMZN": { "pool": "0x8ac92da74ab5f3b1d024dc1943ad7e15dc4179ef", "kind": "cl", "feePpm": 3000, "usdgIsToken0": false },
+    "PLTR": { "pool": "0x851680416a4f4e1c463d45171d61acddbc8554c0", "kind": "cl", "feePpm": 3000, "usdgIsToken0": true },
+    "NVDA": { "pool": "0xd4eb21209c4d6093f80b5b84f5c45cc093ea14a3", "kind": "cl", "feePpm": 500, "usdgIsToken0": true },
+    "NFLX": { "pool": "0x59895c0302f41aeaa129d2fa2442cec01e7ef45e", "kind": "cl", "feePpm": 3000, "usdgIsToken0": true },
+    "AMD": { "pool": "0x48d284a2a4d3dc1b3da08231fe44317e7e7aa51f", "kind": "cl", "feePpm": 3000, "usdgIsToken0": true },
+    "AAPL": { "pool": "0xaae0d815ee56e4092a5e5c2911e676fea50b2d6d", "kind": "cl", "feePpm": 500, "usdgIsToken0": true },
+    "META": { "pool": "0x09b8de3ded768478376d98fbbe80d09ae8e6cd3c", "kind": "cl", "feePpm": null, "usdgIsToken0": true },
+    "MSFT": { "pool": "0xeb60bcd1d920ad6e102690ccfc6fb488899e1510", "kind": "cl", "feePpm": 3000, "usdgIsToken0": true },
+    "COIN": { "pool": "0x3a6ec0aa6c702323414d449b5f60f4b742a82ded", "kind": "cl", "feePpm": 500, "usdgIsToken0": true }
   }
 }

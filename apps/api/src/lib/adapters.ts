@@ -1,15 +1,20 @@
 /** Production implementations of the readers in deps.ts (Redis, Prisma, viem). */
 import {
+  DEX_CACHE_KEY,
   MAX_CANDLES_BYTES,
+  MAX_DEX_SNAPSHOT_BYTES,
   MAX_HEARTBEAT_BYTES,
   MAX_SNAPSHOT_BYTES,
   REAL_PRICE_SOURCES,
   TIMEFRAME_MS,
   cacheKeys,
+  dexPoolsOf,
   parseCandleCache,
+  parseDexSnapshot,
   parseHeartbeat,
   parseSnapshot,
   type Candle,
+  type DexSnapshot,
   type MarketSnapshot,
   type Timeframe,
 } from '@velum/config';
@@ -78,6 +83,21 @@ export function redisCache(redis: Redis, opts: { mac: CacheMac; now?: () => numb
     async onchainStatus() {
       const raw = await read(() => redis.get(ONCHAIN_STATUS_KEY));
       return parseOnchainStatus(mac.open(ONCHAIN_STATUS_KEY, raw, MAX_ONCHAIN_STATUS_BYTES), now());
+    },
+    async dexSnapshots(symbols) {
+      const pools = dexPoolsOf(mac.network);
+      const wanted = symbols.filter((s) => pools[s]);
+      const out = new Map<string, DexSnapshot>();
+      if (!wanted.length) return out;
+      const keys = wanted.map((s) => DEX_CACHE_KEY(s));
+      const raws = await read(() => redis.mget(...keys));
+      const t = now();
+      raws.forEach((raw, i) => {
+        const s = wanted[i]!;
+        const snap = parseDexSnapshot(mac.open(keys[i]!, raw, MAX_DEX_SNAPSHOT_BYTES), s, pools[s]!.pool, t);
+        if (snap) out.set(s, snap);
+      });
+      return out;
     },
   };
 }
@@ -157,6 +177,38 @@ export function prismaDb(prisma: PrismaClient): DbReader {
         take: limit,
       });
       return rows.reverse().map((r): Candle => ({ t: r.t.getTime(), o: dec(r.o), h: dec(r.h), l: dec(r.l), c: dec(r.c) }));
+    },
+    async candlesBetween(symbol, tf, since, until, query = {}, max = 6000) {
+      const rows = await prisma.candle.findMany({
+        where: { tf, market: { symbol }, t: { gte: new Date(since), lte: new Date(until) }, ...(query.realOnly ? { source: { in: [...REAL_PRICE_SOURCES] } } : {}) },
+        orderBy: { t: 'desc' },
+        take: max,
+        select: { t: true, o: true, h: true, l: true, c: true },
+      });
+      return rows.reverse().map((r): Candle => ({ t: r.t.getTime(), o: dec(r.o), h: dec(r.h), l: dec(r.l), c: dec(r.c) }));
+    },
+    async closesAt(bucketTimes) {
+      const out = new Map<string, Map<number, string>>();
+      if (!bucketTimes.length) return out;
+      const rows = await prisma.candle.findMany({
+        where: { tf: '15m', t: { in: bucketTimes.map((t) => new Date(t)) }, source: { in: [...REAL_PRICE_SOURCES] } },
+        select: { t: true, c: true, market: { select: { symbol: true } } },
+      });
+      for (const r of rows) {
+        const m = out.get(r.market.symbol) ?? new Map<number, string>();
+        m.set(r.t.getTime(), dec(r.c));
+        out.set(r.market.symbol, m);
+      }
+      return out;
+    },
+    async dexCandles(symbol, tf, since, until) {
+      const rows = await prisma.dexCandle.findMany({
+        where: { symbol, tf, t: { gte: new Date(since), lte: new Date(until) } },
+        orderBy: { t: 'asc' },
+        take: 2000,
+        select: { t: true, o: true, h: true, l: true, c: true },
+      });
+      return rows.map((r): Candle => ({ t: r.t.getTime(), o: dec(r.o), h: dec(r.h), l: dec(r.l), c: dec(r.c) }));
     },
     async publishedPools() {
       // Latest published row per pool, read in SQL: one index probe per pool on the

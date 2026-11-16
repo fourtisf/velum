@@ -77,6 +77,34 @@ export const CLOSED = {
   hint: 'The stock market is closed. Trading resumes when it opens.',
 } as const;
 
+/**
+ * Closed-market display (docs/03 changeBasis, dex). The change of the last session replaces the frozen rolling
+ * 24 h; the on-chain DEX price is display only (Velum names no DEX: the source is "On-chain DEX" and the pool
+ * address). Trading stays closed: the oracle and every trade use official quotes only.
+ */
+export const SESSION = {
+  /** The small muted label after a last-session change: "−1.24% · last session". */
+  lastSession: 'last session',
+  /** The small muted label after the DEX change: "+3.95% · since close". */
+  sinceClose: 'since close',
+  /** The change stat's label: the basis then follows the value as the small muted label. */
+  statLabel: (basis: '24h' | 'lastSession' | 'dex') => (basis === '24h' ? '24h change' : 'Change'),
+  dexLabel: 'On-chain',
+  dexTag: 'DEX',
+  dexStat: 'On-chain · DEX',
+  dexLegend: 'On-chain DEX trades while the market is closed',
+  /** The tooltip lines of a DEX price: the pool (linked to the explorer), its liquidity, the trade time. */
+  dexTipTitle: 'On-chain DEX price, display only',
+  dexTipPool: 'Pool',
+  dexTipLiquidity: 'Liquidity',
+  dexTipTrade: 'Last trade',
+  dexTipClose: 'At the close',
+  dexTipNote: 'Trading stays closed: Velum uses official quotes only.',
+} as const;
+
+/** Mark, funding and open interest have no source on mainnet until perps launch: a dash with this hint. */
+export const PERPS_HINT = 'Live when perps launch';
+
 export const COPY = {
   chainLabel: ENV.localRpc ? 'the local test chain' : CHAIN.label,
   heroBadge: IS_MAINNET ? 'Demo' : 'Testnet',

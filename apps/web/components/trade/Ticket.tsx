@@ -9,7 +9,7 @@ import { useLivePrice, useMarket, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 import { CLOSED, COPY, METRICS, P, UI } from '@/lib/copy';
 import { I } from '../icons';
-import { DemoTag } from '../ui';
+import { DemoTag, PerpsDash } from '../ui';
 import { OnchainTicket } from '../onchain/lazy';
 import { useTradeMode } from './mode';
 import { useOnchain } from '@/lib/onchain/deployment';
@@ -133,7 +133,7 @@ function PerpsTicket({ sym }: { sym: string }) {
           <span>
             Funding{METRICS.real ? <DemoTag flag={m.demo} /> : null}
           </span>
-          <b>{METRICS.real && c.funding !== null ? `${fmt(c.funding, 4)}% / h` : METRICS.dash}</b>
+          <b>{METRICS.real && c.funding !== null ? `${fmt(c.funding, 4)}% / h` : METRICS.real ? METRICS.dash : <PerpsDash />}</b>
         </div>
       </div>
       <SubmitButton b={b} />

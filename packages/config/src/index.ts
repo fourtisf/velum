@@ -207,5 +207,6 @@ export function explorerTxUrl(hash: string): string {
 }
 
 export * from './cache';
+export * from './dex';
 export * from './redis-url';
 export * from './session';

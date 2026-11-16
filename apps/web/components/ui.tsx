@@ -1,10 +1,10 @@
 'use client';
-import { getMarket } from '@velum/config';
-import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
-import { CLOSED, isDemoMetric } from '@/lib/copy';
-import { fmt, pct, usd } from '@/lib/format';
+import { explorerAddressUrl, getMarket } from '@velum/config';
+import { useEffect, useId, useRef, type ElementType, type ReactNode, type SyntheticEvent } from 'react';
+import { CLOSED, PERPS_HINT, SESSION, isDemoMetric } from '@/lib/copy';
+import { ago, compact, fmt, pct, shortH, usd } from '@/lib/format';
 import { LOGOS } from '@/lib/logos';
-import { useMarket, usePriceState } from '@/lib/markets';
+import { changeView, useMarket, useMarkets, usePriceState, type DexDisplay, type LiveMarket } from '@/lib/markets';
 
 /** Company logo on a brand-colour disc (lib/logos.ts); USDG, ETH and unknown tokens use the neutral initial. */
 export function Av({ sym, size = '' }: { sym: string; size?: '' | 'sm' | 'lg' }) {
@@ -63,12 +63,144 @@ export function Px({ sym, raw, as, className }: { sym: string; raw?: boolean; as
   );
 }
 
-/** 24h change in percent (prototype data-chg). */
-export function Chg({ sym, as, className = '' }: { sym: string; as?: ElementType; className?: string }) {
+/**
+ * Change in percent (prototype data-chg): the rolling 24 h while the market is open, exactly as before. While it is
+ * closed, the last session's change with a small muted "· last session", or with `dex` and an on-chain DEX price,
+ * the DEX change since the last close ("· since close"). A change the history cannot give is a dash.
+ */
+export function Chg({ sym, as, className = '', dex = false, compact = false }: { sym: string; as?: ElementType; className?: string; dex?: boolean; compact?: boolean }) {
+  return <ChgText m={useMarket(sym)} as={as} className={className} dex={dex} compact={compact} />;
+}
+
+/** Chg for a given market (pure presentation). `compact`: no label after a DEX change (the strip's DEX tag sits next to it). */
+export function ChgText({ m, as, className = '', dex = false, compact = false }: { m: LiveMarket; as?: ElementType; className?: string; dex?: boolean; compact?: boolean }) {
   const Tag = (as ?? 'span') as ElementType;
-  const m = useMarket(sym);
   if (m.noData) return <Tag className={className}>—</Tag>;
-  return <Tag className={`${className} ${m.chg >= 0 ? 'up' : 'down'}`.trim()}>{pct(m.chg)}</Tag>;
+  const v = changeView(m, dex);
+  const label = v.basis === '24h' || (compact && v.basis === 'dex') ? null : <span className="chg-basis">· {v.basis === 'dex' ? SESSION.sinceClose : SESSION.lastSession}</span>;
+  if (v.value === null)
+    return (
+      <Tag className={className}>
+        —{label}
+      </Tag>
+    );
+  return (
+    <Tag className={`${className} ${v.value >= 0 ? 'up' : 'down'}`.trim()}>
+      {pct(v.value)}
+      {label}
+    </Tag>
+  );
+}
+
+/** The change column's header: "24h" as before; "Change" while the markets show the last session's change (closed). */
+export function ChgHeader() {
+  const closed = useMarkets((s) => Object.values(s.bySym).some((m) => !m.noData && m.chgBasis === 'lastSession'));
+  return <>{closed ? 'Change' : '24h'}</>;
+}
+
+/**
+ * A dash for a protocol metric with no source yet (mainnet: mark, funding, open interest), with the hint "Live when
+ * perps launch": a keyboard-focusable tooltip (aria-describedby), or in table cells (`inline`) a native title and
+ * visually hidden text, so a table does not gain a tab stop per cell. No layout change: the tooltip floats.
+ */
+export function PerpsDash({ inline = false }: { inline?: boolean }) {
+  const id = useId();
+  if (inline)
+    return (
+      <span title={PERPS_HINT}>
+        —<span className="sr"> {PERPS_HINT}</span>
+      </span>
+    );
+  return (
+    <span className="tip" onMouseEnter={fitTip} onFocus={fitTip}>
+      <span className="tip-dash" tabIndex={0} aria-describedby={id}>
+        —
+      </span>
+      <span role="tooltip" id={id} className="tip-box">
+        {PERPS_HINT}
+      </span>
+    </span>
+  );
+}
+
+/** Keeps an open tooltip inside the viewport: anchored to the trigger's right edge when it would stick out. */
+function fitTip(e: SyntheticEvent<HTMLElement>) {
+  const box = e.currentTarget.querySelector<HTMLElement>('.tip-box');
+  if (!box) return;
+  box.classList.remove('tip-r');
+  if (box.getBoundingClientRect().right > window.innerWidth - 8) box.classList.add('tip-r');
+}
+
+/** "On-chain · DEX" in the strip chip: the DEX price, its pool and liquidity in the chip's title (the chip is a button). */
+export function DexChip({ sym }: { sym: string }) {
+  const m = useMarket(sym);
+  if (m.noData || !m.dex) return null;
+  const tip = dexTipText(m.dex);
+  return (
+    <span className="dexpx num" title={tip}>
+      <span className="dex-tag">{SESSION.dexTag}</span> {fmt(m.dex.price)}
+      <span className="sr">, {tip}</span>
+    </span>
+  );
+}
+
+/** Plain-text tooltip of a DEX price: source, pool address, liquidity, trade time. */
+export function dexTipText(d: DexDisplay, now = Date.now()): string {
+  return [
+    SESSION.dexTipTitle,
+    `${SESSION.dexTipPool} ${d.pool}`,
+    d.liquidity !== null ? `${SESSION.dexTipLiquidity} ${compact(d.liquidity)}` : null,
+    d.tradeAt !== null ? `${SESSION.dexTipTrade} ${ago(d.tradeAt, now).toLowerCase()}` : null,
+    d.closeRef !== null ? `${SESSION.dexTipClose} ${fmt(d.closeRef)}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * The on-chain DEX price in the trade stats, with a tooltip (hover or keyboard focus) holding the pool address linked
+ * to the explorer, its liquidity and the last trade time. Display only; the official last quote stays the price.
+ */
+export function DexStat({ sym }: { sym: string }) {
+  const id = useId();
+  const m = useMarket(sym);
+  if (m.noData || !m.dex) return null;
+  const d = m.dex;
+  return (
+    <div className="dex-stat">
+      <small>{SESSION.dexStat}</small>
+      <span className="tip" onMouseEnter={fitTip} onFocus={fitTip}>
+        <button type="button" className="tip-btn num" aria-describedby={id}>
+          {fmt(d.price)}
+        </button>
+        <span id={id} className="tip-box tip-wide">
+          <span className="tip-title">{SESSION.dexTipTitle}</span>
+          <span>
+            {SESSION.dexTipPool}{' '}
+            <a className="lnk mono" href={explorerAddressUrl(d.pool)} target="_blank" rel="noopener noreferrer">
+              {shortH(d.pool)}
+            </a>
+          </span>
+          {d.liquidity !== null ? (
+            <span>
+              {SESSION.dexTipLiquidity} {compact(d.liquidity)}
+            </span>
+          ) : null}
+          {d.tradeAt !== null ? (
+            <span>
+              {SESSION.dexTipTrade} {ago(d.tradeAt).toLowerCase()}
+            </span>
+          ) : null}
+          {d.closeRef !== null ? (
+            <span>
+              {SESSION.dexTipClose} {fmt(d.closeRef)}
+            </span>
+          ) : null}
+          <span>{SESSION.dexTipNote}</span>
+        </span>
+      </span>
+    </div>
+  );
 }
 
 export function sparkPath(arr: number[], w: number, h: number): string {

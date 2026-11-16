@@ -1,4 +1,4 @@
-import type { Candle, CandleCache, MarketSnapshot, Timeframe } from '@velum/config';
+import type { Candle, CandleCache, DexSnapshot, DexTimeframe, MarketSnapshot, Timeframe } from '@velum/config';
 import type { OnchainStatus, SignerStatus } from '@velum/config/src/onchain';
 import type { ApiEnv } from '../env';
 import type { DeploymentSource, OnchainReader } from './onchain';
@@ -15,6 +15,8 @@ export interface CacheReader {
   heartbeat(worker: string): Promise<number | null>;
   /** The on-chain workers' status (Phase 3), authenticated and validated, or null (off, or not written). */
   onchainStatus?(): Promise<OnchainStatus | null>;
+  /** Display-only DEX snapshots of the configured pools (packages/config/src/dex.ts), authenticated and validated. */
+  dexSnapshots?(symbols: readonly string[]): Promise<Map<string, DexSnapshot>>;
 }
 
 export interface PublishedPool {
@@ -39,6 +41,12 @@ export interface DbReader {
   ping(): Promise<boolean>;
   candles(symbol: string, tf: Timeframe, limit: number, query?: CandleQuery): Promise<Candle[]>;
   publishedPools(): Promise<PublishedPool[]>;
+  /** Candles with since <= t <= until, oldest first (at most `max`), with the same source rules as candles(). */
+  candlesBetween?(symbol: string, tf: Timeframe, since: number, until: number, query?: Pick<CandleQuery, 'realOnly'>, max?: number): Promise<Candle[]>;
+  /** Closes of the 15-minute candles of real source at the given bucket times, per symbol: symbol -> t -> close. */
+  closesAt?(bucketTimes: readonly number[]): Promise<Map<string, Map<number, string>>>;
+  /** Display-only DEX candles of a market (DexCandle) with since <= t <= until, oldest first. */
+  dexCandles?(symbol: string, tf: DexTimeframe, since: number, until: number): Promise<Candle[]>;
 }
 
 export interface ChainReader {

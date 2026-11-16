@@ -15,6 +15,8 @@ import { loadEnv } from './env';
 import { CANDLE_JOB_OPTIONS, candleJobFromTicks, runCandles, writeCandleCaches } from './jobs/candles';
 import { runPriceRelay } from './jobs/price-relay';
 import { runPrune } from './jobs/prune';
+import { rebuildCandlesFromTicks } from './jobs/rebuild';
+import { startDex } from './dex';
 import { startChainCheck } from './lib/chain';
 import { startLiveness } from './lib/liveness';
 import { createLogger } from './lib/log';
@@ -160,13 +162,52 @@ async function main(): Promise<void> {
   // Older candles of unknown source (written by a release before the source tag existed) are tagged now,
   // market by market with a timeout, then the in-memory series and candle caches are reloaded so charts
   // show that history (audit N-1, F-1). A failure leaves them unknown until the next start.
+  // Then candles of unknown source that their ticks cannot prove as built (older builders did not fold every tick
+  // into every bucket) are rebuilt from those ticks where all are of one real kind (jobs/rebuild.ts), and again
+  // every hour for buckets that were still open. Demo, mixed and tickless buckets stay as they are (audit F-4).
+  const rebuiltDays = new Set<string>();
+  const rebuildHistory = () =>
+    withHistory(async () => {
+      const rebuilt = env.priceSource === 'demo' ? 0 : await rebuildCandlesFromTicks(prisma, log, { timeoutMs: 30_000, budgetMs: 300_000, done: rebuiltDays });
+      if (rebuilt > 0) {
+        ctx.series = await loadSeries(prisma, marketIds, env.priceSource);
+        await writeCandleCaches(redis, mac, env.priceSource, ctx.series);
+      }
+    }).catch((err: unknown) => log.warn('background candle rebuild failed; tried again within the hour', { err: redact(String(err)) }));
   void withHistory(async () => {
     const tagged = await retagUnknownCandles(prisma, log, { timeoutMs: 120_000 });
     if (tagged > 0) {
       ctx.series = await loadSeries(prisma, marketIds, env.priceSource);
       await writeCandleCaches(redis, mac, env.priceSource, ctx.series);
     }
-  }).catch((err: unknown) => log.warn('background candle tagging failed; tried again on the next start', { err: redact(String(err)) }));
+  })
+    .catch((err: unknown) => log.warn('background candle tagging failed; tried again on the next start', { err: redact(String(err)) }))
+    .then(rebuildHistory);
+  const rebuildTimer = setInterval(() => void rebuildHistory(), 3_600_000);
+  rebuildTimer.unref();
+
+  // Display-only on-chain DEX prices (src/dex, mainnet pools in packages/config): shown while the stock market is
+  // closed, never a price source. Reads the official snapshot only to bound DEX trades. Started in the background
+  // after liveness, so a slow RPC never holds up the price and candle workers.
+  let stopDex: (() => void) | null = null;
+  if (env.dexPrices) {
+    void startDex({
+      network: env.network,
+      rpcUrl: env.rpcUrl,
+      chainId: env.chainId,
+      pollMs: env.dexPollMs ?? 15_000,
+      backfillHours: env.dexBackfillHours ?? 96,
+      retentionDays: env.tickRetentionDays,
+      prisma,
+      redis,
+      mac,
+      log,
+      quote: (symbol) => ctx.snapshots.get(symbol)?.price ?? null,
+      signal: stop.signal,
+    })
+      .then((h) => (stopDex = h))
+      .catch((err: unknown) => log.warn('DEX indexer not started', { err: redact(String(err)) }));
+  }
 
   // Phase 3: the indexer, only with ONCHAIN_WORKERS=true and a deployment file for this chain, and only on Velum's own
   // Redis over a unix socket (audit M-3). Started after liveness and without any RPC call, so the chain can never hold
@@ -200,6 +241,8 @@ async function main(): Promise<void> {
     stop.abort();
     log.info('shutting down', { signal });
     setTimeout(() => process.exit(1), 10_000).unref();
+    clearInterval(rebuildTimer);
+    stopDex?.();
     stopLiveness();
     stopDisabledStatus?.();
     await onchain?.stop().catch(() => undefined);

@@ -10,7 +10,7 @@ import { useOnchain } from '@/lib/onchain/deployment';
 import { useApp } from '@/lib/store';
 import { COPY, METRICS, ONCHAIN } from '@/lib/copy';
 import { I } from '../icons';
-import { Av, Chg, ComingSoon, DemoTag, Px, Spark } from '../ui';
+import { Av, Chg, ChgHeader, ComingSoon, DemoTag, PerpsDash, Px, Spark } from '../ui';
 
 export function MarketsView() {
   const order = useMarkets((s) => s.order);
@@ -60,7 +60,7 @@ export function MarketsView() {
         <div className="card stat">
           <small>Open interest</small>
           <b className="num">
-            {METRICS.real ? compact(apiMetric(stats.data?.openInterest) ?? oi) : METRICS.dash}
+            {METRICS.real ? compact(apiMetric(stats.data?.openInterest) ?? oi) : <PerpsDash inline />}
             {METRICS.real ? <DemoTag flag={stats.data?.demo} /> : null}
           </b>
         </div>
@@ -85,7 +85,9 @@ export function MarketsView() {
             <tr>
               <th>Market</th>
               <th className="r">Price</th>
-              <th className="r">24h</th>
+              <th className="r">
+                <ChgHeader />
+              </th>
               <th className="hide-md">Last hour</th>
               <th className="r hide-md">
                 Funding / h{METRICS.real ? <DemoTag /> : null}
@@ -118,8 +120,8 @@ export function MarketsView() {
                   <td className="hide-md">
                     <Spark sym={s} />
                   </td>
-                  <td className="r num hide-md">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.dash}</td>
-                  <td className="r num hide-md">{METRICS.real && m.oi !== null ? usd(m.oi, 0) : METRICS.dash}</td>
+                  <td className="r num hide-md">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.real ? METRICS.dash : <PerpsDash inline />}</td>
+                  <td className="r num hide-md">{METRICS.real && m.oi !== null ? usd(m.oi, 0) : METRICS.real ? METRICS.dash : <PerpsDash inline />}</td>
                   <td className="r num hide-sm">{m.maxLev}×</td>
                   <td className="r">
                     {m.status === 'live' ? (

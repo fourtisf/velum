@@ -48,6 +48,28 @@ export interface LiveMarket {
   demo: boolean;
   /** The stock market is closed (API staleReason marketClosed): the last price is shown, marked closed, never tradable on mainnet. */
   closed: boolean;
+  /** What the change shown means: the rolling 24 h `chg` ('24h'), or, while closed, the last session's change `sessionChg`. */
+  chgBasis: '24h' | 'lastSession';
+  /** While closed: the last session's change in percent (close vs the previous close); null when history lacks a close (a dash). */
+  sessionChg: number | null;
+  /** While closed: the last on-chain DEX trade of the market's pool, display only (never a price money logic reads). */
+  dex: DexDisplay | null;
+}
+
+/** An on-chain DEX price shown while the market is closed (docs/03 `dex`). Display only. */
+export interface DexDisplay {
+  price: Wad;
+  priceNum: number;
+  /** vs the pool's own price at the last session's close, percent; null when it did not trade near the close. */
+  chg: number | null;
+  /** The pool's price at the last session's close (what `chg` compares with), null when unknown. */
+  closeRef: number | null;
+  /** The pool contract (Velum names no DEX). */
+  pool: string;
+  /** USDG held by the pool, null when unreadable. */
+  liquidity: number | null;
+  /** Block time of the trade (ms), null when unreadable. */
+  tradeAt: number | null;
 }
 
 export type FeedSource = 'seed' | 'api' | 'local';
@@ -211,6 +233,50 @@ export const apiSpark = (v: unknown): number[] =>
 
 /** 24h change in percent from the API (display only), or NaN when malformed. */
 const apiChange = (v: unknown): number => (typeof v === 'string' && /^-?\d{1,6}(\.\d{1,18})?$/.test(v) ? Number(v) : Number.NaN);
+/** A nullable change from the API: a number, or null when absent, null or malformed (shown as a dash). */
+const apiChangeOrNull = (v: unknown): number | null => {
+  const n = apiChange(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * The change a market shows and on what basis (pure, display only): with `withDex` and an on-chain DEX price, the DEX
+ * change since the last close; while closed, the last session's change (null: a dash); otherwise the rolling 24 h.
+ */
+export function changeView(m: Pick<LiveMarket, 'chg' | 'chgBasis' | 'sessionChg' | 'dex'>, withDex = false): { value: number | null; basis: '24h' | 'lastSession' | 'dex' } {
+  if (withDex && m.dex) return { value: m.dex.chg, basis: 'dex' };
+  if (m.chgBasis === 'lastSession') return { value: m.sessionChg, basis: 'lastSession' };
+  return { value: m.chg, basis: '24h' };
+}
+
+/**
+ * The closed-market fields of one API market (pure, display only): while the market is closed and the API reports
+ * the last session, the change shown is that session's change (a dash when history lacks a close, never the frozen
+ * rolling 24 h); a valid `dex` block becomes the on-chain DEX price shown next to the last official quote. While
+ * open (or for simulated prices, which carry no lastSession) nothing changes: the rolling 24 h.
+ */
+export function readClosedFields(d: MarketDTO, closed: boolean): Pick<LiveMarket, 'chgBasis' | 'sessionChg' | 'dex'> {
+  const ls = d.lastSession;
+  if (!closed || !ls || typeof ls !== 'object') return { chgBasis: '24h', sessionChg: null, dex: null };
+  const x = d.dex;
+  const price = x && typeof x === 'object' ? apiPrice(x.price) : null;
+  const pool = x && typeof x.pool === 'string' && ADDRESS_RE.test(x.pool) ? x.pool : null;
+  const liq = x ? apiMetric(x.liquidityUsdg) : null;
+  const closeRef = x ? apiPrice(x.closeRef) : null;
+  const dex: DexDisplay | null =
+    price !== null && pool !== null
+      ? {
+          price,
+          priceNum: toNumber(price),
+          chg: apiChangeOrNull(x!.change),
+          closeRef: closeRef === null ? null : toNumber(closeRef),
+          pool,
+          liquidity: liq !== null && liq >= 0 ? liq : null,
+          tradeAt: apiTime(x!.tradeAt),
+        }
+      : null;
+  return { chgBasis: 'lastSession', sessionChg: apiChangeOrNull(ls.change), dex };
+}
 
 function seedMarkets(): Record<string, LiveMarket> {
   const out: Record<string, LiveMarket> = {};
@@ -237,6 +303,9 @@ function seedMarkets(): Record<string, LiveMarket> {
       noData: IS_MAINNET,
       demo: true,
       closed: false,
+      chgBasis: '24h',
+      sessionChg: null,
+      dex: null,
     };
   }
   return out;
@@ -322,6 +391,7 @@ function applyApi(list: unknown[], now: number, serverNow: number | null) {
         stale: r.stale,
         demo: d.demo === true,
         closed: r.closed,
+        ...readClosedFields(d, r.closed),
       };
       if (r.noData || r.price === null) {
         // No usable price: never store what the API sent (it may be the config seed or garbage), nor

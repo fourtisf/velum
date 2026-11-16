@@ -128,3 +128,174 @@ export function usEquitySession(t: number): SessionState {
   if (nyseHolidays(d.getUTCFullYear()).has(tradingDay)) return { open: false, reason: 'holiday', tradingDay };
   return { open: true, reason: null, tradingDay };
 }
+
+/* ---------- Sessions (closed-market display: last-session change, chart session breaks) ---------- */
+
+/** A trading day's session: [start, end) in Unix ms, start = 20:00 ET on the previous calendar day, end = 20:00 ET on the day. */
+export interface SessionRef {
+  /** YYYY-MM-DD (US Eastern) */
+  tradingDay: string;
+  start: number;
+  end: number;
+}
+
+const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const dayParts = (day: string): [number, number, number] => {
+  const m = DAY_RE.exec(day);
+  if (!m) throw new Error(`not a YYYY-MM-DD day: ${day}`);
+  return [Number(m[1]), Number(m[2]) - 1, Number(m[3])];
+};
+
+/** `day` moved by `n` calendar days (YYYY-MM-DD). */
+export function shiftDay(day: string, n: number): string {
+  const [y, m, d] = dayParts(day);
+  return iso(utcDay(y, m, d) + n * DAY);
+}
+
+/** Midnight UTC of calendar day `day` (the `t` of that day's 1D candle). */
+export function dayStartUtc(day: string): number {
+  const [y, m, d] = dayParts(day);
+  return utcDay(y, m, d);
+}
+
+/** Whether `day` (YYYY-MM-DD) is a trading day: a weekday that is not an NYSE holiday. */
+export function isTradingDay(day: string): boolean {
+  const [y, m, d] = dayParts(day);
+  const wd = new Date(utcDay(y, m, d)).getUTCDay();
+  return wd !== 0 && wd !== 6 && !nyseHolidays(y).has(day);
+}
+
+/** 20:00 US Eastern on calendar day `day`, as Unix ms (EDT or EST, whichever is in force that evening). */
+export function eveningEt(day: string): number {
+  const [y, m, d] = dayParts(day);
+  const wall = Date.UTC(y, m, d, 20);
+  // 20:00 is never inside a DST change (those happen at 02:00 on Sundays): exactly one offset fits.
+  for (const off of [-4 * HOUR, -5 * HOUR]) if (easternOffsetMs(wall - off) === off) return wall - off;
+  return wall + 5 * HOUR;
+}
+
+/** The session of trading day `day` (the day need not be a trading day: callers check isTradingDay). */
+export function sessionOf(day: string): SessionRef {
+  return { tradingDay: day, start: eveningEt(shiftDay(day, -1)), end: eveningEt(day) };
+}
+
+/** The trading day strictly before `day` (weekends and NYSE holidays skipped). */
+export function previousTradingDay(day: string): string {
+  let d = shiftDay(day, -1);
+  for (let i = 0; i < 30 && !isTradingDay(d); i++) d = shiftDay(d, -1);
+  return d;
+}
+
+/** The trading day strictly after `day`. */
+export function nextTradingDay(day: string): string {
+  let d = shiftDay(day, 1);
+  for (let i = 0; i < 30 && !isTradingDay(d); i++) d = shiftDay(d, 1);
+  return d;
+}
+
+/** The trading day (US Eastern, sessions ending 20:00 ET) instant `t` belongs to, open or not. */
+export const tradingDayOf = (t: number): string => usEquitySession(t).tradingDay;
+
+/**
+ * The most recent session that ended at or before `t`. While the market is closed this is the session
+ * whose close the market sits at (Friday's on a weekend, Wednesday's on Thanksgiving).
+ */
+export function lastEndedSession(t: number): SessionRef {
+  return sessionOf(previousTradingDay(tradingDayOf(t)));
+}
+
+/** When the market next opens at or after `t` (`t` itself while it is open). */
+export function nextOpen(t: number): number {
+  const s = usEquitySession(t);
+  return s.open ? t : sessionOf(nextTradingDay(s.tradingDay)).start;
+}
+
+/** Whether the whole interval [from, to) lies in closed time (weekend or NYSE holiday). */
+export function closedThrough(from: number, to: number): boolean {
+  return to > from && nextOpen(from) >= to;
+}
+
+/**
+ * Candles shown in session view (session breaks): a bucket [t, t + bucketMs) that lies wholly in closed
+ * time and only repeats the last price (`repeats(c, previous)`) is left out. Nothing is deleted: the stored
+ * history keeps those buckets. A closed-time bucket that moved (simulated prices on testnet keep moving)
+ * stays. `repeats` compares prices exactly in the caller's representation.
+ */
+export function dropClosedRepeats<T extends { t: number }>(list: readonly T[], bucketMs: number, repeats: (c: T, prev: T | undefined) => boolean): T[] {
+  const out: T[] = [];
+  let prev: T | undefined;
+  for (const c of list) {
+    if (!(closedThrough(c.t, c.t + bucketMs) && repeats(c, prev))) out.push(c);
+    prev = c;
+  }
+  return out;
+}
+
+/** Plain non-negative decimal strings compared exactly (no sign, no exponent): -1, 0 or 1. */
+export function decCmp(a: string, b: string): number {
+  const [ai = '0', af = ''] = a.split('.');
+  const [bi = '0', bf = ''] = b.split('.');
+  const ia = ai.replace(/^0+(?=\d)/, '');
+  const ib = bi.replace(/^0+(?=\d)/, '');
+  if (ia.length !== ib.length) return ia.length < ib.length ? -1 : 1;
+  if (ia !== ib) return ia < ib ? -1 : 1;
+  const n = Math.max(af.length, bf.length);
+  const fa = af.padEnd(n, '0');
+  const fb = bf.padEnd(n, '0');
+  return fa === fb ? 0 : fa < fb ? -1 : 1;
+}
+
+interface StrCandle {
+  t: number;
+  o: string;
+  h: string;
+  l: string;
+  c: string;
+}
+
+/** A candle (decimal strings) flat at the previous candle's close: nothing traded it away from the last price. */
+export const repeatsLastStr = (c: Omit<StrCandle, 't'>, prev: { c: string } | undefined): boolean =>
+  decCmp(c.o, c.h) === 0 && decCmp(c.o, c.l) === 0 && decCmp(c.o, c.c) === 0 && (prev === undefined || decCmp(c.c, prev.c) === 0);
+
+/**
+ * One candle per trading day from hourly candles (decimal strings, oldest first): the hours of the session
+ * [D-1 20:00 ET, D 20:00 ET) make day D's candle (20:00 ET is always a whole UTC hour, so no hour straddles
+ * two sessions). `t` is D at 00:00 UTC, the date the candle stands for, as before. Hours in closed time that
+ * only repeat the last price are left out, so a weekend or holiday gets no candle; a closed day that moved
+ * (simulated prices on testnet) keeps its own.
+ */
+export function tradingDayCandles(hourly: readonly StrCandle[]): StrCandle[] {
+  const out: StrCandle[] = [];
+  let day = '';
+  for (const k of dropClosedRepeats(hourly, HOUR, repeatsLastStr)) {
+    const d = tradingDayOf(k.t);
+    const last = out[out.length - 1];
+    if (last && d === day) {
+      if (decCmp(k.h, last.h) > 0) last.h = k.h;
+      if (decCmp(k.l, last.l) < 0) last.l = k.l;
+      last.c = k.c;
+      continue;
+    }
+    day = d;
+    out.push({ t: dayStartUtc(d), o: k.o, h: k.h, l: k.l, c: k.c });
+  }
+  return out;
+}
+
+/**
+ * The closed periods between sessions that overlap [from, to): each runs from a session's end to the next
+ * session's start (a weekend, a holiday). Used to place on-chain DEX candles on the daily chart.
+ */
+export function closedPeriods(from: number, to: number): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  let day = isTradingDay(tradingDayOf(from)) ? tradingDayOf(from) : previousTradingDay(tradingDayOf(from));
+  for (let i = 0; i < 400; i++) {
+    const end = sessionOf(day).end;
+    const next = nextTradingDay(day);
+    const start = sessionOf(next).start;
+    if (end >= to) break;
+    if (start > end && start > from) out.push({ start: end, end: start });
+    day = next;
+  }
+  return out;
+}

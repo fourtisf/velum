@@ -5,20 +5,14 @@ import { toNumber } from '@velum/math';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
-import { chartCandles } from '@/lib/candles';
+import { chartCandles, chartLayout, readoutTime, type ChartCandle } from '@/lib/candles';
 import { ENV } from '@/lib/env';
-import { CLOSED } from '@/lib/copy';
+import { CLOSED, SESSION } from '@/lib/copy';
 import { fmt } from '@/lib/format';
 import { mk, priceState, useMarkets } from '@/lib/markets';
 import { useApp } from '@/lib/store';
 
-interface C {
-  t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-}
+type C = ChartCandle;
 
 const COL = { up: '#3FCF8E', down: '#F25C61', faint: '#5E626A', text: '#F4F5F6' };
 const TFV: Record<Timeframe, number> = { '15m': 1, '1h': 1.9, '4h': 3.6, '1D': 7 };
@@ -75,6 +69,9 @@ export function Chart({ sym }: { sym: string }) {
   const feedStale = useMarkets((s) => s.feedStale);
   const cvRef = useRef<HTMLCanvasElement>(null);
   const candles = useRef<C[]>([]);
+  /** Session boundaries (separators before these indexes) of the drawn candles. */
+  const breaks = useRef<number[]>([]);
+  const [hasDex, setHasDex] = useState(false);
   const hover = useRef<{ x: number; y: number } | null>(null);
   const localTicks = useRef(0);
   const [ohlc, setOhlc] = useState<{ d: string; c: C } | null>(null);
@@ -98,8 +95,16 @@ export function Chart({ sym }: { sym: string }) {
   useEffect(() => {
     if (useLocal) {
       candles.current = genCandles(sym, tf);
+      breaks.current = [];
       localTicks.current = 0;
-    } else candles.current = valid.map((k) => ({ ...k }));
+      setHasDex(false);
+    } else {
+      // Session layout: closed time that only repeats the last price is compressed, sessions are separated.
+      const lay = chartLayout(valid, tf);
+      candles.current = lay.list.map((k) => ({ ...k }));
+      breaks.current = lay.breaks;
+      setHasDex(lay.hasDex);
+    }
   }, [valid, useLocal, sym, tf]);
 
   const draw = useCallback(() => {
@@ -137,6 +142,11 @@ export function Chart({ sym }: { sym: string }) {
       if (c.h > hi) hi = c.h;
       if (c.l < lo) lo = c.l;
     }
+    // While closed the tag shows the last official quote (the last candle may be an on-chain DEX one): keep it in range.
+    const lm = mk(sym);
+    const tagPrice = lm.closed && !lm.noData ? lm.priceNum : list[n - 1]!.c;
+    hi = Math.max(hi, tagPrice);
+    lo = Math.min(lo, tagPrice);
     const pad = (hi - lo) * 0.08 || 1;
     hi += pad;
     lo -= pad;
@@ -166,18 +176,39 @@ export function Chart({ sym }: { sym: string }) {
     }
     const stp = cw / n;
     const bw = Math.max(1.6, stp * 0.58);
+    // Session separators: a subtle dashed line where a session starts (closed time between them is compressed).
+    x.save();
+    x.setLineDash([2, 4]);
+    x.strokeStyle = 'rgba(255,255,255,.09)';
+    for (const i of breaks.current) {
+      if (i <= 0 || i >= n) continue;
+      const xx = Math.round(i * stp) + 0.5;
+      x.beginPath();
+      x.moveTo(xx, PT);
+      x.lineTo(xx, H - PB);
+      x.stroke();
+    }
+    x.restore();
     list.forEach((c, i) => {
       const cx = i * stp + stp / 2;
       const col = c.c >= c.o ? COL.up : COL.down;
+      const dex = c.src === 'dex';
+      // On-chain DEX candles of closed periods (display only): hollow and dimmed, never mistaken for official quotes.
+      if (dex) x.globalAlpha = 0.6;
       x.strokeStyle = col;
       x.fillStyle = col;
       x.beginPath();
       x.moveTo(Math.round(cx) + 0.5, Y(c.h));
+      x.lineTo(Math.round(cx) + 0.5, Y(Math.max(c.o, c.c)));
+      x.moveTo(Math.round(cx) + 0.5, Y(Math.min(c.o, c.c)));
       x.lineTo(Math.round(cx) + 0.5, Y(c.l));
       x.stroke();
       const t = Y(Math.max(c.o, c.c));
       const b = Y(Math.min(c.o, c.c));
-      x.fillRect(cx - bw / 2, t, bw, Math.max(1, b - t));
+      if (dex) {
+        x.strokeRect(Math.round(cx - bw / 2) + 0.5, Math.round(t) + 0.5, Math.max(1, Math.round(bw) - 1), Math.max(1, Math.round(b - t)));
+        x.globalAlpha = 1;
+      } else x.fillRect(cx - bw / 2, t, bw, Math.max(1, b - t));
     });
     const used: number[] = [];
     st.ledger.positions
@@ -210,11 +241,11 @@ export function Chart({ sym }: { sym: string }) {
         x.fillText(lab, 15, ty + 0.5);
       });
     const L = list[n - 1]!;
-    const ly = Math.round(Y(L.c)) + 0.5;
+    const ly = Math.round(Y(tagPrice)) + 0.5;
     const up = L.c >= L.o;
     // Not a live price (stale feed, or no price at all): the last value is drawn grey and marked
     // "stale" under its tag, like the dimmed stale prices elsewhere (audit web F1).
-    const live = priceState(mk(sym), useMarkets.getState(), Date.now(), IS_MAINNET) === 'live';
+    const live = priceState(lm, useMarkets.getState(), Date.now(), IS_MAINNET) === 'live';
     const col = !live ? COL.faint : up ? COL.up : COL.down;
     x.setLineDash([2, 3]);
     x.strokeStyle = col;
@@ -230,7 +261,7 @@ export function Chart({ sym }: { sym: string }) {
     x.fill();
     x.fillStyle = !live ? COL.faint : up ? '#03140B' : '#fff';
     x.font = F(600);
-    x.fillText(fmt(L.c), cw + 12, ly + 0.5);
+    x.fillText(fmt(tagPrice), cw + 12, ly + 0.5);
     if (!live) {
       x.fillStyle = COL.down;
       x.font = `500 10.5px ${font}`;
@@ -260,12 +291,7 @@ export function Chart({ sym }: { sym: string }) {
       x.fillText(fmt(hv), cw + 12, hy + 0.5);
     }
     const c = list[idx]!;
-    const d = new Date(c.t).toLocaleString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: st.tf === '1D' ? undefined : '2-digit',
-      minute: st.tf === '1D' ? undefined : '2-digit',
-    });
+    const d = readoutTime(c, st.tf);
     setOhlc((prev) => (prev && prev.d === d && prev.c.o === c.o && prev.c.h === c.h && prev.c.l === c.l && prev.c.c === c.c ? prev : { d, c: { ...c } }));
   }, [sym]);
 
@@ -274,8 +300,9 @@ export function Chart({ sym }: { sym: string }) {
     const list = candles.current;
     const L = list[list.length - 1];
     if (!L) return;
-    // No live price: the stored value is not data (it may be the config seed), so don't draw it.
-    if (mk(sym).noData) return draw();
+    // No live price: the stored value is not data (it may be the config seed), so don't draw it. While the
+    // market is closed the price is the frozen last quote: history (official or on-chain) is never rewritten with it.
+    if (mk(sym).noData || mk(sym).closed) return draw();
     const p = mk(sym).priceNum;
     L.c = p;
     L.h = Math.max(L.h, p);
@@ -334,6 +361,12 @@ export function Chart({ sym }: { sym: string }) {
             <span>
               C <b className={`num ${c.c >= c.o ? 'up' : 'down'}`}>{fmt(c.c)}</b>
             </span>
+            {hasDex ? (
+              <span className="dex-legend">
+                <i aria-hidden="true" />
+                {SESSION.dexLegend}
+              </span>
+            ) : null}
           </>
         ) : (
           // Keeps the row's height while there are no candles, so the chart does not jump.

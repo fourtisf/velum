@@ -2,7 +2,7 @@ import { POOLS } from '@velum/config';
 import Link from 'next/link';
 import { ContractPill } from '@/components/landing/ContractPill';
 import { FrameCap, HeroFrame, LandingMarkets, OcText, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
-import { Av, DemoTag } from '@/components/ui';
+import { Av, ChgHeader, DemoTag } from '@/components/ui';
 import { I, Mark, XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
 import { COPY, LANDING, METRICS, ONCHAIN, P, SOCIAL } from '@/lib/copy';
@@ -289,7 +289,9 @@ export default function Landing() {
                   <tr>
                     <th>Market</th>
                     <th className="r">Price</th>
-                    <th className="r">24h</th>
+                    <th className="r">
+                      <ChgHeader />
+                    </th>
                     <th className="hide-sm">Last hour</th>
                     <th className="r hide-sm">
                       Open interest

@@ -13,6 +13,12 @@ export interface WorkerEnv {
   chainId: number;
   tickRetentionDays: number;
   network: NetworkName;
+  /** Display-only on-chain DEX prices (src/dex): DEX_PRICES, on by default on mainnet. */
+  dexPrices?: boolean;
+  /** DEX_POLL_MS: pause between DEX indexer runs. */
+  dexPollMs?: number;
+  /** DEX_BACKFILL_HOURS: how far back the first run indexes. */
+  dexBackfillHours?: number;
 }
 
 /** Log levels LOG_LEVEL accepts (pino's names, shared with the API; fatal/trace map to error/debug). */
@@ -73,6 +79,9 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): WorkerEnv {
     chainId,
     tickRetentionDays: int('PRICE_TICK_RETENTION_DAYS', e.PRICE_TICK_RETENTION_DAYS, 7, 1, 365),
     network,
+    dexPrices: bool(e.DEX_PRICES, network === 'mainnet'),
+    dexPollMs: int('DEX_POLL_MS', e.DEX_POLL_MS, 15_000, 5_000, 600_000),
+    dexBackfillHours: int('DEX_BACKFILL_HOURS', e.DEX_BACKFILL_HOURS, 96, 1, 168),
   };
   if (problems.length) throw new Error(`Invalid workers environment:\n  - ${problems.join('\n  - ')}`);
   return env;

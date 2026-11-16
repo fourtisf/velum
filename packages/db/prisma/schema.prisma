@@ -424,3 +424,51 @@ model SyncState {
   block     BigInt
   updatedAt DateTime @updatedAt
 }
+
+// ───────── On-chain DEX prices, display only (apps/workers/src/dex, packages/config/src/dex.ts) ─────────
+// Swap events of the configured Stock Token / USDG pools, shown while the stock market is closed. Never a price
+// source: nothing tradable (snapshots, quotes, quote candles, relayer, oracle) reads these tables.
+
+// One decoded swap. `status` says whether it passed the guards (ok) or why not (dust | quoteBound | median);
+// only ok trades make candles. Prices are USDG per token (Stock Tokens are 18 decimals, USDG 6).
+model DexTrade {
+  pool     String                                  // pool contract, lower case
+  txHash   String
+  logIndex Int
+  block    BigInt
+  at       DateTime                                // block time (interpolated between nearby block headers)
+  symbol   String
+  price    Decimal  @db.Decimal(38, 18)
+  qty      Decimal  @db.Decimal(38, 18)
+  notional Decimal  @db.Decimal(38, 18)
+  status   String
+
+  @@id([pool, txHash, logIndex])
+  @@index([symbol, at])
+  @@index([pool, block, logIndex])
+  @@index([at])
+}
+
+// Candles of ok trades, rebuilt from DexTrade for every bucket a run touched (idempotent, reorg-safe). Kept apart
+// from Candle (the official quote candles) on purpose.
+model DexCandle {
+  symbol String
+  tf     String                                    // 15m | 1h | 4h
+  t      DateTime                                  // bucket start (UTC)
+  o      Decimal  @db.Decimal(38, 18)
+  h      Decimal  @db.Decimal(38, 18)
+  l      Decimal  @db.Decimal(38, 18)
+  c      Decimal  @db.Decimal(38, 18)
+  trades Int
+  pool   String
+
+  @@id([symbol, tf, t])
+}
+
+// Last indexed block of the DEX indexer and its hash (a different hash later means a reorg: rewind).
+model DexCheckpoint {
+  key       String   @id                           // dex:<chainId>:<pool set>
+  block     BigInt
+  blockHash String
+  updatedAt DateTime @updatedAt
+}

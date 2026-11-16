@@ -3,10 +3,10 @@ import { TIMEFRAMES } from '@velum/config';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { compact, fmt } from '@/lib/format';
-import { useMarket, useMarkets } from '@/lib/markets';
-import { METRICS } from '@/lib/copy';
+import { changeView, useMarket, useMarkets } from '@/lib/markets';
+import { METRICS, SESSION } from '@/lib/copy';
 import { useApp } from '@/lib/store';
-import { Av, Chg, DemoTag, Px } from '../ui';
+import { Av, Chg, DemoTag, DexChip, DexStat, PerpsDash, Px } from '../ui';
 import { AccountCard } from './AccountCard';
 import { Chart } from './Chart';
 import { useTradeMode } from './mode';
@@ -36,7 +36,8 @@ function Strip({ sym, embedded }: { sym: string; embedded?: boolean }) {
           <b>{s}</b>
           <span className="sr">{bySym[s]!.name}</span>
           <Px sym={s} raw className="p num" />
-          <Chg sym={s} className="num" />
+          <DexChip sym={s} />
+          <Chg sym={s} className="num" dex compact />
         </button>
       ))}
     </nav>
@@ -84,25 +85,26 @@ function ChartCard({ sym }: { sym: string }) {
           <small>Price</small>
           <Px sym={sym} raw as="b" className="num big" />
         </div>
+        {m.dex && !m.noData ? <DexStat sym={sym} /> : null}
         <div>
-          <small>24h change</small>
-          <Chg sym={sym} as="b" className="num" />
+          <small>{SESSION.statLabel(changeView(m, true).basis)}</small>
+          <Chg sym={sym} as="b" className="num" dex />
         </div>
         <div>
           <small>Mark</small>
-          <b className="num">{METRICS.real ? fmt(m.mark) : METRICS.dash}</b>
+          <b className="num">{METRICS.real ? fmt(m.mark) : <PerpsDash />}</b>
         </div>
         <div className="hide-sm">
           <small>
             Funding / h{METRICS.real ? <DemoTag flag={m.demo} /> : null}
           </small>
-          <b className="num">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.dash}</b>
+          <b className="num">{METRICS.real && m.funding !== null ? `${fmt(m.funding, 4)}%` : METRICS.real ? METRICS.dash : <PerpsDash />}</b>
         </div>
         <div className="hide-sm">
           <small>
             Open interest{METRICS.real ? <DemoTag flag={m.demo} /> : null}
           </small>
-          <b className="num">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.dash}</b>
+          <b className="num">{METRICS.real && m.oi !== null ? compact(m.oi) : METRICS.real ? METRICS.dash : <PerpsDash />}</b>
         </div>
       </div>
       <Chart sym={sym} />

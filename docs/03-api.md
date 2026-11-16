@@ -215,6 +215,41 @@ the deployment does not list.
   Simulated prices on testnet ignore the calendar (`marketOpen` can be `false` while `stale` is `false`).
 - Answers come from a 1 s in-process cache per API instance.
 
+**Change while the market is closed.** A frozen quote makes the rolling 24 h change read `0.00` all weekend, so
+these fields say what changed instead. `change24h` and every field above keep their meaning.
+
+```json
+{ "change": "-1.24", "changeBasis": "lastSession",
+  "lastSession": { "tradingDay": "2026-11-13", "end": 1794618000000, "close": "391.65", "prevClose": "396.56", "change": "-1.24" },
+  "dex": null }
+```
+- `change`: percent with 2 decimals on the basis `changeBasis`, or `null` when stored history does not hold
+  both prices (clients show a dash; it is never estimated).
+- `changeBasis`: `24h` while the market is open (`change` equals `change24h`), and always for simulated prices
+  (testnet demo prices ignore the calendar); `lastSession` while it is closed (`marketOpen` false) and the price
+  source is real; `dexSinceClose` while closed with an on-chain DEX price (below).
+- `lastSession` (`null` while open): the last session that ended. Sessions follow `usEquitySession`: a trading
+  day's session ends at 20:00 New York time, weekends and NYSE holidays have none, so on a Sunday this is Friday's
+  session and on Thanksgiving Wednesday's. `close` and `prevClose` are that session's close and the previous
+  session's close: the close of the 15-minute candle that ends at 20:00 ET (the last quote before the close, at
+  most 15 minutes old), read from Postgres candles of a real source (never the demo series); `null` when not
+  stored. `change` is `close` vs `prevClose`.
+- `dex` (`null` unless closed): the last on-chain trade of the market's Stock Token / USDG pool, **display
+  only**: never a price for quotes, the oracle, the relayer or anything tradable (the market stays `stale`,
+  `marketClosed`). `{ "price", "change", "closeRef", "closeAt", "tradeAt", "block", "pool", "liquidityUsdg" }`:
+  `price` in USDG per token (on-chain amounts are per token, the basis of `tokenBid`/`tokenAsk` and of `price`);
+  `change` = `price` vs `closeRef`, the pool's own price at the last session's close (its last trade before 20:00
+  ET, at `closeAt`; a pool's price moves only with swaps, so that trade is its price at the close; looked back at
+  most 24 hours), so the move since the close is measured on one venue: pools trade at a gap to the official quote
+  (on 2026-11-15 from about -1% to +4.6%), and that gap is not a move; `null` without such a trade. `pool` is the pool contract (Velum names no DEX), `liquidityUsdg` what the pool holds
+  (both sides, tokens at the last trade). Present only for a configured pool (mainnet, packages/config `robinhood-mainnet.json` `dexPools`)
+  holding at least 50,000 USDG and 2,500 on each side, whose snapshot the workers confirmed in the last 10
+  minutes (liquidity read in the last 30), and for a trade after the last session ended.
+- The workers index the pools' Swap events on confirmed blocks (the `safe` head), decode each trade with exact
+  decimals (Stock Tokens 18, USDG 6), and ignore trades under 25 USDG, more than 25% from the last official
+  quote, or more than 3% from the median of the last nine such trades (an outlier never moves the median, a real
+  move does once it is the majority). `DEX_PRICES` (on by default on mainnet), `DEX_POLL_MS`, `DEX_BACKFILL_HOURS`.
+
 **Price fields from Robinhood.** `price` is the midpoint of the token's bid and ask from
 `api.robinhood.com/rhj/prices/{symbol}`. The documented `bid`/`ask` there are the raw underlying-equity
 quote (not adjusted for corporate actions); the response also carries `tokenBid`/`tokenAsk`, which are
@@ -235,7 +270,20 @@ in the future, low/high bracketing open/close, written for this network), otherw
 a bucket dated ahead of now. On mainnet only real history: the cache only when it was built from a real
 price source (it records its source and network), Postgres only candles tagged `robinhood` or
 `chainlink`. Candles of unknown source (older than the source column and not proven by stored ticks,
-docs/02) are kept but not served on mainnet; testnet serves every candle.
+docs/02) are kept but not served on mainnet; testnet serves every candle. The workers rebuild such candles
+from their stored ticks where every tick of the bucket is of one real kind (`jobs/rebuild.ts`, in the
+background and hourly; demo, mixed and tickless buckets stay as they are), so about the last
+`PRICE_TICK_RETENTION_DAYS` of real history is served again; older unknown candles stay hidden.
+
+`&sessions=true` (session view; the web uses it): buckets that lie wholly in closed time and only repeat the
+last price are left out, so a chart compresses weekends and holidays instead of drawing a flat line (nothing is
+deleted). `limit` counts the buckets returned. On mainnet `1D` has one candle per trading day, built from the
+hourly candles of its session (20:00 ET to 20:00 ET; `t` is that date at 00:00 UTC), so there is no weekend or
+holiday candle; testnet keeps the daily series (simulated prices trade every day). Closed periods then carry the
+display-only on-chain DEX candles of the market's pool (same rules as `dex` above), marked `"src": "dex"`:
+on `15m`/`1h`/`4h` the pool's buckets that lie wholly in closed time, on `1D` one candle per closed period with
+`t` = its start and `"end"` = when the market reopened (or reopens). `&dex=false` leaves them out.
+`[{ "t": 1794618000000, "o": "160.1", "h": "161.3", "l": "159.8", "c": "161.27", "src": "dex" }]`
 
 ### `GET /v1/pools`
 ```json

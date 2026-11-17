@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Velum banners: Velum today</title>
+<!--
+  Source of the "Velum today" banners (design/marketing/velum-today-*.png, velum-x-header-today-1500x500.png): what works on
+  mainnet now (buy Stock Tokens with ETH or USDG, perps up to 5x funded straight from Robinhood Chain, the live Portfolio
+  with P&L and one-tap Sell). No venue named; vignette values are illustrative and say so. Brand tokens from design/tokens.css, the "Curtain" mark
+  from apps/web/components/icons.tsx, fonts from apps/web/app/fonts (OFL). Rendered by render-banners.cjs at 2x.
+  Claims follow what is live on mainnet (README): real spot through Uniswap, real perps through the user's own
+  Hyperliquid account, the privacy layer marked as next. No third-party logos.
+-->
+<style>
+  @font-face { font-family: "Inter"; src: url("../../apps/web/app/fonts/Inter-latin.woff2") format("woff2"); font-weight: 400 600; }
+  @font-face { font-family: "Inter Tight"; src: url("../../apps/web/app/fonts/InterTight-latin.woff2") format("woff2"); font-weight: 500 600; }
+  :root {
+    --bg: #08090B; --bg1: #0D0E11; --bg2: #131418;
+    --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.11); --line3: rgba(255,255,255,.17);
+    --text: #F4F5F6; --muted: #8B9099; --faint: #5E626A;
+    --acc: #8F96FF; --acc-bg: rgba(143,150,255,.12); --acc-deep: #6E79F3; --up: #3FCF8E; --down: #F25C61;
+    --sans: "Inter", system-ui, sans-serif; --display: "Inter Tight", "Inter", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; color: var(--text); font-family: var(--sans); font-feature-settings: "cv11","ss01","ss03"; -webkit-font-smoothing: antialiased; padding: 40px; display: grid; gap: 40px; justify-content: start; }
+
+  .art { position: relative; overflow: hidden; background: var(--bg); isolation: isolate; }
+  /* Atmosphere: a soft accent glow and the curtain (fine horizontal scan lines, fading out). */
+  .glow { position: absolute; border-radius: 50%; filter: blur(10px); z-index: -2; pointer-events: none; }
+  .curtain { position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background: repeating-linear-gradient(180deg, rgba(255,255,255,.035) 0 1px, transparent 1px 5px); }
+  .bigmark { position: absolute; z-index: -1; pointer-events: none; }
+  .vignette { position: absolute; inset: 0; z-index: -1; pointer-events: none; background: radial-gradient(120% 90% at 30% 40%, transparent 55%, rgba(0,0,0,.55)); }
+
+  .brand { display: flex; align-items: center; gap: 12px; font-family: var(--display); font-weight: 600; letter-spacing: -.02em; }
+  .brand svg { display: block; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; color: var(--acc); }
+  .eyebrow::before { content: ""; width: 22px; height: 1px; background: linear-gradient(90deg, transparent, var(--acc)); }
+  h1 { font-family: var(--display); font-weight: 600; letter-spacing: -.047em; line-height: 1.0;
+    background: linear-gradient(180deg, #FFFFFF 30%, #9EA3AD); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: .06em; }
+  h1 em { font-style: normal; background: linear-gradient(100deg, #C2B8FF, #8F96FF 55%, #6E79F3); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); line-height: 1.5; letter-spacing: -.005em; }
+  .sub b { color: var(--text); font-weight: 500; }
+
+  .step { position: relative; display: grid; grid-template-columns: 52px 1fr; gap: 18px; align-items: start; border-radius: 16px; border: 1px solid var(--line2);
+    background: linear-gradient(180deg, rgba(23,24,29,.94), rgba(14,15,18,.94)); box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 20px 40px -20px rgba(0,0,0,.6); }
+  .ico { width: 52px; height: 52px; border-radius: 13px; display: grid; place-items: center; background: var(--acc-bg); border: 1px solid rgba(143,150,255,.22); color: var(--acc); }
+  .ico svg { width: 24px; height: 24px; }
+  .num { font-family: var(--display); font-size: 13px; font-weight: 600; letter-spacing: .12em; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .step h3 { font-family: var(--display); font-weight: 600; letter-spacing: -.025em; line-height: 1.15; display: flex; align-items: center; gap: 10px; }
+  .step p { color: var(--muted); line-height: 1.45; }
+  .tag { font-family: var(--sans); font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--acc); background: var(--acc-bg); border: 1px solid rgba(143,150,255,.25); padding: 3px 8px; border-radius: 6px; }
+  .live { color: var(--up); background: rgba(63,207,142,.1); border-color: rgba(63,207,142,.25); }
+  .next { border-style: dashed; border-color: rgba(143,150,255,.32); background: linear-gradient(180deg, rgba(26,27,44,.95), rgba(15,16,22,.95)); }
+  .next::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; background: repeating-linear-gradient(180deg, rgba(143,150,255,.05) 0 1px, transparent 1px 4px); }
+
+  .foot { color: var(--faint); letter-spacing: .005em; }
+  .foot b { color: var(--muted); font-weight: 500; }
+  .chips { display: flex; gap: 12px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 10px; border: 1px solid var(--line2); background: rgba(255,255,255,.035); border-radius: 999px; padding: 10px 18px 10px 14px; font-size: 17px; color: var(--text); font-weight: 500; letter-spacing: -.01em; }
+  .chip i { width: 8px; height: 8px; border-radius: 50%; background: var(--up); box-shadow: 0 0 12px var(--up); }
+  .chip i.n { background: var(--acc); box-shadow: 0 0 12px var(--acc); }
+  .chip span { color: var(--muted); font-weight: 400; }
+
+  .tickers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .tickers .lbl { font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); margin-right: 6px; }
+  .tickers.grid5 { display: grid; grid-template-columns: repeat(5, auto); justify-content: start; }
+  .tickers.grid5 .lbl { grid-column: 1 / -1; margin: 0 0 4px; }
+  .tk { text-align: center; font-family: var(--display); font-weight: 600; font-size: 15px; letter-spacing: .01em; color: #C9CCD2; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line2); background: rgba(255,255,255,.03); }
+  /* The private position card (illustration: values veiled). */
+  .pcard { position: absolute; border-radius: 18px; border: 1px solid var(--line2); background: linear-gradient(180deg, rgba(19,20,24,.92), rgba(13,14,17,.92)); box-shadow: 0 40px 80px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); backdrop-filter: blur(8px); }
+  .row { display: flex; justify-content: space-between; align-items: center; }
+  .veil { display: inline-block; height: 12px; border-radius: 4px; background: repeating-linear-gradient(90deg, rgba(143,150,255,.55) 0 2px, rgba(143,150,255,.18) 2px 4px); filter: blur(.3px); }
+</style>
+<style>
+  .node { position: absolute; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; font-family: var(--display); font-weight: 600; font-size: 16px; letter-spacing: .02em; color: #EDEBFF;
+    background: radial-gradient(circle at 35% 30%, #2A2D52, #15162A); border: 1px solid rgba(143,150,255,.55); box-shadow: 0 0 0 6px rgba(143,150,255,.07), 0 0 28px rgba(143,150,255,.35); }
+  .node.dash { border-style: dashed; box-shadow: 0 0 0 6px rgba(143,150,255,.05); color: #B9BCFF; }
+  .rail { position: absolute; height: 2px; background: linear-gradient(90deg, rgba(143,150,255,.0), rgba(143,150,255,.65) 12%, rgba(143,150,255,.65) 70%, rgba(143,150,255,.15)); }
+  .vrail { position: absolute; width: 2px; background: linear-gradient(180deg, rgba(143,150,255,.65), rgba(143,150,255,.65) 70%, rgba(143,150,255,.12)); }
+  .hcard { position: absolute; border-radius: 20px; border: 1px solid rgba(255,255,255,.11); background: linear-gradient(180deg, rgba(24,25,31,.95), rgba(13,14,17,.95));
+    box-shadow: 0 30px 60px -28px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.06); }
+  .hcard.next { border-style: dashed; border-color: rgba(143,150,255,.3); background: linear-gradient(180deg, rgba(27,28,46,.96), rgba(14,15,21,.96)); }
+  .hcard h3 { font-family: var(--display); font-weight: 600; letter-spacing: -.025em; line-height: 1.15; color: var(--text); }
+  .hcard p { color: var(--muted); line-height: 1.45; }
+  .vig { border-radius: 14px; border: 1px solid rgba(255,255,255,.08); background: #0A0B0E; position: relative; overflow: hidden; }
+  .lbl { color: var(--faint); font-size: 12px; font-weight: 500; letter-spacing: .02em; }
+  .val { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .pill { display: inline-flex; align-items: center; gap: 9px; border-radius: 999px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); }
+  .seg2 { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border-radius: 10px; background: #131418; border: 1px solid rgba(255,255,255,.07); }
+  .seg2 div { text-align: center; border-radius: 7px; font-weight: 600; }
+  .stripe { display: inline-block; border-radius: 5px; background: repeating-linear-gradient(180deg, #8F96FF 0 3px, #33366E 3px 6px); }
+  .hfoot { color: var(--faint); line-height: 1.55; }
+  .xh { display: inline-flex; align-items: center; gap: 9px; color: var(--muted); font-weight: 500; }
+</style>
+<style>
+  .tcard { position: absolute; border-radius: 22px; border: 1px solid rgba(255,255,255,.11); background: linear-gradient(180deg, rgba(24,25,31,.96), rgba(13,14,17,.96));
+    box-shadow: 0 40px 80px -36px rgba(0,0,0,.85), inset 0 1px 0 rgba(255,255,255,.06); }
+  .tcard h3 { font-family: var(--display); font-weight: 600; letter-spacing: -.028em; line-height: 1.12; color: var(--text); }
+  .tcard p { color: var(--muted); line-height: 1.45; }
+  #today .tcard .vig { height: 222px; }
+  #today-portrait .tcard .vig { height: 200px; }
+  #today-portrait .tcard h3 { font-size: 29px !important; }
+  #today-portrait .tcard p { font-size: 17px !important; }
+  .disc { display: inline-grid; place-items: center; border-radius: 50%; font-family: var(--display); font-weight: 700; color: #0B0C10; flex: none; }
+  .d-eth { background: linear-gradient(135deg, #8EA2FF, #627EEA); color: #fff; }
+  .d-usdg { background: #314012; color: #C7E36C; }
+  .d-st { background: linear-gradient(135deg, #2A2D52, #16172B); color: #D9DBFF; border: 1px solid rgba(143,150,255,.45); }
+  .ln { display: flex; justify-content: space-between; align-items: center; }
+  .amt { font-family: var(--display); font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--text); }
+  .usd { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .upc { color: var(--up); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .sellb { border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: #16171C; color: var(--text); font-weight: 600; }
+  .cta { display: inline-flex; align-items: center; gap: 10px; border-radius: 14px; font-weight: 600; letter-spacing: -.01em; }
+  .cta.w { background: #F4F5F6; color: #0B0C10; }
+  .cta.d { border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.04); color: var(--text); }
+</style>
+</head>
+<body>
+
+<!-- Reusable SVG symbols: the Curtain mark and step icons (original line icons). -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="veilg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C2B8FF"/><stop offset=".55" stop-color="#8F96FF"/><stop offset="1" stop-color="#6E79F3"/></linearGradient>
+    <pattern id="scan" width="64" height="4" patternUnits="userSpaceOnUse"><rect width="64" height="2" fill="#fff"/></pattern>
+    <mask id="curtain" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="35" fill="#fff"/><rect y="35" width="64" height="29" fill="url(#scan)"/></mask>
+    <pattern id="scanfine" width="64" height="1.5" patternUnits="userSpaceOnUse"><rect width="64" height=".75" fill="#fff"/></pattern>
+    <mask id="curtainfine" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="34" fill="#fff"/><rect y="34" width="64" height="30" fill="url(#scanfine)"/></mask>
+    <symbol id="markfine" viewBox="6 6 52 52"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#veilg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#curtainfine)"/></symbol>
+    <symbol id="mark" viewBox="6 6 52 52"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#veilg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#curtain)"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H18v3"/><rect x="4" y="8" width="16" height="11" rx="2.5"/><path d="M16 13.5h.01"/></g></symbol>
+    <symbol id="i-spot" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/></g></symbol>
+    <symbol id="i-perps" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l5-5 3.5 3.5L20 7"/><path d="M15 7h5v5"/></g></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></g></symbol>
+  </defs>
+</svg>
+
+
+<section class="art" id="today" style="width:1600px;height:900px">
+  <div class="glow" style="width:1300px;height:1300px;left:150px;top:-760px;background:radial-gradient(circle, rgba(143,150,255,.22), rgba(110,121,243,.06) 45%, transparent 68%)"></div>
+  <div class="glow" style="width:900px;height:900px;right:-300px;bottom:-560px;background:radial-gradient(circle, rgba(194,184,255,.08), transparent 65%)"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(60% 55% at 50% 0%, #000, transparent 75%);mask-image:radial-gradient(60% 55% at 50% 0%, #000, transparent 75%)"></div>
+  <svg class="bigmark" style="width:760px;height:760px;right:-180px;top:-260px;opacity:.06"><use href="#markfine"/></svg>
+  <div class="vignette"></div>
+  <div style="position:absolute;left:80px;right:80px;top:58px;display:flex;justify-content:space-between;align-items:center">
+    <div class="brand" style="font-size:26px"><svg width="32" height="32"><use href="#mark"/></svg>Velum</div>
+    <div style="display:flex;gap:26px"><span class="xh" style="font-size:17px"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@velumtrade</span><span class="xh" style="font-size:17px"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>t.me/velumtrade</span></div>
+  </div>
+  <div style="position:absolute;left:80px;top:118px;width:1440px">
+    <div class="eyebrow">Live on Robinhood Chain</div>
+    <h1 style="font-size:70px;margin-top:14px">Buy. Trade. Track.<br><em>From your wallet.</em></h1>
+    <p class="sub" style="font-size:20px;margin-top:14px;white-space:nowrap">Stock Tokens like <b>TSLA</b>, <b>NVDA</b> and <b>AAPL</b>: spot with ETH or USDG, perps up to 5x, live P&amp;L. Velum never holds your funds.</p>
+  </div>
+  <div class="tcard" style="left:80px;top:376px;width:448px;padding:18px">
+    <div class="vig" style="padding:16.0px 18.0px">
+      <div class="ln"><span class="lbl" style="font-size:12.5px">You pay</span><span class="usd" style="font-size:12.5px">≈ $54.64</span></div>
+      <div class="ln" style="margin-top:6.0px"><span style="display:flex;align-items:center;gap:9.0px"><span class="disc d-eth" style="width:26.0px;height:26.0px"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M11.944 17.97L4.58 13.62 11.943 24l7.37-10.38-7.372 4.35h.003zM12.056 0L4.69 12.223l7.365 4.354 7.365-4.35L12.056 0z"/></svg></span><span class="amt" style="font-size:22.0px">0.03 ETH</span></span></div>
+      <div style="display:flex;justify-content:center;margin:8.0px 0"><span style="width:26.0px;height:26.0px;border-radius:8px;display:grid;place-items:center;background:#16171C;border:1px solid rgba(255,255,255,.1);color:var(--acc);font-size:14.0px">↓</span></div>
+      <div class="ln"><span class="lbl" style="font-size:12.5px">You get</span><span class="usd" style="font-size:12.5px">≈ $54.60</span></div>
+      <div class="ln" style="margin-top:6.0px"><span style="display:flex;align-items:center;gap:9.0px"><span class="disc d-st" style="width:26.0px;height:26.0px;font-size:11.0px">N</span><span class="amt" style="font-size:22.0px">0.3465 NVDA</span></span></div>
+      <div style="margin-top:12.0px;font-size:12.0px;color:var(--faint)">One swap · minimum protected · 24/7</div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px"><span class="num">01</span><span class="tag live" style="font-size:10.5px">Live</span></div>
+    <h3 style="font-size:25px;margin-top:6px">Buy with ETH or USDG</h3>
+    <p style="font-size:15.5px;margin-top:7px">One swap on Robinhood Chain. The Stock Token lands in your own wallet.</p>
+  </div><div class="tcard" style="left:556px;top:376px;width:448px;padding:18px">
+    <div class="vig" style="padding:14.0px 18.0px">
+      <div class="pill" style="padding:7.0px 12.0px 7.0px 8.0px;font-size:12.5px;color:var(--text)"><span style="width:8.0px;height:8.0px;border-radius:50%;background:var(--up);box-shadow:0 0 10px var(--up)"></span>Funded from Robinhood Chain</div>
+      <div class="ln" style="margin-top:10.0px"><span class="lbl" style="font-size:12.5px">0.02 ETH →</span><span class="amt" style="font-size:18.0px">34.61 USDC</span></div>
+      <div class="seg2" style="font-size:14.0px;margin-top:12.0px"><div style="background:rgba(63,207,142,.16);color:var(--up);padding:7.0px 0">Long</div><div style="color:var(--muted);padding:7.0px 0">Short</div></div>
+      <div style="position:relative;height:4px;border-radius:2px;background:#22242B;margin-top:16.0px"><div style="position:absolute;left:0;top:0;bottom:0;width:50%;border-radius:2px;background:linear-gradient(90deg,#6E79F3,#8F96FF)"></div><div style="position:absolute;left:50%;top:50%;width:14.0px;height:14.0px;margin:-7.0px 0 0 -7.0px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(143,150,255,.25)"></div></div>
+      <div style="display:flex;justify-content:space-between;margin-top:11.0px;font-size:12.0px;color:var(--faint)"><span>1x</span><span style="color:var(--text);font-weight:600">3x isolated</span><span>5x</span></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px"><span class="num">02</span><span class="tag live" style="font-size:10.5px">Live</span></div>
+    <h3 style="font-size:25px;margin-top:6px">Perps up to 5x</h3>
+    <p style="font-size:15.5px;margin-top:7px">Fund it with ETH or USDG straight from Robinhood Chain. Long or short, isolated margin.</p>
+  </div><div class="tcard" style="left:1032px;top:376px;width:448px;padding:18px">
+    <div class="vig" style="padding:14.0px 18.0px">
+      <div class="ln"><span class="lbl" style="font-size:12.5px">Wallet value</span><span class="tag live" style="font-size:10.0px">Live</span></div>
+      <div class="amt" style="font-size:28.0px;margin:4.0px 0 4.0px">$312.75</div>
+      <div class="ln" style="padding:9.0px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+        <span style="display:flex;align-items:center;gap:9.0px"><span class="disc d-st" style="width:26.0px;height:26.0px;font-size:11.0px">N</span><span><b style="display:block;font-weight:600;font-size:14.0px;color:var(--text)">NVDA</b><span class="usd" style="font-size:11.5px">0.3465</span></span></span>
+        <span style="display:flex;align-items:center;gap:10.0px"><span style="text-align:right"><b class="amt" style="display:block;font-size:14.5px">$55.84</b><span class="upc" style="font-size:11.5px">+$1.24 (+2.27%)</span></span><span class="sellb" style="font-size:12.0px;padding:5.0px 10.0px">Sell</span></span>
+      </div>
+      <div class="ln" style="padding:9.0px 0;">
+        <span style="display:flex;align-items:center;gap:9.0px"><span class="disc d-st" style="width:26.0px;height:26.0px;font-size:11.0px">T</span><span><b style="display:block;font-weight:600;font-size:14.0px;color:var(--text)">TSLA</b><span class="usd" style="font-size:11.5px">0.2405</span></span></span>
+        <span style="display:flex;align-items:center;gap:10.0px"><span style="text-align:right"><b class="amt" style="display:block;font-size:14.5px">$91.67</b><span class="upc" style="font-size:11.5px">+$0.62 (+0.68%)</span></span><span class="sellb" style="font-size:12.0px;padding:5.0px 10.0px">Sell</span></span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px"><span class="num">03</span><span class="tag live" style="font-size:10.5px">Live</span></div>
+    <h3 style="font-size:25px;margin-top:6px">A live Portfolio</h3>
+    <p style="font-size:15.5px;margin-top:7px">Value and P&amp;L of every holding, from your own trades. Sell in one tap.</p>
+  </div>
+  <div style="position:absolute;left:80px;right:80px;bottom:56px;display:flex;align-items:center;gap:14px">
+    <span class="cta w" style="font-size:18px;padding:12px 20px">velumtrade.com</span>
+    <span style="color:var(--faint);font-size:14px">Connect a wallet and start in under a minute.</span>
+  </div>
+  <div class="hfoot" style="position:absolute;left:80px;right:80px;bottom:26px;font-size:12.5px;display:flex;justify-content:space-between;gap:30px"><span>Velum is an independent project on Robinhood Chain and is not affiliated with Robinhood. Perps are leveraged and can be liquidated. Not investment advice.</span><span style="white-space:nowrap">Illustrative values</span></div>
+</section>
+
+<section class="art" id="today-portrait" style="width:1080px;height:1350px">
+  <div class="glow" style="width:1300px;height:1300px;left:-110px;top:-760px;background:radial-gradient(circle, rgba(143,150,255,.22), rgba(110,121,243,.06) 45%, transparent 68%)"></div>
+  <div class="glow" style="width:900px;height:900px;right:-300px;bottom:-560px;background:radial-gradient(circle, rgba(194,184,255,.08), transparent 65%)"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(60% 55% at 50% 0%, #000, transparent 75%);mask-image:radial-gradient(60% 55% at 50% 0%, #000, transparent 75%)"></div>
+  <svg class="bigmark" style="width:640px;height:640px;right:-200px;top:-200px;opacity:.06"><use href="#markfine"/></svg>
+  <div class="vignette"></div>
+  <div style="position:absolute;left:64px;right:64px;top:56px;display:flex;justify-content:space-between;align-items:center">
+    <div class="brand" style="font-size:26px"><svg width="32" height="32"><use href="#mark"/></svg>Velum</div>
+    <div style="display:flex;gap:20px"><span class="xh" style="font-size:16px"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@velumtrade</span><span class="xh" style="font-size:16px"><svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>t.me/velumtrade</span></div>
+  </div>
+  <div style="position:absolute;left:64px;right:64px;top:134px">
+    <div class="eyebrow">Live on Robinhood Chain</div>
+    <h1 style="font-size:76px;margin-top:14px">Buy. Trade. Track.<br><em>From your wallet.</em></h1>
+    <p class="sub" style="font-size:20px;margin-top:14px">Stock Tokens like <b>TSLA</b>, <b>NVDA</b> and <b>AAPL</b>: spot with ETH or USDG,<br>perps up to 5x, and your P&amp;L live.</p>
+  </div>
+  <div class="tcard" style="left:64px;top:452px;width:952px;height:236px;padding:18px;display:grid;grid-template-columns:420px 1fr;gap:26px;align-items:center">
+    <div><div class="vig" style="padding:14.7px 16.6px">
+      <div class="ln"><span class="lbl" style="font-size:11.5px">You pay</span><span class="usd" style="font-size:11.5px">≈ $54.64</span></div>
+      <div class="ln" style="margin-top:5.5px"><span style="display:flex;align-items:center;gap:8.3px"><span class="disc d-eth" style="width:23.9px;height:23.9px"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M11.944 17.97L4.58 13.62 11.943 24l7.37-10.38-7.372 4.35h.003zM12.056 0L4.69 12.223l7.365 4.354 7.365-4.35L12.056 0z"/></svg></span><span class="amt" style="font-size:20.2px">0.03 ETH</span></span></div>
+      <div style="display:flex;justify-content:center;margin:7.4px 0"><span style="width:23.9px;height:23.9px;border-radius:8px;display:grid;place-items:center;background:#16171C;border:1px solid rgba(255,255,255,.1);color:var(--acc);font-size:12.9px">↓</span></div>
+      <div class="ln"><span class="lbl" style="font-size:11.5px">You get</span><span class="usd" style="font-size:11.5px">≈ $54.60</span></div>
+      <div class="ln" style="margin-top:5.5px"><span style="display:flex;align-items:center;gap:8.3px"><span class="disc d-st" style="width:23.9px;height:23.9px;font-size:10.1px">N</span><span class="amt" style="font-size:20.2px">0.3465 NVDA</span></span></div>
+      <div style="margin-top:11.0px;font-size:11.0px;color:var(--faint)">One swap · minimum protected · 24/7</div>
+    </div></div>
+    <div>
+      <div style="display:flex;align-items:center;gap:12px"><span class="num">01</span><span class="tag live" style="font-size:10.5px">Live</span></div>
+      <h3 style="font-size:31px;margin-top:10px">Buy with ETH or USDG</h3>
+      <p style="font-size:18px;margin-top:10px">One swap on Robinhood Chain. The Stock Token lands in your own wallet.</p>
+    </div>
+  </div><div class="tcard" style="left:64px;top:704px;width:952px;height:236px;padding:18px;display:grid;grid-template-columns:420px 1fr;gap:26px;align-items:center">
+    <div><div class="vig" style="padding:12.9px 16.6px">
+      <div class="pill" style="padding:6.4px 11.0px 6.4px 7.4px;font-size:11.5px;color:var(--text)"><span style="width:7.4px;height:7.4px;border-radius:50%;background:var(--up);box-shadow:0 0 10px var(--up)"></span>Funded from Robinhood Chain</div>
+      <div class="ln" style="margin-top:9.2px"><span class="lbl" style="font-size:11.5px">0.02 ETH →</span><span class="amt" style="font-size:16.6px">34.61 USDC</span></div>
+      <div class="seg2" style="font-size:12.9px;margin-top:11.0px"><div style="background:rgba(63,207,142,.16);color:var(--up);padding:6.4px 0">Long</div><div style="color:var(--muted);padding:6.4px 0">Short</div></div>
+      <div style="position:relative;height:4px;border-radius:2px;background:#22242B;margin-top:14.7px"><div style="position:absolute;left:0;top:0;bottom:0;width:50%;border-radius:2px;background:linear-gradient(90deg,#6E79F3,#8F96FF)"></div><div style="position:absolute;left:50%;top:50%;width:12.9px;height:12.9px;margin:-6.4px 0 0 -6.4px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px rgba(143,150,255,.25)"></div></div>
+      <div style="display:flex;justify-content:space-between;margin-top:10.1px;font-size:11.0px;color:var(--faint)"><span>1x</span><span style="color:var(--text);font-weight:600">3x isolated</span><span>5x</span></div>
+    </div></div>
+    <div>
+      <div style="display:flex;align-items:center;gap:12px"><span class="num">02</span><span class="tag live" style="font-size:10.5px">Live</span></div>
+      <h3 style="font-size:31px;margin-top:10px">Perps up to 5x</h3>
+      <p style="font-size:18px;margin-top:10px">Fund it with ETH or USDG straight from Robinhood Chain. Long or short, isolated margin.</p>
+    </div>
+  </div><div class="tcard" style="left:64px;top:956px;width:952px;height:236px;padding:18px;display:grid;grid-template-columns:420px 1fr;gap:26px;align-items:center">
+    <div><div class="vig" style="padding:12.9px 16.6px">
+      <div class="ln"><span class="lbl" style="font-size:11.5px">Wallet value</span><span class="tag live" style="font-size:9.2px">Live</span></div>
+      <div class="amt" style="font-size:25.8px;margin:3.7px 0 3.7px">$312.75</div>
+      <div class="ln" style="padding:8.3px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+        <span style="display:flex;align-items:center;gap:8.3px"><span class="disc d-st" style="width:23.9px;height:23.9px;font-size:10.1px">N</span><span><b style="display:block;font-weight:600;font-size:12.9px;color:var(--text)">NVDA</b><span class="usd" style="font-size:10.6px">0.3465</span></span></span>
+        <span style="display:flex;align-items:center;gap:9.2px"><span style="text-align:right"><b class="amt" style="display:block;font-size:13.3px">$55.84</b><span class="upc" style="font-size:10.6px">+$1.24 (+2.27%)</span></span><span class="sellb" style="font-size:11.0px;padding:4.6px 9.2px">Sell</span></span>
+      </div>
+      <div class="ln" style="padding:8.3px 0;">
+        <span style="display:flex;align-items:center;gap:8.3px"><span class="disc d-st" style="width:23.9px;height:23.9px;font-size:10.1px">T</span><span><b style="display:block;font-weight:600;font-size:12.9px;color:var(--text)">TSLA</b><span class="usd" style="font-size:10.6px">0.2405</span></span></span>
+        <span style="display:flex;align-items:center;gap:9.2px"><span style="text-align:right"><b class="amt" style="display:block;font-size:13.3px">$91.67</b><span class="upc" style="font-size:10.6px">+$0.62 (+0.68%)</span></span><span class="sellb" style="font-size:11.0px;padding:4.6px 9.2px">Sell</span></span>
+      </div>
+    </div></div>
+    <div>
+      <div style="display:flex;align-items:center;gap:12px"><span class="num">03</span><span class="tag live" style="font-size:10.5px">Live</span></div>
+      <h3 style="font-size:31px;margin-top:10px">A live Portfolio</h3>
+      <p style="font-size:18px;margin-top:10px">Value and P&amp;L of every holding, from your own trades. Sell in one tap.</p>
+    </div>
+  </div>
+  <div style="position:absolute;left:64px;right:64px;bottom:66px;display:flex;align-items:center;gap:14px">
+    <span class="cta w" style="font-size:20px;padding:13px 22px">velumtrade.com</span>
+    <span style="color:var(--faint);font-size:15px">Start in under a minute.</span>
+  </div>
+  <div class="hfoot" style="position:absolute;left:64px;right:64px;bottom:24px;font-size:12px;display:flex;justify-content:space-between;gap:24px"><span>Velum is an independent project on Robinhood Chain and is not affiliated with Robinhood. Perps are leveraged and can be liquidated. Not investment advice.</span><span style="white-space:nowrap">Illustrative values</span></div>
+</section>
+
+<section class="art" id="today-header" style="width:1500px;height:500px">
+  <div class="glow" style="width:1300px;height:1300px;left:380px;top:-980px;background:radial-gradient(circle, rgba(143,150,255,.22), rgba(110,121,243,.06) 45%, transparent 68%)"></div>
+  <div class="glow" style="width:900px;height:900px;right:-300px;bottom:-560px;background:radial-gradient(circle, rgba(194,184,255,.08), transparent 65%)"></div>
+  <div class="curtain" style="-webkit-mask-image:radial-gradient(60% 55% at 50% 0%, #000, transparent 75%);mask-image:radial-gradient(60% 55% at 50% 0%, #000, transparent 75%)"></div>
+  <svg class="bigmark" style="width:560px;height:560px;right:-120px;top:-180px;opacity:.06"><use href="#markfine"/></svg>
+  <div class="vignette"></div>
+  <div style="position:absolute;left:440px;top:66px;width:560px">
+    <div class="brand" style="font-size:22px"><svg width="28" height="28"><use href="#mark"/></svg>Velum</div>
+    <h1 style="font-size:62px;margin-top:22px">Buy. Trade. Track.<br><em>From your wallet.</em></h1>
+    <p class="sub" style="font-size:18px;margin-top:14px">Stock Tokens on Robinhood Chain: spot with ETH or USDG, perps up to 5x, live P&amp;L.</p>
+    <div style="display:flex;gap:22px;margin-top:20px;align-items:center"><span class="cta w" style="font-size:15px;padding:9px 15px">velumtrade.com</span><span class="xh" style="font-size:15px"><svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@velumtrade</span><span class="xh" style="font-size:15px"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>t.me/velumtrade</span></div>
+  </div>
+  <div class="tcard" style="left:1040px;top:58px;width:400px;padding:14px"><div class="vig" style="padding:13.3px 17.1px">
+      <div class="ln"><span class="lbl" style="font-size:11.9px">Wallet value</span><span class="tag live" style="font-size:9.5px">Live</span></div>
+      <div class="amt" style="font-size:26.6px;margin:3.8px 0 3.8px">$312.75</div>
+      <div class="ln" style="padding:8.5px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+        <span style="display:flex;align-items:center;gap:8.5px"><span class="disc d-st" style="width:24.7px;height:24.7px;font-size:10.4px">N</span><span><b style="display:block;font-weight:600;font-size:13.3px;color:var(--text)">NVDA</b><span class="usd" style="font-size:10.9px">0.3465</span></span></span>
+        <span style="display:flex;align-items:center;gap:9.5px"><span style="text-align:right"><b class="amt" style="display:block;font-size:13.8px">$55.84</b><span class="upc" style="font-size:10.9px">+$1.24 (+2.27%)</span></span><span class="sellb" style="font-size:11.4px;padding:4.8px 9.5px">Sell</span></span>
+      </div>
+      <div class="ln" style="padding:8.5px 0;">
+        <span style="display:flex;align-items:center;gap:8.5px"><span class="disc d-st" style="width:24.7px;height:24.7px;font-size:10.4px">T</span><span><b style="display:block;font-weight:600;font-size:13.3px;color:var(--text)">TSLA</b><span class="usd" style="font-size:10.9px">0.2405</span></span></span>
+        <span style="display:flex;align-items:center;gap:9.5px"><span style="text-align:right"><b class="amt" style="display:block;font-size:13.8px">$91.67</b><span class="upc" style="font-size:10.9px">+$0.62 (+0.68%)</span></span><span class="sellb" style="font-size:11.4px;padding:4.8px 9.5px">Sell</span></span>
+      </div>
+    </div></div>
+</section>
+</body>
+</html>

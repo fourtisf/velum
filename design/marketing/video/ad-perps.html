@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Velum perps ad</title>
+<!--
+  The "Perps are open" ad (44 s at 1920x1080, 120 BPM: one bar is 2 s and every cut lands on a beat). edit-ad.cjs
+  loads this page, hands it the footage of record-perps.cjs (AD.init) and renders it frame by frame (AD.render(t)):
+  intro 0-4 s, hook 4-8 s, product 8-32 s (the footage in a moving window, seven shots, review screens never shown),
+  features 32-36 s, outro 36-44 s. CSS animations are paused and set to the scene's clock; the footage is placed by JS.
+-->
+<style>
+  @font-face { font-family: "Inter"; src: url("../../../apps/web/app/fonts/Inter-latin.woff2") format("woff2"); font-weight: 400 600; }
+  @font-face { font-family: "Inter Tight"; src: url("../../../apps/web/app/fonts/InterTight-latin.woff2") format("woff2"); font-weight: 500 600; }
+  :root { --bg: #050608; --text: #F4F5F6; --muted: #8B9099; --faint: #5E626A; --acc: #8F96FF; --up: #3FCF8E; --down: #F25C61; --line2: rgba(255,255,255,.12);
+    --sans: "Inter", system-ui, sans-serif; --display: "Inter Tight", "Inter", system-ui, sans-serif; --ease: cubic-bezier(.22,.8,.2,1); --snap: cubic-bezier(.16,1,.3,1); }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #000; color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased; font-feature-settings: "cv11","ss01","ss03"; width: 1920px; height: 1080px; overflow: hidden; }
+  .scene { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); isolation: isolate; display: none; }
+  .scene.on { display: block; }
+  .a { animation-fill-mode: both; animation-timing-function: var(--ease); }
+  .glow { position: absolute; border-radius: 50%; z-index: -2; pointer-events: none; }
+  .grid { position: absolute; inset: -60px; z-index: -1; background-image: linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px); background-size: 80px 80px; -webkit-mask-image: radial-gradient(60% 60% at 50% 50%, #000, transparent 80%); mask-image: radial-gradient(60% 60% at 50% 50%, #000, transparent 80%); }
+  .vig { position: absolute; inset: 0; z-index: 5; pointer-events: none; background: radial-gradient(120% 95% at 50% 45%, transparent 55%, rgba(0,0,0,.7)); }
+  .grain { position: absolute; inset: 0; z-index: 6; pointer-events: none; opacity: .06; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E"); }
+  h1, .disp { font-family: var(--display); font-weight: 600; letter-spacing: -.05em; line-height: .96; }
+  .grad { background: linear-gradient(180deg, #FFFFFF 35%, #A4A9B3); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: .06em; }
+  .acc { background: linear-gradient(100deg, #D3CBFF, #8F96FF 50%, #6E79F3); -webkit-background-clip: text; background-clip: text; color: transparent; padding-bottom: .06em; }
+  .line { display: block; overflow: hidden; padding-bottom: .04em; }
+  .line > span { display: inline-block; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 14px; font-size: 21px; font-weight: 600; letter-spacing: .22em; text-transform: uppercase; color: var(--acc); }
+  .eyebrow::before { content: ""; width: 36px; height: 1.5px; background: linear-gradient(90deg, transparent, var(--acc)); }
+  .sub { color: #A3A8B2; font-size: 30px; line-height: 1.4; letter-spacing: -.01em; }
+  .chip { display: inline-flex; align-items: center; gap: 12px; border: 1px solid var(--line2); background: rgba(255,255,255,.045); border-radius: 999px; padding: 14px 26px 14px 20px; font-size: 25px; font-weight: 500; letter-spacing: -.01em; backdrop-filter: blur(6px); }
+  .chip i { width: 11px; height: 11px; border-radius: 50%; background: var(--up); box-shadow: 0 0 16px var(--up); }
+  .chip span { color: var(--muted); font-weight: 400; }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes outUp { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-36px); } }
+  @keyframes rise { from { transform: translateY(108%); } to { transform: none; } }
+  @keyframes slam { 0% { opacity: 0; transform: scale(1.55); filter: blur(26px); } 60% { opacity: 1; filter: blur(0); } 100% { opacity: 1; transform: scale(1); filter: blur(0); } }
+  @keyframes slamOut { from { opacity: 1; transform: none; filter: blur(0); } to { opacity: 0; transform: scale(.92) translateY(-30px); filter: blur(10px); } }
+  @keyframes glowIn { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
+  @keyframes pulse { 0% { opacity: .35; transform: scale(.9); } 18% { opacity: 1; transform: scale(1.08); } 100% { opacity: .55; transform: scale(1); } }
+  @keyframes draw { from { stroke-dashoffset: 120; } to { stroke-dashoffset: 0; } }
+  @keyframes lineIn { from { transform: scaleX(0); opacity: 0; } to { transform: scaleX(1); opacity: 1; } }
+  @keyframes lineOut { from { transform: scaleX(1) scaleY(1); opacity: 1; } to { transform: scaleX(1.4) scaleY(60); opacity: 0; } }
+  @keyframes flash { 0% { opacity: 0; } 12% { opacity: .55; } 100% { opacity: 0; } }
+  @keyframes ring { from { opacity: .8; transform: translate(-50%,-50%) scale(.2); } to { opacity: 0; transform: translate(-50%,-50%) scale(2.6); } }
+  @keyframes drift { from { transform: scale(1); } to { transform: scale(1.06); } }
+  @keyframes count { from { transform: translateY(0); } to { transform: translateY(-80%); } }
+  @keyframes marquee { from { transform: translateX(0); } to { transform: translateX(-1100px); } }
+  @keyframes pop { 0% { opacity: 0; transform: translateY(40px) scale(.94); } 100% { opacity: 1; transform: none; } }
+  @keyframes popOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: scale(.96); } }
+  @keyframes sweep { from { transform: translateX(-120%) skewX(-18deg); } to { transform: translateX(260%) skewX(-18deg); } }
+
+  /* ---------- product ---------- */
+  #win { position: absolute; overflow: hidden; border-radius: 26px; background: #0B0C0F; border: 1px solid rgba(255,255,255,.16);
+    box-shadow: 0 80px 160px -50px rgba(0,0,0,.95), 0 0 0 1px rgba(0,0,0,.6), 0 0 120px -20px rgba(143,150,255,.28), inset 0 1px 0 rgba(255,255,255,.08); transform-origin: 50% 0; will-change: transform; z-index: 2; }
+  #win img { position: absolute; left: 0; top: 0; transform-origin: 0 0; display: block; }
+  #win::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.05); }
+  #shadowfloor { position: absolute; z-index: 1; border-radius: 50%; background: radial-gradient(closest-side, rgba(143,150,255,.22), transparent); filter: blur(30px); }
+  .cap { position: absolute; z-index: 3; }
+  .cap h1 { font-size: 86px; margin-top: 22px; }
+  .cap .sub { margin-top: 26px; max-width: 760px; }
+  .tag { position: absolute; z-index: 4; right: 40px; bottom: 34px; display: inline-flex; align-items: center; gap: 10px; padding: 10px 15px; border-radius: 11px; background: rgba(8,9,11,.72); border: 1px solid rgba(255,255,255,.1); font-size: 15px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: rgba(244,245,246,.72); }
+  .tag i { width: 7px; height: 7px; border-radius: 50%; background: #F2C46B; }
+
+  /* ---------- features ---------- */
+  .tile { position: relative; overflow: hidden; border-radius: 28px; padding: 40px 42px; border: 1px solid rgba(255,255,255,.13); background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.015)); box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 40px 90px -40px rgba(0,0,0,.9); }
+  .tile .ic { width: 72px; height: 72px; border-radius: 20px; display: grid; place-items: center; background: linear-gradient(135deg, rgba(194,184,255,.22), rgba(110,121,243,.12)); border: 1px solid rgba(143,150,255,.35); }
+  .tile b { display: block; font-family: var(--display); font-weight: 600; font-size: 46px; letter-spacing: -.035em; margin-top: 30px; }
+  .tile span { display: block; color: var(--muted); font-size: 26px; margin-top: 10px; line-height: 1.35; }
+  .tile::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="vg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C2B8FF"/><stop offset=".55" stop-color="#8F96FF"/><stop offset="1" stop-color="#6E79F3"/></linearGradient>
+    <pattern id="sc" width="64" height="4" patternUnits="userSpaceOnUse"><rect width="64" height="2" fill="#fff"/></pattern>
+    <mask id="cm" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="35" fill="#fff"/><rect y="35" width="64" height="29" fill="url(#sc)"/></mask>
+  </defs>
+</svg>
+
+<!-- INTRO 0-4 s: light line, logo, PERPS slams on the downbeat at 2 s, ARE OPEN. -->
+<section class="scene" id="intro" data-start="0" data-dur="4">
+  <div class="a" style="position:absolute;inset:0;animation:drift 4s linear both">
+    <div class="glow a" style="width:1700px;height:1700px;left:110px;top:-310px;background:radial-gradient(circle, rgba(143,150,255,.30), rgba(110,121,243,.08) 42%, transparent 66%);animation:glowIn 1.8s .1s both, pulse 1.6s 2s both"></div>
+    <div class="grid a" style="animation:fadeIn 1.5s .3s both"></div>
+    <div class="a" style="position:absolute;left:260px;right:260px;top:539px;height:2px;background:linear-gradient(90deg, transparent, #8F96FF 25%, #fff 50%, #8F96FF 75%, transparent);box-shadow:0 0 30px #8F96FF;animation:lineIn 1s .15s both, lineOut .5s 1.95s forwards"></div>
+    <div style="position:absolute;left:0;right:0;top:150px;display:flex;justify-content:center;align-items:center;gap:20px">
+      <svg viewBox="6 6 52 52" width="76" height="76" style="filter:drop-shadow(0 0 26px rgba(143,150,255,.45))"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#vg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#cm)" stroke-dasharray="120" class="a" style="animation:draw 1.1s .5s both"/></svg>
+      <div class="a disp" style="font-size:58px;letter-spacing:-.045em;animation:fadeUp .8s 1s both">Velum</div>
+    </div>
+    <div style="position:absolute;left:0;right:0;top:300px;text-align:center">
+      <div class="a disp grad" style="display:inline-block;font-size:340px;letter-spacing:-.06em;line-height:.9;animation:slam .5s 2s both">PERPS</div>
+    </div>
+    <div style="position:absolute;left:0;right:0;top:640px;text-align:center">
+      <h1 style="font-size:150px;letter-spacing:-.05em"><span class="line"><span class="acc a" style="animation:rise .7s 2.4s both">are open.</span></span></h1>
+    </div>
+    <div style="position:absolute;left:0;right:0;top:880px;text-align:center"><div class="chip a" style="animation:fadeUp .7s 3s both"><i></i>Live now<span>&middot; velumtrade.com</span></div></div>
+  </div>
+  <div class="a" style="position:absolute;left:50%;top:470px;width:900px;height:900px;border-radius:50%;border:2px solid rgba(194,184,255,.7);opacity:0;animation:ring .9s 2s forwards;transform:translate(-50%,-50%)"></div>
+  <div class="a" style="position:absolute;inset:0;background:#fff;z-index:7;animation:flash .35s 2s both"></div>
+  <div class="vig"></div><div class="grain"></div>
+</section>
+
+<!-- HOOK 4-8 s: Go long. / Go short. / Up to 5x, ticker tape -->
+<section class="scene" id="hook" data-start="4" data-dur="4">
+  <div class="glow a" style="width:1500px;height:1500px;left:-300px;top:-300px;background:radial-gradient(circle, rgba(63,207,142,.22), transparent 62%);animation:fadeIn .3s 0s both, fadeOut .3s .9s forwards"></div>
+  <div class="glow a" style="width:1500px;height:1500px;right:-300px;top:-300px;background:radial-gradient(circle, rgba(242,92,97,.22), transparent 62%);animation:fadeIn .3s 1s both, fadeOut .3s 1.9s forwards"></div>
+  <div class="glow a" style="width:1700px;height:1700px;left:110px;top:-420px;background:radial-gradient(circle, rgba(143,150,255,.28), rgba(110,121,243,.06) 45%, transparent 66%);animation:glowIn .8s 2s both"></div>
+  <div class="grid"></div>
+  <div style="position:absolute;left:0;right:0;top:330px;text-align:center">
+    <div class="a disp" style="position:absolute;left:0;right:0;font-size:250px;color:var(--up);text-shadow:0 0 80px rgba(63,207,142,.45);animation:slam .4s 0s both, slamOut .25s .8s forwards">Go long.</div>
+    <div class="a disp" style="position:absolute;left:0;right:0;font-size:250px;color:var(--down);text-shadow:0 0 80px rgba(242,92,97,.45);animation:slam .4s 1s both, slamOut .25s 1.8s forwards">Go short.</div>
+  </div>
+  <div style="position:absolute;left:0;right:0;top:170px;display:flex;justify-content:center;align-items:flex-end;gap:40px">
+    <div class="a disp" style="font-size:120px;color:#C9CDD4;padding-bottom:62px;animation:fadeUp .5s 2s both">Up to</div>
+    <div class="a" style="height:400px;overflow:hidden;animation:slam .45s 2s both">
+      <div class="a disp acc" style="font-size:400px;line-height:400px;letter-spacing:-.06em;animation:count .6s 2.05s both;animation-timing-function:steps(4, end)"><div>1×</div><div>2×</div><div>3×</div><div>4×</div><div>5×</div></div>
+    </div>
+  </div>
+  <div class="a" style="position:absolute;left:0;right:0;top:640px;text-align:center;animation:fadeUp .6s 2.6s both"><span class="sub" style="font-size:36px">leverage on Tesla, Nvidia, Apple and more</span></div>
+  <div class="a" style="position:absolute;left:0;right:0;bottom:90px;overflow:hidden;-webkit-mask-image:linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);mask-image:linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);animation:fadeIn .5s 2.4s both">
+    <div class="a disp" style="white-space:nowrap;font-size:64px;letter-spacing:-.02em;color:transparent;-webkit-text-stroke:1.5px rgba(244,245,246,.35);animation:marquee 4s linear both;animation-delay:0s">TSLA&ensp;&middot;&ensp;NVDA&ensp;&middot;&ensp;AAPL&ensp;&middot;&ensp;META&ensp;&middot;&ensp;MSFT&ensp;&middot;&ensp;AMZN&ensp;&middot;&ensp;PLTR&ensp;&middot;&ensp;COIN&ensp;&middot;&ensp;AMD&ensp;&middot;&ensp;NFLX&ensp;&middot;&ensp;TSLA&ensp;&middot;&ensp;NVDA&ensp;&middot;&ensp;AAPL&ensp;&middot;&ensp;META&ensp;&middot;&ensp;MSFT&ensp;&middot;&ensp;AMZN</div>
+  </div>
+  <div class="a" style="position:absolute;inset:0;background:#fff;z-index:7;animation:flash .25s 2s both"></div>
+  <div class="vig"></div><div class="grain"></div>
+</section>
+
+<!-- PRODUCT 8-32 s (local 0-24): the footage in #win, placed by AD.render; captions on the scene clock -->
+<section class="scene" id="product" data-start="8" data-dur="24">
+  <div class="glow" style="width:1800px;height:1800px;left:60px;top:-520px;background:radial-gradient(circle, rgba(143,150,255,.20), rgba(110,121,243,.05) 45%, transparent 66%)"></div>
+  <div class="grid" style="opacity:.7"></div>
+  <div id="shadowfloor"></div>
+  <div id="win"><img id="foot" alt=""></div>
+
+  <!-- P1 0-3 -->
+  <div class="cap" style="left:0;right:0;top:56px;text-align:center">
+    <h1 style="font-size:76px;margin:0"><span class="line"><span class="grad a" style="animation:rise .7s .25s both, outUp .35s 2.65s forwards">Stock perps, live on Velum.</span></span></h1>
+  </div>
+  <!-- P2 3-6.5 (window right) -->
+  <div class="cap" style="left:130px;top:300px;width:820px">
+    <div class="eyebrow a" style="animation:fadeUp .5s 3.35s both, outUp .3s 6.2s forwards">Live order book</div>
+    <h1><span class="line"><span class="grad a" style="animation:rise .7s 3.45s both, outUp .3s 6.2s forwards">See the depth</span></span><span class="line"><span class="acc a" style="animation:rise .7s 3.6s both, outUp .3s 6.2s forwards">before you trade.</span></span></h1>
+    <p class="sub a" style="animation:fadeUp .6s 3.9s both, outUp .3s 6.2s forwards">Real bids and asks, refreshed every 1.5 seconds.</p>
+  </div>
+  <!-- P3 6.5-10 (window left) -->
+  <div class="cap" style="left:1010px;top:290px;width:820px">
+    <div class="eyebrow a" style="animation:fadeUp .5s 6.85s both, outUp .3s 9.7s forwards">Deposit</div>
+    <h1><span class="line"><span class="grad a" style="animation:rise .7s 6.95s both, outUp .3s 9.7s forwards">Fund from</span></span><span class="line"><span class="acc a" style="animation:rise .7s 7.1s both, outUp .3s 9.7s forwards">Robinhood Chain</span></span><span class="line"><span class="grad a" style="animation:rise .7s 7.25s both, outUp .3s 9.7s forwards">or Ethereum.</span></span></h1>
+    <p class="sub a" style="animation:fadeUp .6s 7.5s both, outUp .3s 9.7s forwards">Pay with ETH or USDG. It arrives in your perps account as USDC.</p>
+  </div>
+  <!-- P4 10-14 (window right, narrow) -->
+  <div class="cap" style="left:130px;top:300px;width:900px">
+    <div class="eyebrow a" style="animation:fadeUp .5s 10.35s both, outUp .3s 13.7s forwards">Long or short</div>
+    <h1><span class="line"><span class="grad a" style="animation:rise .7s 10.45s both, outUp .3s 13.7s forwards">Up to 5×</span></span><span class="line"><span class="acc a" style="animation:rise .7s 10.6s both, outUp .3s 13.7s forwards">leverage.</span></span></h1>
+    <p class="sub a" style="animation:fadeUp .6s 10.9s both, outUp .3s 13.7s forwards">Isolated margin: a loss on one market never reaches the rest of your account.</p>
+  </div>
+  <!-- P5 14-16 (window right) -->
+  <div class="cap" style="left:130px;top:330px;width:820px">
+    <div class="eyebrow a" style="animation:fadeUp .45s 14.25s both, outUp .3s 15.7s forwards">Open</div>
+    <h1><span class="line"><span class="grad a" style="animation:rise .6s 14.3s both, outUp .3s 15.7s forwards">One click.</span></span><span class="line"><span class="acc a" style="animation:rise .6s 14.42s both, outUp .3s 15.7s forwards">Filled.</span></span></h1>
+  </div>
+  <!-- P6 16-20.5 and P7 20.5-24 (wide window, captions top) -->
+  <div class="cap" style="left:130px;top:110px;width:1700px">
+    <div class="eyebrow a" style="animation:fadeUp .5s 16.3s both, outUp .3s 20.2s forwards">Real-time P&amp;L</div>
+    <h1 style="font-size:96px"><span class="line"><span class="grad a" style="animation:rise .7s 16.4s both, outUp .3s 20.2s forwards">Watch every tick.</span></span></h1>
+  </div>
+  <div class="cap" style="left:130px;top:110px;width:1700px">
+    <div class="eyebrow a" style="animation:fadeUp .5s 20.75s both">Close</div>
+    <h1 style="font-size:96px"><span class="line"><span class="grad a" style="animation:rise .7s 20.85s both;margin-right:.24em">Close in</span><span class="acc a" style="animation:rise .7s 21s both">one tap.</span></span></h1>
+  </div>
+  <div class="tag a" id="tag-demo" style="animation:fadeIn .4s .4s both, fadeOut .2s 15.9s forwards"><i></i>Product demo &middot; test account</div>
+  <div class="tag a" style="animation:fadeIn .3s 16.1s both, fadeOut .25s 23.7s forwards"><i></i>Illustrative price move &middot; test account</div>
+  <div class="vig" style="opacity:.6"></div><div class="grain" style="opacity:.035"></div>
+</section>
+
+<!-- FEATURES 32-36 s: four tiles on the beats -->
+<section class="scene" id="features" data-start="32" data-dur="4">
+  <div class="glow a" style="width:1700px;height:1700px;left:110px;top:-560px;background:radial-gradient(circle, rgba(143,150,255,.24), rgba(110,121,243,.06) 45%, transparent 66%);animation:glowIn 1s 0s both"></div>
+  <div class="grid"></div>
+  <div style="position:absolute;left:150px;right:150px;top:110px">
+    <div class="eyebrow a" style="animation:fadeUp .45s .05s both, fadeOut .25s 3.7s forwards">Perps on Velum</div>
+    <h1 style="font-size:92px;margin-top:22px"><span class="line"><span class="grad a" style="animation:rise .6s .1s both, outUp .3s 3.65s forwards;margin-right:.24em">Pro tools.</span><span class="acc a" style="animation:rise .6s .22s both, outUp .3s 3.65s forwards">Your own account.</span></span></h1>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:62px">
+      <div class="tile a" style="animation:pop .5s .5s both, popOut .25s 3.7s forwards"><div class="ic"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#C2B8FF" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 10h14M4 14h8M4 18h12"/></svg></div><b>Live order book</b><span>Real depth beside the chart, every 1.5 seconds</span></div>
+      <div class="tile a" style="animation:pop .5s 1s both, popOut .25s 3.7s forwards"><div class="ic"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#C2B8FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg></div><b>Long or short, up to 5×</b><span>Isolated margin on every market</span></div>
+      <div class="tile a" style="animation:pop .5s 1.5s both, popOut .25s 3.7s forwards"><div class="ic"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#C2B8FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg></div><b>Fund from two chains</b><span>ETH or USDG on Robinhood Chain, or ETH on Ethereum</span></div>
+      <div class="tile a" style="animation:pop .5s 2s both, popOut .25s 3.7s forwards"><div class="ic"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#C2B8FF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></div><b>Your own account</b><span>Velum never holds your funds</span></div>
+    </div>
+  </div>
+  <div class="vig"></div><div class="grain"></div>
+</section>
+
+<!-- OUTRO 36-44 s -->
+<section class="scene" id="outro" data-start="36" data-dur="8">
+  <div class="glow a" style="width:1800px;height:1800px;left:60px;top:-560px;background:radial-gradient(circle, rgba(143,150,255,.30), rgba(110,121,243,.07) 45%, transparent 66%);animation:glowIn 1.2s 0s both, pulse 1.6s 0s both"></div>
+  <div class="grid a" style="animation:fadeIn 1s 0s both"></div>
+  <div class="a" style="position:absolute;inset:0;animation:drift 8s linear both">
+    <div style="position:absolute;left:0;right:0;top:150px;display:flex;flex-direction:column;align-items:center;text-align:center">
+      <div class="a disp" style="display:flex;align-items:center;gap:22px;font-size:62px;letter-spacing:-.04em;animation:fadeUp .8s .1s both"><svg viewBox="6 6 52 52" width="76" height="76" style="filter:drop-shadow(0 0 30px rgba(143,150,255,.4))"><path d="M12 12 L32 52 L52 12" fill="none" stroke="url(#vg)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" mask="url(#cm)"/></svg>Velum</div>
+      <h1 style="font-size:170px;margin-top:46px;letter-spacing:-.055em">
+        <span class="line"><span class="grad a" style="animation:slam .55s .3s both">Perps are open.</span></span>
+      </h1>
+      <p class="sub a" style="margin-top:30px;font-size:36px;animation:fadeUp .7s 1s both">Long or short Tesla, Nvidia, Apple and more, from your own wallet.</p>
+      <div style="display:flex;gap:18px;margin-top:52px">
+        <div class="a" style="position:relative;overflow:hidden;display:inline-flex;align-items:center;gap:14px;background:#F4F5F6;color:#0B0C10;font-weight:600;font-size:32px;letter-spacing:-.01em;padding:22px 38px;border-radius:18px;animation:fadeUp .7s 1.5s both">velumtrade.com<span class="a" style="position:absolute;top:0;bottom:0;left:0;width:40%;background:linear-gradient(90deg, transparent, rgba(255,255,255,.8), transparent);animation:sweep 1.2s 2.4s both"></span></div>
+        <div class="a" style="display:inline-flex;align-items:center;gap:14px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.05);font-weight:600;font-size:32px;letter-spacing:-.01em;padding:22px 32px;border-radius:18px;animation:fadeUp .7s 1.7s both">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="#F4F5F6"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@velumtrade</div>
+      </div>
+    </div>
+  </div>
+  <p class="a" style="position:absolute;left:180px;right:180px;bottom:52px;text-align:center;color:var(--faint);font-size:17px;line-height:1.55;animation:fadeIn 1s 2.2s both">Product demo recorded with a test wallet and a test perps account; the price move is illustrative. Perps use leverage: prices move fast and you can lose your whole margin. Velum is an independent project on Robinhood Chain, not affiliated with Robinhood. Not investment advice.</p>
+  <div class="a" style="position:absolute;inset:0;background:#fff;z-index:7;animation:flash .35s 0s both"></div>
+  <div class="vig"></div><div class="grain"></div>
+</section>
+
+<script>
+(() => {
+  const VW = 1440, VH = 810; // the footage viewport in CSS px (frames are 2x)
+  const scenes = [...document.querySelectorAll('.scene')].map((el) => ({ el, id: el.id, start: Number(el.dataset.start), dur: Number(el.dataset.dur) }));
+  const win = document.getElementById('win');
+  const img = document.getElementById('foot');
+  const floor = document.getElementById('shadowfloor');
+  let F = null; // { dir, times, marks, rects }
+  let shots = [];
+  let current = null;
+
+  const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const easeOut = (x) => 1 - Math.pow(1 - x, 3);
+  const lerp = (a, b, k) => a + (b - a) * k;
+  const lerpBox = (a, b, k) => ({ x: lerp(a.x, b.x, k), y: lerp(a.y, b.y, k), w: lerp(a.w, b.w, k), h: lerp(a.h, b.h, k) });
+  /** A camera rectangle of the window's aspect, centred on (cx, cy), `h` CSS px tall, kept inside the viewport. */
+  const cam = (cx, cy, h, aspect) => {
+    let w = h * aspect;
+    if (w > VW) { w = VW; h = w / aspect; }
+    if (h > VH) { h = VH; w = h * aspect; }
+    const x = Math.min(VW - w, Math.max(0, cx - w / 2));
+    const y = Math.min(VH - h, Math.max(0, cy - h / 2));
+    return { x, y, w, h };
+  };
+  const zoomIn = (r, k) => ({ x: r.x + (r.w * (1 - k)) / 2, y: r.y + (r.h * (1 - k)) / 2, w: r.w * k, h: r.h * k });
+  const rectAt = (name, t) => {
+    const all = F.rects.filter((r) => r.name === name);
+    return all.filter((r) => r.t <= t + 0.5).pop() || all[0];
+  };
+  const centre = (r) => [r.x + r.w / 2, r.y + r.h / 2];
+
+  function buildShots() {
+    const M = F.marks;
+    const B = {
+      p1: { x: 240, y: 186, w: 1440, h: 810 },
+      right: { x: 1010, y: 90, w: 780, h: 900 },
+      left: { x: 130, y: 90, w: 780, h: 900 },
+      tall: { x: 1190, y: 50, w: 548, h: 940 },
+      wide: { x: 120, y: 330, w: 1680, h: 640 },
+    };
+    const asp = (b) => b.w / b.h;
+    const ob = centre(rectAt('obook', 1));
+    const dm = centre(rectAt('depmodal', M.deposit + 2));
+    const tk = rectAt('ticket', M.ticket);
+    const md = centre(rectAt('modal', M.receipt));
+    const pb = centre(rectAt('posbox', M.pnl));
+    const cmd = centre(rectAt('modal', M['close-receipt']));
+    const ab = centre(rectAt('posbox', M.activity));
+    // Each shot: ad time [a, b] (product clock), window box, segments of source time with a camera each.
+    shots = [
+      { a: 0, b: 3, box: B.p1, tilt: true, segs: [{ from: M.terminal, to: M.terminal + 3, cam: { x: 0, y: 0, w: VW, h: VH }, push: 0.93 }] },
+      { a: 3, b: 6.5, box: B.right, segs: [{ from: M.book - 0.4, to: M.deposit - 0.2, cam: cam(ob[0], ob[1] - 10, 690, asp(B.right)), push: 0.9 }] },
+      { a: 6.5, b: 10, box: B.left, segs: [
+        { from: M.deposit + 1.7, to: M.deposit + 6.3, cam: cam(dm[0], dm[1], 800, asp(B.left)), push: 0.95, dur: 1.9 },
+        { from: M['deposit-end'] - 4.2, to: M['deposit-end'] - 1.2, cam: cam(dm[0], dm[1] + 120, 600, asp(B.left)), push: 0.93 },
+      ] },
+      { a: 10, b: 14, box: B.tall, segs: [{ from: M.ticket - 0.1, to: M.open - 0.35, cam: cam(tk.x + tk.w / 2, 480, 660, asp(B.tall)), push: 0.95 }] },
+      { a: 14, b: 16, box: B.right, segs: [
+        { from: M.open - 0.25, to: M.open + 0.8, cam: cam(tk.x + tk.w / 2, 640, 430, asp(B.right)), push: 0.94, dur: 0.85 },
+        { from: M.steps + 0.05, to: M.steps + 1.75, cam: cam(md[0], md[1], 650, asp(B.right)), push: 0.95 },
+      ] },
+      { a: 16, b: 20.5, box: B.wide, segs: [{ from: M.pnl + 0.6, to: M['pnl-end'], cam: cam(pb[0], pb[1] - 40, 420, asp(B.wide)), push: 0.96 }] },
+      { a: 20.5, b: 24, box: B.wide, segs: [
+        { from: M.close - 0.4, to: M.close + 0.9, cam: cam(pb[0], pb[1] - 40, 420, asp(B.wide)), push: 0.97, dur: 1.0 },
+        { from: M['close-receipt'] + 0.05, to: M['close-receipt'] + 1.6, cam: cam(cmd[0], cmd[1], 430, asp(B.wide)), push: 0.95, dur: 1.0 },
+        { from: M.activity + 0.2, to: M.activity + 3.4, cam: cam(ab[0], ab[1] - 30, 420, asp(B.wide)), push: 0.95 },
+      ] },
+    ];
+    // Segments without a duration share what is left of the shot.
+    for (const s of shots) {
+      const fixed = s.segs.reduce((n, g) => n + (g.dur || 0), 0);
+      const free = s.segs.filter((g) => !g.dur);
+      for (const g of free) g.dur = (s.b - s.a - fixed) / free.length;
+      let at = s.a;
+      for (const g of s.segs) { g.a = at; at += g.dur; }
+    }
+    // Never show the order review (it names the venue): every segment must avoid those stretches.
+    for (const s of shots) for (const g of s.segs) for (const [r0, r1] of F.review) {
+      if (g.to > r0 - 0.02 && g.from < r1) throw new Error(`shot at ${s.a}s shows the review (${g.from.toFixed(2)}-${g.to.toFixed(2)} vs ${r0}-${r1})`);
+    }
+  }
+
+  function frameAt(src) {
+    const t = F.times;
+    let lo = 0, hi = t.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (t[mid] <= src) lo = mid; else hi = mid - 1; }
+    return lo;
+  }
+
+  async function placeFootage(lt) {
+    const i = shots.findIndex((s) => lt >= s.a && lt < s.b);
+    const s = shots[i === -1 ? shots.length - 1 : i];
+    const prev = shots[Math.max(0, (i === -1 ? shots.length - 1 : i) - 1)];
+    // Window: morphs from the previous shot's box over the first 0.5 s.
+    const k = s === prev ? 1 : ease(Math.min(1, (lt - s.a) / 0.5));
+    const box = lerpBox(prev.box, s.box, k);
+    let transform = 'none';
+    if (s.tilt) {
+      const p = easeOut(Math.min(1, lt / 2.2));
+      transform = `perspective(2200px) translateY(${lerp(60, 0, p)}px) rotateX(${lerp(18, 0, p)}deg) scale(${lerp(0.9, 1, p)})`;
+      win.style.opacity = String(Math.min(1, lt / 0.35));
+    } else win.style.opacity = '1';
+    Object.assign(win.style, { left: box.x + 'px', top: box.y + 'px', width: box.w + 'px', height: box.h + 'px', transform });
+    Object.assign(floor.style, { left: box.x + box.w * 0.1 + 'px', top: box.y + box.h - 40 + 'px', width: box.w * 0.8 + 'px', height: '120px' });
+    // Segment, source time and camera.
+    const g = s.segs.filter((x) => lt >= x.a).pop() || s.segs[0];
+    const p = Math.min(1, Math.max(0, (lt - g.a) / g.dur));
+    const src = lerp(g.from, g.to, p);
+    const c = lerpBox(g.cam, zoomIn(g.cam, g.push), ease(p));
+    const sc = Math.max(box.w / c.w, box.h / c.h);
+    const f = frameAt(src);
+    const url = `${F.dir}/f${String(f).padStart(6, '0')}.jpg`;
+    if (current !== url) {
+      img.src = url;
+      await img.decode();
+      current = url;
+    }
+    Object.assign(img.style, { width: VW * sc + 'px', height: VH * sc + 'px', transform: `translate(${-c.x * sc + (box.w - c.w * sc) / 2}px, ${-c.y * sc + (box.h - c.h * sc) / 2}px)` });
+    return { shot: shots.indexOf(s), frame: f, src };
+  }
+
+  window.AD = {
+    duration: Math.max(...scenes.map((s) => s.start + s.dur)),
+    init(footage) { F = footage; buildShots(); return shots.map((s) => ({ a: s.a + 8, b: s.b + 8, segs: s.segs.map((g) => [g.from.toFixed(2), g.to.toFixed(2), ((g.to - g.from) / g.dur).toFixed(2) + 'x']) })); },
+    async render(t) {
+      const sc = scenes.find((s) => t >= s.start && t < s.start + s.dur) || scenes[scenes.length - 1];
+      for (const s of scenes) s.el.classList.toggle('on', s === sc);
+      const lt = t - sc.start;
+      for (const a of sc.el.getAnimations({ subtree: true })) { a.pause(); a.currentTime = lt * 1000; }
+      return sc.id === 'product' ? placeFootage(lt) : { scene: sc.id };
+    },
+  };
+})();
+</script>
+</body>
+</html>

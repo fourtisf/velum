@@ -117,6 +117,22 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: "Perps are open" ad (November 17 2026)
+
+- `design/marketing/video/velum-perps-are-open-1080p.mp4` (0:44, 1080p, with music; poster
+  `velum-perps-are-open-poster.jpg`) and its post copy `design/marketing/perps-ad-copy.md` (English and Indonesian, each
+  within X's 280). Intro ("PERPS are open."), a hook ("Go long. Go short. Up to 5×"), the product in a moving window
+  with a caption per shot (live order book, deposit from Robinhood Chain or Ethereum, 5× long, open, P&L, close), four
+  feature tiles, outro with velumtrade.com, @velumtrade and the risk and independence notice. The venue is not named
+  anywhere in it.
+- Footage: `record-perps.cjs` records the real mainnet web build with a throwaway wallet on a Robinhood Chain fork,
+  trading against a model of the user's perps account (nothing is sent to the exchange); the order book and mids are
+  live, the price rise is illustrative and labelled so. It also records when each order review opens, and the edit
+  refuses any shot that would show one.
+- Edit: `ad-perps.html` (all scenes, 120 BPM, every cut on a beat) rendered frame by frame by `edit-ad.cjs`
+  (`VIDEO_DIR=<out> OUT_FILE=<mp4> MUSIC=<wav>`; `STILLS=` for layout checks, `FROM`/`TO` for chunks). Music: an
+  original track synthesized by `music-perps.py` (no samples), hits laid on the edit's timeline.
+
 ## What changed: perps order book, neutral perps wording (November 17 2026)
 
 - In Perps mode the trade page shows an **Order book** beside the chart (`apps/web/components/hyperliquid/HlOrderBook.tsx`):

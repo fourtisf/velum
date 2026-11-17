@@ -75,6 +75,7 @@ describe('open flow', () => {
     const f = open('standard', 100);
     expect(text(f.review)).toEqual({
       Side: 'Long',
+      Order: 'Market, fills now',
       Size: '2.604 TSLA (about 999.75 USD)',
       Leverage: '3x isolated',
       Margin: '334.26 USDC',

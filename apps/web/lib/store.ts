@@ -108,6 +108,9 @@ export type ModalState =
   /** Deposit USDC into the user's Hyperliquid account from Arbitrum (components/hyperliquid/HlDeposit.tsx). */
   | { kind: 'hl-deposit' }
   | { kind: 'hl-withdraw' }
+  | { kind: 'hl-close'; sym: string }
+  | { kind: 'hl-tpsl'; sym: string }
+  | { kind: 'hl-margin'; sym: string }
   /** Phase 3 position management: add or remove margin, forced exit. */
   | { kind: 'manage'; id: string };
 
@@ -130,11 +133,17 @@ interface AppState {
   side: Side;
   lev: number;
   size: string;
+  /** Real perps ticket: market or limit order, the limit price, and an optional take profit / stop loss. */
+  otype: 'market' | 'limit';
+  limitPx: string;
+  tpslOn: boolean;
+  tp: string;
+  sl: string;
   spotSide: SpotSide;
   spotAmt: string;
   slip: number;
   tf: Timeframe;
-  ptab: 'pos' | 'hist';
+  ptab: 'pos' | 'orders' | 'hist';
   swapFrom: string;
   swapTo: string;
   swapAmt: string;
@@ -166,6 +175,11 @@ export const useApp = create<AppState>((set, get) => ({
   side: 'long',
   lev: 2,
   size: '500',
+  otype: 'market',
+  limitPx: '',
+  tpslOn: false,
+  tp: '',
+  sl: '',
   spotSide: 'buy',
   spotAmt: '500',
   slip: PROTOCOL.defaultSlippagePct,

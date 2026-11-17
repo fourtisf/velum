@@ -119,11 +119,27 @@ export interface Builder {
   f: number;
 }
 
-/** The `order` action parameters of @nktkas/hyperliquid for one IOC order. */
-export function orderParams(o: { asset: number; isBuy: boolean; size: string; limitPx: string; reduceOnly: boolean }, builder: Builder | null) {
+/** A TP/SL trigger entry (risk.ts tpslEntries) that rides along with an order. */
+export interface TriggerEntry {
+  a: number;
+  b: boolean;
+  p: string;
+  s: string;
+  r: boolean;
+  t: { trigger: { isMarket: boolean; triggerPx: string; tpsl: 'tp' | 'sl' } };
+}
+
+/**
+ * The `order` action parameters of @nktkas/hyperliquid for one order: IOC (market) by default, or Gtc (a limit order
+ * resting until filled or cancelled). `tpsl` attaches take profit / stop loss triggers that wait for this order to fill
+ * (grouping "normalTpsl").
+ */
+export function orderParams(o: { asset: number; isBuy: boolean; size: string; limitPx: string; reduceOnly: boolean }, builder: Builder | null, opts: { tif?: 'Ioc' | 'Gtc'; tpsl?: TriggerEntry[] } = {}) {
+  const entry = { a: o.asset, b: o.isBuy, p: o.limitPx, s: o.size, r: o.reduceOnly, t: { limit: { tif: opts.tif ?? ('Ioc' as const) } } };
+  const tpsl = opts.tpsl ?? [];
   return {
-    orders: [{ a: o.asset, b: o.isBuy, p: o.limitPx, s: o.size, r: o.reduceOnly, t: { limit: { tif: 'Ioc' as const } } }],
-    grouping: 'na' as const,
+    orders: [entry, ...tpsl] as Array<typeof entry | TriggerEntry>,
+    grouping: tpsl.length ? ('normalTpsl' as const) : ('na' as const),
     ...(builder ? { builder } : {}),
   };
 }

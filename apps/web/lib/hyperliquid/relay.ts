@@ -12,7 +12,7 @@
  * Hyperliquid would receive fell below the one the user reviewed. A retry after the deposit was sent only waits for it.
  */
 import { TOKENS } from '@velum/config';
-import { HL_MIN_DEPOSIT_USDC, RELAY_API, RELAY_DEPOSITORY, RELAY_ETHEREUM_CHAIN_ID, RELAY_HL_CHAIN_ID, RELAY_HL_USDC, RELAY_HL_USDC_DECIMALS, RELAY_ORIGIN_CHAIN_ID } from '@velum/config/src/hyperliquid';
+import { HL_MIN_DEPOSIT_USDC, RELAY_API, RELAY_DEPOSITORY, RELAY_ETHEREUM_CHAIN_ID, RELAY_HL_CHAIN_ID, RELAY_HL_USDC, RELAY_HL_USDC_DECIMALS, RELAY_ORIGIN_CHAIN_ID, requoteTooLow } from '@velum/config/src/hyperliquid';
 import { useQuery } from '@tanstack/react-query';
 import { createWalletClient, custom, decodeFunctionData, erc20Abi, isHex, type Address, type Chain, type EIP1193Provider, type Hex } from 'viem';
 import { mainnet } from 'viem/chains';
@@ -271,7 +271,7 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
         if (!hash) {
           // Re-quoted now (quotes expire); refused if Hyperliquid would get less than the minimum the user reviewed.
           const fresh = await relayQuote({ user: ctx.user, source: p.source, amount: p.amount, origin: originKey }, f);
-          if (fresh.minOut < p.plan.minOut) throw new Error(`Relay now guarantees ${hlUsdcText(fresh.minOut)} USDC, less than the ${hlUsdcText(p.plan.minOut)} you reviewed. Nothing was sent: review it again.`);
+          if (requoteTooLow(fresh.minOut, p.plan.minOut)) throw new Error(`Relay now guarantees ${hlUsdcText(fresh.minOut)} USDC, less than the ${hlUsdcText(p.plan.minOut)} you reviewed. Nothing was sent: review it again.`);
           ctx.out.base = await hlUsdcTotal(ctx.user).catch(() => null);
           const provider = await walletProvider(ctx.user);
           if (await onChain(provider, originKey)) ctx.out.switched = true;
@@ -349,7 +349,7 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
       ...(originKey === 'ethereum' ? ([['Network', 'Ethereum mainnet: your wallet switches there for the deposit and back to Robinhood Chain after']] as Array<[string, string]>) : []),
       ['Arrives', p.plan.seconds !== null && p.plan.seconds <= 60 ? 'Usually within a minute' : 'Usually within a few minutes'],
     ],
-    note: `A real deposit: your wallet sends ${paid} to Relay's contract on ${origin.label}, and Relay credits USDC to your perps account at this same address. If Relay cannot complete it, it refunds you on ${origin.label}. Velum never holds the funds.`,
+    note: `A real deposit: your wallet sends ${paid} to Relay's contract on ${origin.label}, and Relay credits USDC to your perps account at this same address. If Relay cannot complete it, it refunds you on ${origin.label}. The quote is refreshed before you sign and refused if its minimum fell more than 0.5%. Velum never holds the funds.`,
     ack: `I understand this sends real ${p.source} from my wallet on ${origin.label} through Relay to my perps account.`,
     confirmLabel: 'Deposit',
     footer: 'Your wallet signs the deposit itself. Velum never holds your funds.',

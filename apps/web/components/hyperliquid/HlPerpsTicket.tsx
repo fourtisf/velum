@@ -2,9 +2,10 @@
 /**
  * The Perps ticket on Robinhood Chain mainnet: a real long or short from the user's own Hyperliquid account on
  * Hyperliquid's XYZ stock perps (lib/hyperliquid), in the prototype's ticket layout. Size is the position value in USD,
- * leverage a whole number up to Velum's 5x (Hyperliquid takes integers), isolated margin. The order is an immediate
- * limit order at the mid price moved by the slippage setting; the flow dialog shows every number before anything is
- * signed (lib/hyperliquid/flows.ts).
+ * leverage a whole number up to Velum's 5x (Hyperliquid takes integers), isolated margin. A market order is an immediate
+ * limit order at the mid price moved by the slippage setting; a limit order rests at the user's price until it fills or
+ * is cancelled. An optional take profit / stop loss closes the position at the user's prices (lib/hyperliquid/risk.ts).
+ * The flow dialog shows every number before anything is signed (lib/hyperliquid/flows.ts).
  */
 import { PROTOCOL } from '@velum/config';
 import { HL_MAX_LEVERAGE, HL_MAX_TOKENS, HL_MIN_ORDER_USD } from '@velum/config/src/hyperliquid';
@@ -15,6 +16,7 @@ import { fmt, fmtLev } from '@/lib/format';
 import { BUILDER, builderRate, useHlBalances, useHlMarkets, useHlMid, useHlMode } from '@/lib/hyperliquid/client';
 import { openFlow } from '@/lib/hyperliquid/flows';
 import { liqEstimate, planOpen, type OpenRefusal } from '@/lib/hyperliquid/order';
+import { planLimit, planTpsl, type TpslRefusal } from '@/lib/hyperliquid/risk';
 import { PERP_VENUES, useMarket } from '@/lib/markets';
 import { slipBps } from '@/lib/onchain/quote';
 import { useApp } from '@/lib/store';
@@ -35,6 +37,14 @@ const REFUSAL: Record<OpenRefusal, { label: string; hint: string }> = {
   leverage: { label: 'Leverage not allowed', hint: `Velum trades up to ${HL_MAX_LEVERAGE}×.` },
   price: { label: 'Price unavailable', hint: '' },
 };
+const TPSL_REFUSAL: Record<Exclude<TpslRefusal, 'none'>, { label: string; hint: string }> = {
+  tpPrice: { label: 'Check the take profit', hint: 'Enter a take profit price, or leave it empty.' },
+  slPrice: { label: 'Check the stop loss', hint: 'Enter a stop loss price, or leave it empty.' },
+  tpSide: { label: 'Check the take profit', hint: 'A long takes profit above its entry, a short below it.' },
+  slSide: { label: 'Check the stop loss', hint: 'A long stops below its entry, a short above it.' },
+  slLiq: { label: 'Stop loss past liquidation', hint: 'The position would be liquidated before this stop loss. Move it closer to the entry.' },
+};
+const pnlText = (v: string) => (v.startsWith('-') ? `-$${fmt(parseWad(v.slice(1)) ?? 0n)}` : `+$${fmt(parseWad(v) ?? 0n)}`);
 
 export function HlPerpsTicket({ sym }: { sym: string }) {
   const s = useApp();
@@ -57,9 +67,20 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   const avail = bal.data ? bal.data.xyzAvailable + bal.data.mainAvailable : null;
   const slip = slipBps(s.slip);
   const bad = amountHint(s.size);
-  const res = market && px && !bad ? planOpen({ market, long, notionalUsd: s.size.trim() || '0', leverage: lev, markPx: px, slipBps: slip, currentSzi: pos?.szi }) : null;
+  const limit = s.otype === 'limit';
+  const res =
+    market && !bad && (limit || px)
+      ? limit
+        ? planLimit({ market, long, notionalUsd: s.size.trim() || '0', leverage: lev, limitPx: s.limitPx, currentSzi: pos?.szi })
+        : planOpen({ market, long, notionalUsd: s.size.trim() || '0', leverage: lev, markPx: px!, slipBps: slip, currentSzi: pos?.szi })
+      : null;
   const plan = res?.ok ? res.plan : null;
-  const liq = plan && pxW && market ? liqEstimate(pxW, long, lev, market.maxLeverage) : null;
+  // The entry the TP/SL and liquidation are estimated from: the limit price, or the mid for a market order.
+  const entryW = limit ? (plan ? parseWad(plan.limitPx) : null) : pxW;
+  const liq = plan && entryW && market ? liqEstimate(entryW, long, lev, market.maxLeverage) : null;
+  const tp = s.tpslOn && plan && market && entryW ? planTpsl({ market, long, size: plan.size, entryPx: toDecimalString(entryW), tp: s.tp, sl: s.sl, liqPx: liq }) : null;
+  const tpslBad = tp && !tp.ok && tp.reason !== 'none' ? TPSL_REFUSAL[tp.reason] : null;
+  const tpsl = tp?.ok ? tp.orders : [];
   const refVenue = m.ref ? PERP_VENUES[m.ref] : null;
 
   let hint = bad;
@@ -82,7 +103,8 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   } else if (pos && !pos.isolated) {
     b = { label: 'Cross position open', cls: 'btn-dark', disabled: true };
     hint = HL.crossHint(sym);
-  } else if (!px) b = { label: mid.isLoading ? 'Reading the price…' : 'Price unavailable', cls: 'btn-dark', disabled: true };
+  } else if (!px && !limit) b = { label: mid.isLoading ? 'Reading the price…' : 'Price unavailable', cls: 'btn-dark', disabled: true };
+  else if (limit && !s.limitPx.trim()) b = { label: 'Enter a limit price', cls: 'btn-dark', disabled: true };
   else if (bad) b = { label: 'Enter a valid size', cls: 'btn-dark', disabled: true };
   else if (!res || !res.ok) {
     const r = REFUSAL[res && !res.ok ? res.reason : 'size'];
@@ -91,10 +113,13 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   } else if (usdWad(avail ?? 0) < (parseWad(res.plan.margin) ?? 0n)) {
     b = { label: 'Not enough USDC in your perps account', cls: 'btn-dark', disabled: true };
     hint = HL.notEnough(fmt(usdWad(avail ?? 0)));
+  } else if (tpslBad) {
+    b = { label: tpslBad.label, cls: 'btn-dark', disabled: true };
+    hint = tpslBad.hint;
   } else {
     const p = res.plan;
     b = {
-      label: `Open ${s.side}`,
+      label: limit ? `Place limit ${s.side}` : `Open ${s.side}`,
       cls: long ? 'btn-up' : 'btn-down',
       disabled: false,
       onClick: () =>
@@ -109,6 +134,8 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
             mainAvailable: bal.data!.mainAvailable,
             slipPct: s.slip,
             liqEst: liq === null ? 'None' : fmt(liq),
+            otype: s.otype,
+            tpsl,
           }),
         ),
     };
@@ -137,6 +164,34 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
           Short
         </button>
       </div>
+      <div className="seg full otype" role="group" aria-label="Order type">
+        {(['market', 'limit'] as const).map((k) => (
+          <button
+            key={k}
+            className={s.otype === k ? 'on' : ''}
+            aria-pressed={s.otype === k}
+            onClick={() => s.set(k === 'limit' && !s.limitPx && px ? { otype: k, limitPx: px } : { otype: k })}
+          >
+            {k === 'market' ? 'Market' : 'Limit'}
+          </button>
+        ))}
+      </div>
+      {limit ? (
+        <>
+          <div className="fl">
+            <label htmlFor="t-limit">Limit price</label>
+            {px ? (
+              <button type="button" className="linkbtn" onClick={() => s.set({ limitPx: px })}>
+                Mid {px}
+              </button>
+            ) : null}
+          </div>
+          <div className="inp">
+            <input id="t-limit" {...amountInputProps(s.limitPx, HINT)} value={s.limitPx} placeholder={px ?? '0.00'} onChange={(e) => s.set({ limitPx: e.target.value })} />
+            <span className="unit">USDC</span>
+          </div>
+        </>
+      ) : null}
       <div className="fl">
         <label htmlFor="t-size">Size</label>
         <span className="balline">
@@ -192,20 +247,50 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
           {HL.levLocked(sym, lockedLev)}
         </p>
       ) : null}
-      <div className="fl">
-        <span>Slippage limit</span>
-      </div>
-      <div className="seg full" role="group" aria-label="Slippage">
-        {PROTOCOL.slippageOptionsPct.map((x) => (
-          <button key={x} className={s.slip === x ? 'on' : ''} aria-pressed={s.slip === x} onClick={() => s.set({ slip: x })}>
-            {x}%
-          </button>
-        ))}
-      </div>
+      {limit ? null : (
+        <>
+          <div className="fl">
+            <span>Slippage limit</span>
+          </div>
+          <div className="seg full" role="group" aria-label="Slippage">
+            {PROTOCOL.slippageOptionsPct.map((x) => (
+              <button key={x} className={s.slip === x ? 'on' : ''} aria-pressed={s.slip === x} onClick={() => s.set({ slip: x })}>
+                {x}%
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <label className="tpsl-toggle">
+        <input type="checkbox" checked={s.tpslOn} onChange={(e) => s.set({ tpslOn: e.target.checked })} />
+        <span>Take profit / Stop loss</span>
+      </label>
+      {s.tpslOn ? (
+        <div className="tpsl-grid">
+          {(['tp', 'sl'] as const).map((k) => {
+            const o = tpsl.find((x) => x.kind === k);
+            return (
+              <div key={k}>
+                <label htmlFor={`t-${k}`}>{k === 'tp' ? 'Take profit' : 'Stop loss'}</label>
+                <div className="inp sm">
+                  <input
+                    id={`t-${k}`}
+                    {...amountInputProps(s[k], HINT)}
+                    value={s[k]}
+                    placeholder={k === 'tp' ? (long ? 'Above entry' : 'Below entry') : long ? 'Below entry' : 'Above entry'}
+                    onChange={(e) => s.set(k === 'tp' ? { tp: e.target.value } : { sl: e.target.value })}
+                  />
+                </div>
+                <small className={o ? (o.pnl.startsWith('-') ? 'down' : 'up') : 'faint'}>{o ? `${pnlText(o.pnl)} at trigger` : '—'}</small>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
       <div className="sumbox">
         <div>
-          <span>Price</span>
-          <b>{pxW ? fmt(pxW) : '—'}</b>
+          <span>{limit ? 'Limit price' : 'Price'}</span>
+          <b>{limit ? (plan ? fmt(parseWad(plan.limitPx) ?? 0n) : '—') : pxW ? fmt(pxW) : '—'}</b>
         </div>
         <div>
           <span>Position</span>

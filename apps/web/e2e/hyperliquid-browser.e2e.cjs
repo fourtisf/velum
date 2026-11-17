@@ -85,6 +85,8 @@ function hyperliquid(user, { funded = true } = {}) {
         return { user: b.user, coin: b.coin, leverage: hl.leverage, maxTradeSzs: ['0', '0'], availableToTrade: ['0', '0'], markPx: MIDS[b.coin] };
       case 'userFills':
         return hl.fills;
+      case 'frontendOpenOrders':
+        return [];
       case 'maxBuilderFee':
         return 0;
       default:
@@ -284,8 +286,14 @@ async function main() {
   check('positions: the real position with side, leverage, size, entry', /Long 3×/.test(rowText) && /2\.604/.test(rowText) && /384\.12/.test(rowText), rowText);
   await snap(page, 'position');
   await row.locator('button', { hasText: 'Close' }).click();
+  // The Close dialog opens on the whole position; its button opens the review.
+  const closeDlg = page.locator('.modal');
+  await closeDlg.locator('button[aria-pressed="true"]', { hasText: 'All' }).waitFor({ timeout: 20_000 });
+  await closeDlg.locator('button.btn-block', { hasText: 'Close position' }).click();
+  await closeDlg.locator('.receipt', { hasText: 'Price limit' }).waitFor({ timeout: 20_000 });
+  await page.waitForTimeout(300);
   const c = await confirm(page, 'close', 'Close position');
-  check('close review: the whole position and its limit', /Long 2\.604 TSLA/.test(c.review) && /At least 382\.01/.test(c.review), flat(c.review));
+  check('close review: the whole position and its limit', /2\.604 TSLA \(the whole position/.test(c.review) && /At least 382\.01/.test(c.review), flat(c.review));
   check('close: receipt, the agent reused (no new approval)', c.ok && /Closed \| 2\.604 TSLA/.test(flat(c.text)) && /Already done/.test(c.text), flat(c.text).slice(-300));
   const cl = hl.exchange[4];
   check('close order: signed by the agent, reduce-only IOC sell of the whole size', hl.exchange.length === 5 && cl.signer === agent && JSON.stringify(cl.action.orders) === JSON.stringify([{ a: 110001, b: false, p: '382.01', s: '2.604', r: true, t: { limit: { tif: 'Ioc' } } }]), JSON.stringify(cl?.action));

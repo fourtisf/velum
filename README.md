@@ -117,6 +117,28 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: perps risk tools (November 17 2026)
+
+- **Take profit / stop loss** on the ticket (checkbox, two prices, the P&L at each trigger) and on any position (TP/SL
+  button: set, replace or remove). Reduce-only trigger market orders; on a market order Velum fills first, then sets TP/SL
+  on the whole position (`positionTpsl`, sized to it and following it); on a limit order they wait for its fill
+  (`normalTpsl`). A long's stop must sit between its liquidation price and its entry (and the other way for a short), or
+  the ticket says why (`planTpsl` in `apps/web/lib/hyperliquid/risk.ts`).
+- **Limit orders**: Market / Limit on the ticket; a limit order rests at the user's price (Gtc), sized and margined at it.
+- **Orders** tab next to Positions: limit orders and TP/SL with **Cancel** and **Cancel all**; the position row shows its
+  TP / SL.
+- **Close** opens a dialog: 25 / 50 / 75% or all (a partial close must be at least 10 USD). **Margin**: add to or remove
+  from an isolated position, with the new liquidation price estimate (Hyperliquid's formula), topping up the stock perps
+  balance from the main one when needed.
+- All of these are signed by the browser's trading key (the wallet signs once to enable trading); none can withdraw.
+- Fix: Relay re-quotes (deposits and withdrawals) no longer refuse a minimum that drifted by a few millionths; they go
+  ahead within 0.5% of the reviewed minimum and refuse anything lower (`RELAY_REQUOTE_TOLERANCE_BPS`). The withdrawal e2e
+  caught it against Relay's live API.
+- Checked: `apps/web/tests/hl-risk.mainnet.test.ts` (exact TP/SL checks and P&L, trigger orders, limit orders, partial
+  closes, margin math, open orders, each flow), and `apps/web/e2e/hyperliquid-risk.e2e.cjs` (23 checks in the browser:
+  market long with TP/SL, TP/SL on the position and under Orders, replacing the TP, adding margin, closing half, a resting
+  limit order and its cancel, cancel all, 360 px). The other perps suites pass (35, 27, 17, 18, 18).
+
 ## What changed: withdraw from the perps account (November 17 2026)
 
 - **Withdraw** sits next to **+ Deposit** under the perps balance on the ticket, and **Withdraw from perps** next to

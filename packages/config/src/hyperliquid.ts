@@ -68,6 +68,14 @@ export const RELAY_ETHEREUM_CHAIN_ID = 1;
 export const RELAY_HL_CHAIN_ID = 1337;
 export const RELAY_HL_USDC = '0x00000000000000000000000000000000' as const;
 export const RELAY_HL_USDC_DECIMALS = 8;
+/**
+ * Relay quotes are fetched again right before the wallet signs. Its guaranteed minimum drifts by a few millionths
+ * between quotes, so Velum goes ahead when the fresh minimum is at most this far below the one the user reviewed
+ * (0.5%), and refuses anything lower.
+ */
+export const RELAY_REQUOTE_TOLERANCE_BPS = 50n;
+/** True when a fresh Relay minimum is more than RELAY_REQUOTE_TOLERANCE_BPS below the reviewed one. */
+export const requoteTooLow = (fresh: bigint, reviewed: bigint): boolean => fresh * 10_000n < reviewed * (10_000n - RELAY_REQUOTE_TOLERANCE_BPS);
 
 /**
  * Withdrawals out of the perps account through Relay (to Robinhood Chain as USDG or ETH, or to Ethereum as ETH). A

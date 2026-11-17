@@ -5,7 +5,8 @@
  * re-reads what it needs and is skipped when already done (an approved agent, the leverage already set, enough margin).
  *
  *  open:  enable trading (the user's wallet approves a browser-held agent, once per 30 days) -> move margin into the
- *         stock perps balance (standard accounts only) -> isolated leverage -> IOC order at the reviewed limit price.
+ *         stock perps balance (standard accounts only) -> isolated leverage -> IOC order at the reviewed limit price
+ *         (or a Gtc limit order with its TP/SL attached) -> TP/SL on the position (market orders with TP/SL).
  *  close: (enable trading if needed) -> reduce-only IOC order for the whole position.
  *
  * An IOC order that cannot fill within the limit is cancelled by Hyperliquid: nothing is traded and the step says so.
@@ -16,6 +17,7 @@ import { isUserRejection } from '../onchain/errors';
 import { agentListed, clearAgent, loadAgent, type StoredAgent } from './agent';
 import { BUILDER, agentClient, approveBuilder, approveNewAgent, builderApproved, builderRate, freshAsset, info, moveToXyz, type HlMode } from './client';
 import { orderOutcome, orderParams, type Builder, type ClosePlan, type OpenPlan } from './order';
+import { tpslEntries, type TpslOrder } from './risk';
 
 export type Row = [ReactNode, ReactNode];
 
@@ -122,13 +124,20 @@ export interface OpenInput {
   slipPct: number;
   /** Shown in the review: estimated liquidation price, or null. */
   liqEst: string | null;
+  /** A market order (immediate, the default) or a limit order resting at plan.limitPx until filled or cancelled. */
+  otype?: 'market' | 'limit';
+  /** Take profit / stop loss to set with the order (risk.ts planTpsl). */
+  tpsl?: TpslOrder[];
 }
 
 const cents = (n: number): string => (Math.ceil(n * 100) / 100).toFixed(2);
 
-/** Opening (or adding to) a long or short position. */
+/** Opening (or adding to) a long or short position, at market or with a limit order, optionally with TP/SL. */
 export function openFlow(p: OpenInput): HlFlowSpec {
   const side = p.plan.isBuy ? 'Long' : 'Short';
+  const limit = p.otype === 'limit';
+  const tpsl = p.tpsl ?? [];
+  const long = p.plan.isBuy;
   const margin = Number(p.plan.margin);
   const steps: HlStep[] = firstSteps();
   if (p.mode === 'standard') {
@@ -157,44 +166,83 @@ export function openFlow(p: OpenInput): HlFlowSpec {
     },
   });
   steps.push({
-    t: `${side} ${p.plan.size} ${p.sym}`,
-    d: `An immediate order at most ${p.plan.limitPx} USDC per token (${p.plan.isBuy ? 'buy' : 'sell'}); cancelled if it cannot fill`,
+    t: limit ? `Limit ${side.toLowerCase()} ${p.plan.size} ${p.sym} at ${p.plan.limitPx}` : `${side} ${p.plan.size} ${p.sym}`,
+    d: limit
+      ? `Rests on the order book until it fills at ${p.plan.limitPx} or better, or you cancel it${tpsl.length ? '; the TP/SL wait for it to fill' : ''}`
+      : `An immediate order at most ${p.plan.limitPx} USDC per token (${p.plan.isBuy ? 'buy' : 'sell'}); cancelled if it cannot fill`,
     run: async (ctx) => {
-      const res = await agentClient(need(ctx)).order(orderParams({ ...p.plan, reduceOnly: false }, BUILDER));
+      const opts = limit ? { tif: 'Gtc' as const, tpsl: tpslEntries({ asset: p.market.asset, long, size: p.plan.size, orders: tpsl }) } : {};
+      const res = await agentClient(need(ctx)).order(orderParams({ ...p.plan, reduceOnly: false }, BUILDER, opts));
       const o = orderOutcome(res);
       if (o.kind === 'error') throw new Error(o.message);
-      if (o.kind === 'resting') throw new Error('The order did not fill immediately.');
+      if (o.kind === 'resting') {
+        if (!limit) throw new Error('The order did not fill immediately.');
+        ctx.out.resting = o.oid;
+        return `Order #${o.oid} placed at ${p.plan.limitPx}`;
+      }
       ctx.out.filled = o;
       return `Filled ${o.totalSz} ${p.sym} at ${o.avgPx}`;
     },
   });
+  if (!limit && tpsl.length)
+    steps.push({
+      t: tpsl.length === 2 ? 'Set take profit and stop loss' : tpsl[0]!.kind === 'tp' ? 'Set take profit' : 'Set stop loss',
+      d: 'Trigger orders on the whole position that close it at your prices',
+      run: async (ctx) => {
+        // Sized to the whole position now (it may have been added to), and following it from then on.
+        const st = await info.clearinghouseState({ user: ctx.user, dex: HL_DEX });
+        const pos = (st.assetPositions as Array<{ position: { coin: string; szi: string } }>).find((a) => a.position.coin === p.market.coin)?.position;
+        const size = pos ? pos.szi.replace(/^-/, '') : p.plan.size;
+        const res = await agentClient(need(ctx)).order({ orders: tpslEntries({ asset: p.market.asset, long, size, orders: tpsl }), grouping: 'positionTpsl', ...(BUILDER ? { builder: BUILDER } : {}) });
+        const statuses = (res as { response?: { data?: { statuses?: unknown[] } } }).response?.data?.statuses ?? [];
+        const bad = statuses.find((x) => x && typeof x === 'object' && 'error' in x) as { error?: unknown } | undefined;
+        if (bad) throw new Error(`The position is open, but the TP/SL was refused: ${String(bad.error)}. Set it again from the position.`);
+        return tpsl.map((t) => `${t.kind === 'tp' ? 'TP' : 'SL'} ${t.triggerPx}`).join(' · ');
+      },
+    });
+  const tpslRows: Array<[string, string]> = tpsl.map((t) => [t.kind === 'tp' ? 'Take profit' : 'Stop loss', `${t.triggerPx} (P&L about ${t.pnl.startsWith('-') ? '-$' + t.pnl.slice(1) : '+$' + t.pnl})`]);
   return {
-    title: `${side} ${p.sym}`,
+    title: limit ? `Limit ${side.toLowerCase()} ${p.sym}` : `${side} ${p.sym}`,
     review: [
       ['Side', side],
+      ['Order', limit ? `Limit at ${p.plan.limitPx}, good until cancelled` : 'Market, fills now'],
       ['Size', `${p.plan.size} ${p.sym} (about ${p.plan.notional} USD)`],
       ['Leverage', `${p.plan.leverage}x isolated`],
       ['Margin', `${p.plan.margin} USDC`],
-      ['Price limit', `${p.plan.isBuy ? 'At most' : 'At least'} ${p.plan.limitPx} (${p.slipPct}% slippage)`],
+      ...(limit ? [] : ([['Price limit', `${p.plan.isBuy ? 'At most' : 'At least'} ${p.plan.limitPx} (${p.slipPct}% slippage)`]] as Array<[string, string]>)),
       ['Liquidation (est.)', p.liqEst ?? '—'],
+      ...tpslRows,
       ['Market', `${p.sym} stock perp`],
       ['Venue', 'Hyperliquid, from your own account at this address'],
       ['Fees', BUILDER ? `The exchange's trading fee, plus Velum's ${builderRate(BUILDER.f)}` : "The exchange's trading fee; Velum adds none"],
     ],
     note:
-      'A real perps order from your own account. Funding is paid hourly and the position can be liquidated. Public, not private.' +
+      (limit ? 'A real limit order from your own account: it can fill at any time while it rests, and its margin is reserved meanwhile. ' : 'A real perps order from your own account. ') +
+      'Funding is paid hourly and the position can be liquidated. Public, not private.' +
       (p.mode === 'standard' && p.xyzAvailable < margin ? ` ${cents(margin - p.xyzAvailable)} USDC moves from your main balance to the stock perps balance first.` : ''),
     ack: 'I understand this is a real leveraged trade with real money, and that I can lose my margin.',
-    confirmLabel: 'Start trade',
+    confirmLabel: limit ? 'Place order' : 'Start trade',
     steps,
     done: (ctx) => {
       const f = ctx.out.filled as { totalSz: string; avgPx: string; oid: number } | undefined;
+      const rest = ctx.out.resting as number | undefined;
+      if (rest !== undefined)
+        return {
+          rows: [
+            ['Order', `#${rest}, resting`],
+            ['Limit', `${side} ${p.plan.size} ${p.sym} at ${p.plan.limitPx}`],
+            ['Leverage', `${p.plan.leverage}x isolated`],
+            ...tpslRows,
+          ],
+          toast: `Limit order placed`,
+        };
       return {
         rows: [
           ['Side', side],
           ['Filled', f ? `${f.totalSz} ${p.sym}` : '—'],
           ['Average price', f ? `${f.avgPx} USDC` : '—'],
           ['Leverage', `${p.plan.leverage}x isolated`],
+          ...tpslRows,
           ['Order', f ? `#${f.oid}` : '—'],
         ],
         toast: `${side} ${p.sym} opened`,

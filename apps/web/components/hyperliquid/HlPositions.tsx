@@ -1,16 +1,16 @@
 'use client';
 /**
  * The positions card on Robinhood Chain mainnet: the user's real positions in the Velum markets on Hyperliquid's XYZ
- * stock perps, read from Hyperliquid every 6 s, each with a Close (a reduce-only immediate order, lib/hyperliquid/flows),
- * and their recent fills under Activity. Same layout as the simulated card (components/trade/Positions.tsx).
+ * stock perps, read from Hyperliquid every 6 s, each with its take profit / stop loss and TP/SL, Margin and Close
+ * (dialogs in HlManage.tsx), the open orders (limit, TP, SL) under Orders with Cancel, and recent fills under Activity.
+ * Same layout as the simulated card (components/trade/Positions.tsx).
  */
 import { parseWad } from '@velum/math';
 import { HL } from '@/lib/copy';
 import { ago, fmt, fmtLev } from '@/lib/format';
 import { useHlBalances, useHlFills, useHlMarkets, useHlMid, useHlMode, type HlFill, type HlPosition } from '@/lib/hyperliquid/client';
-import { closeFlow } from '@/lib/hyperliquid/flows';
-import { planClose } from '@/lib/hyperliquid/order';
-import { slipBps } from '@/lib/onchain/quote';
+import { cancelFlow, useHlOpenOrders } from '@/lib/hyperliquid/manage';
+import { KIND_LABEL, tpslOf, type OpenOrder } from '@/lib/hyperliquid/risk';
 import { useApp } from '@/lib/store';
 import { I } from '../icons';
 import { Av } from '../ui';
@@ -26,25 +26,29 @@ const nonzero = (v: string): boolean => {
 };
 const signed = (v: string): string => (v.startsWith('-') ? `-$${dec(v.slice(1))}` : `+$${dec(v)}`);
 
-function CloseButton({ p, user }: { p: HlPosition; user: `0x${string}` }) {
+function RowButtons({ p }: { p: HlPosition }) {
   const s = useApp();
   const markets = useHlMarkets();
   const market = markets.data?.[p.symbol] ?? null;
   const mid = useHlMid(market?.coin ?? null);
-  const plan = market && mid.data ? planClose({ market, szi: p.szi, markPx: mid.data, slipBps: slipBps(s.slip) }) : null;
+  const ready = !!market && !!mid.data;
   return (
-    <button
-      className="btn btn-dark btn-sm"
-      disabled={!plan}
-      title={plan ? undefined : 'Price unavailable'}
-      onClick={() => plan && s.runHlFlow(closeFlow({ user, sym: p.symbol, plan, slipPct: s.slip, pnl: p.unrealizedPnl }))}
-    >
-      Close
-    </button>
+    <div className="rowbtns">
+      <button className="btn btn-dark btn-sm" disabled={!market} onClick={() => s.openModal({ kind: 'hl-tpsl', sym: p.symbol })}>
+        TP/SL
+      </button>
+      <button className="btn btn-dark btn-sm" disabled={!market || !p.isolated} title={p.isolated ? undefined : 'Isolated positions only'} onClick={() => s.openModal({ kind: 'hl-margin', sym: p.symbol })}>
+        Margin
+      </button>
+      <button className="btn btn-dark btn-sm" disabled={!ready} title={ready ? undefined : 'Price unavailable'} onClick={() => s.openModal({ kind: 'hl-close', sym: p.symbol })}>
+        Close
+      </button>
+    </div>
   );
 }
 
 function HlPosTable({ list, user }: { list: HlPosition[]; user: `0x${string}` }) {
+  const orders = useHlOpenOrders(user);
   return (
     <div className="tbl-wrap">
       <table className="tbl">
@@ -54,6 +58,7 @@ function HlPosTable({ list, user }: { list: HlPosition[]; user: `0x${string}` })
             <th className="r">Size</th>
             <th className="r">Entry</th>
             <th className="r hide-sm">Liq. price</th>
+            <th className="r hide-sm">TP / SL</th>
             <th className="r">P&amp;L</th>
             <th className="r">
               <span className="sr">Actions</span>
@@ -65,6 +70,7 @@ function HlPosTable({ list, user }: { list: HlPosition[]; user: `0x${string}` })
             const long = !p.szi.startsWith('-');
             const roe = Number(p.returnOnEquity);
             const up = !p.unrealizedPnl.startsWith('-');
+            const ts = tpslOf(orders.data ?? [], p.coin);
             return (
               <tr key={p.coin}>
                 <td>
@@ -81,15 +87,16 @@ function HlPosTable({ list, user }: { list: HlPosition[]; user: `0x${string}` })
                 <td className="r num">{dec(p.szi.replace(/^-/, ''), 3)}</td>
                 <td className="r num">{dec(p.entryPx)}</td>
                 <td className="r num hide-sm">{p.liquidationPx ? dec(p.liquidationPx) : 'None'}</td>
+                <td className="r num hide-sm tpsl-cell">
+                  <span className="up">{ts.tp ? dec(ts.tp.px) : '—'}</span> / <span className="down">{ts.sl ? dec(ts.sl.px) : '—'}</span>
+                </td>
                 <td className="r num">
                   <span className={up ? 'up' : 'down'}>
                     {signed(p.unrealizedPnl)} <small>{Number.isFinite(roe) ? `${roe >= 0 ? '+' : ''}${(roe * 100).toFixed(1)}%` : ''}</small>
                   </span>
                 </td>
                 <td className="r">
-                  <div className="rowbtns">
-                    <CloseButton p={p} user={user} />
-                  </div>
+                  <RowButtons p={p} />
                 </td>
               </tr>
             );
@@ -129,6 +136,80 @@ function Fills({ list }: { list: HlFill[] }) {
         </div>
       ))}
     </>
+  );
+}
+
+/** The open orders (limit, take profit, stop loss) in the Velum markets, each with Cancel. */
+function Orders({ user }: { user: `0x${string}` }) {
+  const s = useApp();
+  const orders = useHlOpenOrders(user);
+  if (orders.isError)
+    return (
+      <div className="empty">
+        <p>{HL.unavailable}</p>
+      </div>
+    );
+  if (!orders.data)
+    return (
+      <div className="empty" aria-busy="true">
+        <p>Reading your orders…</p>
+      </div>
+    );
+  if (!orders.data.length)
+    return (
+      <div className="empty">
+        <p>No open orders. Limit orders and take profit / stop loss show here.</p>
+      </div>
+    );
+  const list = orders.data;
+  return (
+    <div className="tbl-wrap">
+      <table className="tbl orders-tbl">
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Type</th>
+            <th className="r">Size</th>
+            <th className="r">Price</th>
+            <th className="r">
+              {list.length > 1 ? (
+                <button className="btn btn-dark btn-sm" onClick={() => s.runHlFlow(cancelFlow({ user, orders: list }))}>
+                  Cancel all
+                </button>
+              ) : (
+                <span className="sr">Actions</span>
+              )}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((o: OpenOrder) => (
+            <tr key={o.oid}>
+              <td>
+                <div className="mcell">
+                  <Av sym={o.symbol} size="sm" />
+                  <div>
+                    <b>{o.symbol}</b>
+                    <small className={o.isBuy ? 'up' : 'down'}>{o.isBuy ? 'Buy' : 'Sell'}</small>
+                  </div>
+                </div>
+              </td>
+              <td>
+                {KIND_LABEL[o.kind]}
+                {o.reduceOnly && o.kind === 'limit' ? <small className="faint"> · reduce-only</small> : null}
+              </td>
+              <td className="r num">{o.position || !nonzero(o.sz) ? 'Position' : dec(o.sz, 3)}</td>
+              <td className="r num">{dec(o.px)}</td>
+              <td className="r">
+                <button className="btn btn-dark btn-sm" onClick={() => s.runHlFlow(cancelFlow({ user, orders: [o] }))}>
+                  Cancel
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -206,10 +287,12 @@ export function HlPositionsCard() {
   const mode = useHlMode(user);
   const bal = useHlBalances(user, mode.data);
   const fills = useHlFills(user, s.ptab === 'hist');
+  const orders = useHlOpenOrders(user);
   const positions = bal.data?.positions ?? [];
   const onConnect = () => s.openModal({ kind: 'connect' });
   let body: React.ReactNode;
   if (s.ptab === 'pos' || !user) body = <PositionsBody user={user} onConnect={onConnect} onDeposit={() => s.openModal({ kind: 'hl-deposit' })} />;
+  else if (s.ptab === 'orders') body = <Orders user={user} />;
   else if (fills.isError)
     body = (
       <div className="empty">
@@ -229,6 +312,9 @@ export function HlPositionsCard() {
       <div className="ptabs" role="tablist">
         <button role="tab" aria-selected={s.ptab === 'pos'} className={s.ptab === 'pos' ? 'on' : ''} onClick={() => s.set({ ptab: 'pos' })}>
           Positions<span className="count num">{positions.length}</span>
+        </button>
+        <button role="tab" aria-selected={s.ptab === 'orders'} className={s.ptab === 'orders' ? 'on' : ''} onClick={() => s.set({ ptab: 'orders' })}>
+          Orders<span className="count num">{orders.data?.length ?? 0}</span>
         </button>
         <button role="tab" aria-selected={s.ptab === 'hist'} className={s.ptab === 'hist' ? 'on' : ''} onClick={() => s.set({ ptab: 'hist' })}>
           Activity

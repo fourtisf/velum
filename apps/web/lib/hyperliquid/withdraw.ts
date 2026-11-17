@@ -12,8 +12,8 @@
  * exactly the amount as input, the chosen chain and token as output, the nonce-mapping message Velum expects (this
  * user, Relay's domain) and a sendAsset of exactly the amount, from the balance the account keeps its USDC in, to
  * RELAY_HL_DEPOSIT_ADDRESS (packages/config/src/hyperliquid.ts). Velum builds both signed messages itself from the
- * checked values. The quote is fetched again when the withdrawal runs and refused if Relay now guarantees less than the
- * user reviewed.
+ * checked values. The quote is fetched again when the withdrawal runs and refused if Relay now guarantees more than 0.5%
+ * less than the user reviewed (RELAY_REQUOTE_TOLERANCE_BPS).
  */
 import { TOKENS } from '@velum/config';
 import {
@@ -27,6 +27,7 @@ import {
   RELAY_HL_DEPOSIT_ADDRESS,
   RELAY_HL_USDC,
   RELAY_ORIGIN_CHAIN_ID,
+  requoteTooLow,
 } from '@velum/config/src/hyperliquid';
 import { useQuery } from '@tanstack/react-query';
 import type { Address, Hex } from 'viem';
@@ -311,7 +312,7 @@ export function relayWithdrawFlow(p: { user: Address; to: RelayDest; asset: With
   const quoteNow = async (user: Address): Promise<WithdrawPlan> => {
     const { mode } = await freshBalances(user);
     const fresh = await relayWithdrawQuote({ user, to: p.to, asset: p.asset, amount: p.amount, sourceDex: relaySourceDex(mode) }, f);
-    if (fresh.minOut < p.plan.minOut)
+    if (requoteTooLow(fresh.minOut, p.plan.minOut))
       throw new Error(`Relay now guarantees ${outText(p.asset, fresh.minOut)} ${p.asset}, less than the ${outText(p.asset, p.plan.minOut)} you reviewed. Nothing was sent: review it again.`);
     return fresh;
   };
@@ -385,7 +386,7 @@ export function relayWithdrawFlow(p: { user: Address; to: RelayDest; asset: With
       ['Signatures', 'Two in your wallet, no gas'],
       ['Arrives', p.plan.seconds !== null && p.plan.seconds <= 60 ? 'Usually within a minute' : 'Usually within a few minutes'],
     ],
-    note: `A real withdrawal: your wallet signs a transfer of ${usdc} from your perps account to Relay, and Relay sends ${p.asset} to this same address on ${dest.label}. If Relay cannot complete it, it refunds you. Velum never holds the funds.`,
+    note: `A real withdrawal: your wallet signs a transfer of ${usdc} from your perps account to Relay, and Relay sends ${p.asset} to this same address on ${dest.label}. If Relay cannot complete it, it refunds you. The quote is refreshed before you sign and refused if its minimum fell more than 0.5%. Velum never holds the funds.`,
     ack: `I understand this withdraws real USDC from my perps account through Relay to my wallet on ${dest.label}.`,
     confirmLabel: 'Withdraw',
     footer: FOOTER,

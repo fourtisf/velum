@@ -282,10 +282,13 @@ describe('the Relay withdrawal flow', () => {
     await expect(flow(f).steps[0]!.run(ctx())).rejects.toThrow(/7\.00 USDC free to withdraw, less than 12\.00.*Nothing was sent/);
     h.fresh = { mode: 'standard', bal: { xyzAvailable: 0, mainAvailable: 50, positions: [], funded: true } };
     const plan = usdg();
-    const worse = relay({ quote: (q) => (q.details.currencyOut.minimumAmount = String(plan.minOut - 1n)) });
+    const worse = relay({ quote: (q) => (q.details.currencyOut.minimumAmount = String((plan.minOut * 99n) / 100n)) });
     await expect(flow(worse.f, plan).steps[1]!.run(ctx())).rejects.toThrow(/less than the .* you reviewed\. Nothing was sent/);
     expect(h.signed).toHaveLength(0);
     expect(h.sends).toHaveLength(0);
+    // A drift of a few millionths (as between two real quotes) goes ahead.
+    const drift = relay({ quote: (q) => (q.details.currencyOut.minimumAmount = String(plan.minOut - 3n)) });
+    expect(await flow(drift.f, plan).steps[1]!.run(ctx())).toBe('Signed in your wallet');
   });
 
   it('says a refund plainly', async () => {

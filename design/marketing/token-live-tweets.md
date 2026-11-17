@@ -1,25 +1,25 @@
 # "Token is live" tweets for @velumtrade
 
-Two-post thread for the token launch, in English and Indonesian, plus a one-post version. Before posting, replace:
+Two-post thread for the token launch, in English and Indonesian, plus a one-post version. Filled in with the VELUM
+token (owner-provided, verified on Robinhood Chain mainnet on 2026-11-17: contract code present, name and symbol
+"VELUM", 18 decimals, total supply 1,000,000,000):
 
-- `$TICKER` with the token's ticker;
-- `0x________________________________________` with the token's contract address (42 characters, EIP-55 checksum,
-  exactly as the explorer shows it);
-- "on Uniswap" if the token trades somewhere else.
+- ticker `$VELUM`;
+- CA `0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec` (EIP-55 checksum, as the explorer shows it).
 
-Lengths are checked with the placeholders at full size (`node design/marketing/check-x-posts.cjs
-design/marketing/token-live-tweets.md`). Rules: no price talk, no promised returns, no "investment" language; always
-point people to the official address. Also set `NEXT_PUBLIC_TOKEN_CA` in the VPS `.env` and run `deploy/deploy.sh`, so
-the landing page shows the same address (it reads "Coming soon" until then).
+No venue is named: on that day the token had no Uniswap v3 pool against WETH or USDG. If it trades on a specific venue,
+add it (for example "Trade it on <venue>.") and re-run the length check. Rules: no price talk, no promised returns, no
+"investment" language; always point people to the official address. The website shows the same CA by default
+(`apps/web/lib/token-ca.ts`).
 
 ## English (post 1, then post 2 as its reply)
 
 <!-- post -->
-$TICKER is live on Robinhood Chain.
+$VELUM is live on Robinhood Chain.
 
-The official Velum token is now trading on Uniswap.
+The official Velum token is now live.
 
-CA: 0x________________________________________
+CA: 0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec
 
 Only trust the address shown on velumtrade.com and posted here by @velumtrade. Anything else is not ours.
 <!-- /post -->
@@ -37,11 +37,11 @@ Not investment advice. DYOR.
 ## Bahasa Indonesia (post 1, lalu post 2 sebagai balasan)
 
 <!-- post -->
-$TICKER sudah live di Robinhood Chain.
+$VELUM sudah live di Robinhood Chain.
 
-Token resmi Velum kini bisa diperdagangkan di Uniswap.
+Token resmi Velum kini sudah live.
 
-CA: 0x________________________________________
+CA: 0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec
 
 Hanya percaya alamat yang tampil di velumtrade.com dan diposting @velumtrade. Selain itu bukan milik kami.
 <!-- /post -->
@@ -59,9 +59,9 @@ Bukan saran investasi. DYOR.
 ## One-post version
 
 <!-- post -->
-$TICKER, the official Velum token, is live on Robinhood Chain.
+$VELUM, the official Velum token, is live on Robinhood Chain.
 
-CA: 0x________________________________________
+CA: 0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec
 
 Verify it on velumtrade.com. Velum: buy Stock Tokens with ETH or USDG, trade stock perps, track your P&L, all from your own wallet.
 

@@ -7,7 +7,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { getAddress, type Address } from 'viem';
 import { CA_COPY, ContractPill } from '@/components/landing/ContractPill';
-import { caExplorerUrl, copyTokenCa, parseTokenCa, shortCa } from '@/lib/token-ca';
+import { VELUM_TOKEN_CA, caExplorerUrl, copyTokenCa, parseTokenCa, shortCa } from '@/lib/token-ca';
 
 // A real checksummed address used only as test data (USDG on Robinhood Chain mainnet).
 const LOWER = '0x5fc5360d0400a0fd4f2af552add042d716f1d168';
@@ -116,10 +116,14 @@ describe('NEXT_PUBLIC_TOKEN_CA at build time (lib/env)', () => {
     return (await import('@/lib/env')).ENV.tokenCa;
   };
 
-  it('empty, lowercase or invalid: not set; checksummed: the address', async () => {
-    expect(await envCa('')).toBeNull();
-    expect(await envCa(LOWER)).toBeNull();
-    expect(await envCa('0x1234')).toBeNull();
+  it('a checksummed NEXT_PUBLIC_TOKEN_CA wins; empty, lowercase or invalid: the verified VELUM token', async () => {
     expect(await envCa(CA)).toBe(CA);
+    for (const v of ['', LOWER, '0x1234']) expect(await envCa(v)).toBe(VELUM_TOKEN_CA);
+  });
+
+  it('the VELUM token address is correctly checksummed (owner-provided, verified on chain)', () => {
+    expect(VELUM_TOKEN_CA).toBe('0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec');
+    expect(parseTokenCa(VELUM_TOKEN_CA)).toBe(VELUM_TOKEN_CA);
+    expect(VELUM_TOKEN_CA.toLowerCase()).toBe('0xa9721e7ee2c84fa60c772a82b5021485a0d2c5ec');
   });
 });

@@ -18,6 +18,16 @@ export function parseTokenCa(raw: unknown): Address | null {
   return sum === raw ? sum : null;
 }
 
+/**
+ * The VELUM token on Robinhood Chain mainnet (owner-provided, 2026-11-17), shown when NEXT_PUBLIC_TOKEN_CA does not set
+ * a valid one. Verified on chain that day: contract code present, name() and symbol() "VELUM", decimals() 18,
+ * totalSupply() 1,000,000,000 tokens.
+ */
+export const VELUM_TOKEN_CA: Address = '0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec';
+
+/** The CA the site shows: a valid NEXT_PUBLIC_TOKEN_CA, else the verified VELUM token above. */
+export const tokenCaOrDefault = (raw: unknown): Address => parseTokenCa(raw) ?? VELUM_TOKEN_CA;
+
 /** 0x1234…abcd */
 export const shortCa = (ca: Address): string => `${ca.slice(0, 6)}…${ca.slice(-4)}`;
 

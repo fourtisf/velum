@@ -1,5 +1,5 @@
 import { CHAIN, IS_MAINNET } from '@velum/config';
-import { parseTokenCa } from './token-ca';
+import { tokenCaOrDefault } from './token-ca';
 
 const browser = typeof window !== 'undefined';
 const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])$/;
@@ -72,8 +72,8 @@ export const ENV = {
   walletConnectProjectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '',
   // Public in the browser bundle; falls back to the page origin (audit web L10).
   siteUrl: process.env.NEXT_PUBLIC_SITE_URL || (browser ? window.location.origin : ''),
-  /** Velum's token contract address on Robinhood Chain, or null ("Coming soon") unless it is a correctly checksummed address (lib/token-ca). */
-  tokenCa: parseTokenCa(process.env.NEXT_PUBLIC_TOKEN_CA),
+  /** Velum's token contract address on Robinhood Chain: a correctly checksummed NEXT_PUBLIC_TOKEN_CA, else the verified VELUM token (lib/token-ca). */
+  tokenCa: tokenCaOrDefault(process.env.NEXT_PUBLIC_TOKEN_CA),
 } as const;
 
 const configuredChainId = Number(process.env.NEXT_PUBLIC_CHAIN_ID || CHAIN.id);

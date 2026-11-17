@@ -117,6 +117,15 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: VELUM token CA on the site (November 17 2026)
+
+- The landing page's "CA" pill (hero and footer) shows the VELUM token,
+  `0xa9721E7ee2C84fa60c772a82B5021485a0d2C5Ec` on Robinhood Chain mainnet (owner-provided; verified on chain: contract
+  code, name and symbol "VELUM", 18 decimals, 1,000,000,000 supply). It is the default in `apps/web/lib/token-ca.ts`, so
+  no `.env` change is needed; a correctly checksummed `NEXT_PUBLIC_TOKEN_CA` still overrides it. Copy gives the full
+  checksummed address; the link opens it on the Robinhood Chain explorer.
+- `design/marketing/token-live-tweets.md` now carries `$VELUM` and the real CA (no venue named: no Uniswap v3 pool yet).
+
 ## What changed: Telegram on the site (November 17 2026)
 
 - Velum's Telegram (`https://t.me/velumtrade`, `SOCIAL.tg` in `apps/web/lib/copy.ts`) next to X everywhere X appears:

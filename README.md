@@ -128,6 +128,9 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
 - **Video copy** (`design/marketing/how-to-buy-video-copy.md`): X posts with the video (English and Indonesian), a
   six-post thread, Reels/TikTok/Shorts captions, YouTube titles and a description with chapters, alt text, the
   on-screen text and posting tips. `check-x-posts.cjs` now counts bare domains (velumtrade.com) as 23-character links.
+- **Professional threads** (`design/marketing/threads-professional.md`): six ready-to-post threads (Introducing Velum,
+  How to buy, Portfolio, Security and custody, Stock perps, Private accounts next) plus Indonesian versions of the first
+  two; 49 posts, each within X's 280 characters (so they also fit Threads), facts checked against the code.
 
 ## What changed: "How to buy stocks on Velum" video (November 17 2026)
 

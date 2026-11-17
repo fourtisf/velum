@@ -117,6 +117,11 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: Markets rows open the market (November 17 2026)
+
+- On the Markets page a live market's whole row opens its Trade page (the market name is the keyboard link), and
+  **Buy** is a solid button next to **Long or short** (it used to be grey text and looked disabled).
+
 ## What changed: perps funded from Robinhood Chain (November 17 2026)
 
 - **Deposit to Hyperliquid with ETH or USDG from Robinhood Chain**, the Deposit dialog's new default ("From Robinhood

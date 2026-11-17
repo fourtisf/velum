@@ -525,3 +525,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 }
 /* Telegram's mark is a filled disc: a little larger than X's so the paper plane reads at nav size. */
 .iconbtn.iconbtn-tg svg{width:18px;height:18px}
+/* Markets: a live market's row opens it (the name is the keyboard link; the row click is a pointer shortcut). */
+.tbl tbody tr.rowlink{cursor:pointer}
+.tbl tbody tr.rowlink:hover{background:rgba(255,255,255,.03)}
+.rowname{color:inherit}
+.rowname:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}

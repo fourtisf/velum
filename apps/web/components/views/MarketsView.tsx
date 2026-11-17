@@ -107,12 +107,24 @@ export function MarketsView() {
             {order.map((s) => {
               const m = bySym[s]!;
               return (
-                <tr key={s} hidden={!match(s)}>
+                <tr
+                  key={s}
+                  hidden={!match(s)}
+                  className={m.status === 'live' ? 'rowlink' : undefined}
+                  // Picking a market opens it (owner request): anywhere on the row but its buttons.
+                  onClick={m.status === 'live' ? (e) => !(e.target as HTMLElement).closest('a,button') && router.push(`/app/trade/${s}`) : undefined}
+                >
                   <td>
                     <div className="mcell">
                       <Av sym={s} />
                       <div>
-                        <b>{s}</b>
+                        {m.status === 'live' ? (
+                          <Link href={`/app/trade/${s}`} className="rowname">
+                            <b>{s}</b>
+                          </Link>
+                        ) : (
+                          <b>{s}</b>
+                        )}
                         <small>{m.name}</small>
                       </div>
                     </div>
@@ -132,7 +144,7 @@ export function MarketsView() {
                   <td className="r">
                     {m.status === 'live' ? (
                       <div className="rowbtns">
-                        <Link className="btn btn-ghost btn-sm" href={`/app/trade/${s}?mode=spot`}>
+                        <Link className="btn btn-white btn-sm" href={`/app/trade/${s}?mode=spot`}>
                           Buy
                         </Link>
                         <Link className="btn btn-dark btn-sm" href={`/app/trade/${s}?mode=perps`}>

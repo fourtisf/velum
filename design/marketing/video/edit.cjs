@@ -5,6 +5,9 @@
 //     sharp), overlays the captions with fades;
 //  4. joins everything with crossfades into one 1080p H.264 file (no audio track).
 // Run: VIDEO_DIR=<dir> node design/marketing/video/edit.cjs
+// Other videos: SCENES=<file in this folder> (default scenes.html) and ORDER=<comma list of scene ids, "ui" for the
+// footage> (default intro,headline,ui,privacy,outro), e.g. the how-to-buy video: SCENES=scenes-howto.html
+// ORDER=intro,steps,ui,outro OUT_FILE=<file>.
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFileSync } = require('node:child_process');
@@ -14,13 +17,15 @@ const { chromium } = require('playwright');
 const DIR = process.env.VIDEO_DIR || path.join(__dirname, 'out');
 const OUT = process.env.OUT_FILE || path.join(DIR, 'velum-introduction-1080p.mp4');
 const FPS = 30;
+const SCENES = process.env.SCENES || 'scenes.html';
+const ORDER = (process.env.ORDER || 'intro,headline,ui,privacy,outro').split(',').map((s) => s.trim()).filter(Boolean);
 const M = JSON.parse(fs.readFileSync(path.join(DIR, 'marks.json'), 'utf8'));
 const run = (args) => execFileSync('ffmpeg', ['-y', '-hide_banner', '-loglevel', 'error', ...args], { stdio: 'inherit' });
 const probeDur = (f) => Number(execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', f]).toString().trim());
 
 async function renderScenes(page) {
   const out = {};
-  for (const id of ['intro', 'headline', 'privacy', 'outro']) {
+  for (const id of ORDER.filter((x) => x !== 'ui')) {
     await page.evaluate((id) => document.querySelectorAll('.scene').forEach((s) => s.classList.toggle('on', s.id === id)), id);
     await page.waitForTimeout(120);
     const dur = await page.evaluate((id) => Number(document.getElementById(id).dataset.dur), id);
@@ -117,8 +122,8 @@ function renderUi(ov) {
 }
 
 function assemble(parts) {
-  const order = [parts.intro, parts.headline, parts.ui, parts.privacy, parts.outro];
-  const fades = [0.6, 0.7, 0.7, 0.7];
+  const order = ORDER.map((id) => parts[id]);
+  const fades = order.slice(1).map((_, i) => (i === 0 ? 0.6 : 0.7));
   const inputs = order.flatMap((p) => ['-i', p.file]);
   const chain = order.map((p, i) => `[${i}:v]fps=${FPS},format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[s${i}]`);
   let last = 's0';
@@ -139,7 +144,7 @@ function assemble(parts) {
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
-  await page.goto(pathToFileURL(path.join(__dirname, 'scenes.html')).href, { waitUntil: 'load' });
+  await page.goto(pathToFileURL(path.join(__dirname, SCENES)).href, { waitUntil: 'load' });
   await page.evaluate(() => Promise.all(['600 40px "Inter Tight"', '500 40px "Inter Tight"', '400 20px Inter', '500 20px Inter', '600 20px Inter'].map((f) => document.fonts.load(f))));
   const fonts = await page.evaluate(() => [...document.fonts].filter((f) => f.status === 'loaded').map((f) => f.family));
   if (!fonts.includes('Inter') || !fonts.includes('Inter Tight')) throw new Error(`fonts not loaded: ${fonts.join(', ')}`);

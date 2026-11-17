@@ -117,6 +117,18 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: "How to buy stocks on Velum" video (November 17 2026)
+
+- `design/marketing/video/velum-how-to-buy-1080p.mp4` (1:46, 1080p, no audio; poster `velum-how-to-buy-poster.jpg`):
+  title, the four steps, then the real app on a mainnet fork with a test wallet: velumtrade.com, Launch app, connect
+  (no signature), pick NVDA, Spot, pay with ETH (order value and "You get" in dollars), review and confirm, the
+  Portfolio (NVDA with its value and P&L, the account card's Stock P&L, the buy in the wallet activity), Sell from the
+  Portfolio (the ticket opens with the whole balance) and the sale in the activity; outro with velumtrade.com and
+  @velumtrade. Captions say it is a product demo in a test environment.
+- Rebuild: `record-howto.cjs` (fork, chain-1 anvil, local API and the mainnet web build; see its header), then
+  `VIDEO_DIR=<out> SCENES=scenes-howto.html ORDER=intro,steps,ui,outro OUT_FILE=<file> node design/marketing/video/edit.cjs`
+  (`edit.cjs` now takes the scene file and order, defaulting to the introduction video's).
+
 ## What changed: Portfolio P&L, Sell button, USDG logo (November 17 2026)
 
 - **P&L per Stock Token** under its value in the Portfolio, and a **Stock P&L** line on the account card

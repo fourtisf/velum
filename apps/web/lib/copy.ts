@@ -91,8 +91,8 @@ export const UNI = {
   swapSub: 'Trade USDG and Stock Tokens through Uniswap on Robinhood Chain, straight from your wallet. Stock to stock routes through USDG in two swaps.',
   swapNote: 'Public onchain. The minimum protects you: if the price moves past it, the swap is refused and nothing is traded.',
   banner: HL_PERPS
-    ? 'Spot trades are real Uniswap swaps from your wallet. Perps are real trades from your own Hyperliquid account. The private account is simulated.'
-    : 'Spot trades are real Uniswap swaps from your wallet. Perps and the private account are simulated.',
+    ? 'Spot trades are real Uniswap swaps from your wallet. Perps are real trades from your own Hyperliquid account. Private accounts are in development.'
+    : 'Spot trades are real Uniswap swaps from your wallet. Perps and private accounts are in development.',
   badge: 'Live spot',
   gasHint: 'You need a little ETH on Robinhood Chain to pay the gas.',
   noPools: (sym: string) => `${sym} has no curated Uniswap pool yet.`,
@@ -133,6 +133,26 @@ export const ACCT = {
   privateNote: 'Trades today are public. Encrypted balances and positions come next.',
 } as const;
 
+/**
+ * The mainnet Portfolio and wallet (Robinhood Chain mainnet without Velum contracts, components/views/LivePortfolio.tsx):
+ * the wallet's real balances at live prices, its real trades read from the chain, and the perps account. No simulated
+ * balance, private address or demo history.
+ */
+export const LIVE = {
+  portfolioSub: 'Your wallet on Robinhood Chain at live prices, and your perps account on Hyperliquid. Everything here is real.',
+  valueLabel: 'Wallet value',
+  valueNote: 'USDG, Stock Tokens and ETH in this wallet, at live prices.',
+  assets: 'Your assets',
+  assetsSub: 'Held in your wallet on Robinhood Chain. Public onchain: you own these tokens.',
+  noAssets: 'No ETH, USDG or Stock Tokens in this wallet yet. Send some to this address on Robinhood Chain, or buy with ETH on the Trade page.',
+  activity: 'Wallet activity',
+  activitySub: 'Your trades and transfers on Robinhood Chain over the last 12 days, read from the chain.',
+  noActivity: 'No trades or transfers of USDG or Stock Tokens in the last 12 days.',
+  activityDown: 'Robinhood Chain cannot be reached right now. Try again in a moment.',
+  perpsActivity: 'Perps trades',
+  accountNote: 'Your wallet connects without any signature: Velum only reads its public balances. Trades are signed by your wallet, one by one.',
+} as const;
+
 /** Depositing USDC into the user's own Hyperliquid account from inside Velum (components/hyperliquid/HlDeposit.tsx). */
 export const DEPOSIT = {
   title: 'Deposit USDC',
@@ -154,43 +174,43 @@ export const CLOSED = {
 
 export const COPY = {
   chainLabel: ENV.localRpc ? 'the local test chain' : CHAIN.label,
-  heroBadge: IS_MAINNET ? 'Demo' : 'Testnet',
-  heroPill: IS_MAINNET ? 'Private trading demo on Robinhood Chain' : 'Simulated private perps on Robinhood Chain',
+  heroBadge: IS_MAINNET ? 'Live' : 'Testnet',
+  heroPill: IS_MAINNET ? 'Stock Tokens and perps on Robinhood Chain' : 'Simulated private perps on Robinhood Chain',
   /** The line under the landing terminal; testnet always carries the test-token notice (F11). */
   frameCap: (origin: PriceOrigin, connected: boolean, mainnet = IS_MAINNET): string =>
     mainnet
       ? `${priceSourceText(origin, true)} ${
           HL_PERPS
             ? connected
-              ? 'Spot trades are real Uniswap swaps from your wallet and perps are real trades on Hyperliquid; your practice balance is simulated.'
+              ? 'Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own Hyperliquid account.'
               : 'Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps on Hyperliquid.'
             : connected
-              ? 'Spot trades are real Uniswap swaps from your wallet; perps and your practice balance are simulated.'
-              : 'Connect your wallet to buy Stock Tokens through Uniswap or try a simulated private perp trade.'
+              ? 'Spot trades are real Uniswap swaps from your wallet.'
+              : 'Connect your wallet to buy Stock Tokens through Uniswap.'
         }`
       : `${origin === 'demo' || origin === 'loading' ? 'Live demo with test prices.' : priceSourceText(origin, false)} Connect a test wallet to try a simulated private trade. Testnet. Test tokens have no value.`,
   faqMoney: IS_MAINNET
     ? HL_PERPS
-      ? "Yes. Spot: buying or selling on the Spot ticket or the Swap page is a real Uniswap trade from your own wallet on Robinhood Chain, public onchain, with the pool fee and gas to pay. Perps: the Perps ticket places real leveraged orders from your own Hyperliquid account (USDC you deposit on Hyperliquid), public there, with Hyperliquid's trading fee and hourly funding, and a position can be liquidated. The private account is still simulated; Velum's own contracts hold money only after an external audit."
-      : "For spot, yes: buying or selling on the Spot ticket or the Swap page is a real Uniswap trade from your own wallet on Robinhood Chain, public onchain, with the pool fee and gas to pay. Perps and the private account are still simulated; Velum's own contracts hold money only after an external audit."
+      ? "Yes. Spot: buying or selling on the Spot ticket or the Swap page is a real Uniswap trade from your own wallet on Robinhood Chain, public onchain, with the pool fee and gas to pay. Perps: the Perps ticket places real leveraged orders from your own Hyperliquid account (USDC you deposit on Hyperliquid), public there, with Hyperliquid's trading fee and hourly funding, and a position can be liquidated. Private accounts (encrypted balances) are in development; Velum's own contracts hold money only after an external audit."
+      : "For spot, yes: buying or selling on the Spot ticket or the Swap page is a real Uniswap trade from your own wallet on Robinhood Chain, public onchain, with the pool fee and gas to pay. Perps and private accounts are in development; Velum's own contracts hold money only after an external audit."
     : 'No. Velum runs on Robinhood Chain testnet. Test tokens have no value, so you can learn how private trading works without risk.',
   ctaSub: IS_MAINNET
     ? HL_PERPS
       ? 'Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps on Hyperliquid, in under a minute.'
-      : 'Connect your wallet to buy Stock Tokens through Uniswap, or try a simulated private perp trade, in under a minute.'
+      : 'Connect your wallet to buy Stock Tokens through Uniswap, in under a minute.'
     : 'Get free test USDG from the faucet and make your first simulated private trade in under a minute.',
   // No claim about prices here (final audit W-07): this line is static, while prices can be closed,
   // stale or unavailable. The live state is said where prices are shown (frame caption, markets, banner).
   footer: IS_MAINNET
     ? HL_PERPS
-      ? "An independent project on Robinhood Chain, not affiliated with Robinhood. Not affiliated with Uniswap or Hyperliquid either. Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own Hyperliquid account; the private account is simulated. Velum's own contracts are not deployed or audited yet."
-      : "An independent project on Robinhood Chain, not affiliated with Robinhood. Not affiliated with Uniswap or Lighter either. Spot trades are real Uniswap swaps from your wallet; perps and the private account are simulated. Velum's own contracts are not deployed or audited yet."
+      ? "An independent project on Robinhood Chain, not affiliated with Robinhood. Not affiliated with Uniswap or Hyperliquid either. Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own Hyperliquid account; private accounts are in development. Velum's own contracts are not deployed or audited yet."
+      : "An independent project on Robinhood Chain, not affiliated with Robinhood. Not affiliated with Uniswap or Lighter either. Spot trades are real Uniswap swaps from your wallet; perps and private accounts are in development. Velum's own contracts are not deployed or audited yet."
     : 'An independent project on Robinhood Chain, not affiliated with Robinhood. Testnet with simulated trading. Test tokens have no value.',
   /** Required on every page (CLAUDE.md §1.7); the /app layout shows it as a small line (F11). */
   brand: 'An independent project on Robinhood Chain, not affiliated with Robinhood.',
   marketsSub: (origin: PriceOrigin, mainnet = IS_MAINNET): string =>
     mainnet
-      ? `${priceSourceText(origin, true)} Spot trades are real Uniswap swaps; ${HL_PERPS ? 'perps trade for real on Hyperliquid from your own account.' : "perps are simulated until Velum's contracts launch."}`
+      ? `${priceSourceText(origin, true)} Spot trades are real Uniswap swaps; ${HL_PERPS ? 'perps trade for real on Hyperliquid from your own account.' : "perps come with Velum's contracts."}`
       : `${priceSourceText(origin, false)} Trading here is simulated.`,
   networkNotice: IS_MAINNET ? '' : ' Test tokens have no value.',
   notOnNetwork: (sym: string) => `${sym} isn't on ${CHAIN.label} yet.`,
@@ -288,10 +308,10 @@ export const SIM = simCopy(IS_MAINNET);
 /** Landing page copy: the prototype's layout and words, with privacy and contract claims as design. */
 export const LANDING = {
   metaDescription: IS_MAINNET
-    ? 'Velum is a private exchange for Stock Tokens, in development. Try private spot and perps trading on real Stock Token prices in a simulated demo.'
+    ? 'Velum is an exchange for Stock Tokens on Robinhood Chain: buy with USDG or ETH through Uniswap and trade stock perps, with private accounts in development.'
     : 'Velum is a private exchange for Stock Tokens, in development. Try private spot and perps trading in a simulated demo on Robinhood Chain testnet.',
   lead: 'Velum is a private exchange for Stock Tokens, in development. Spot and perps, designed to keep your balance, positions and P&L encrypted end to end.',
-  statMarkets: IS_MAINNET ? 'Stock markets to try, spot and perps' : 'Stock markets, spot and perps',
+  statMarkets: 'Stock markets, spot and perps',
   statLev: 'Max leverage, long or short',
   // DV-F3: "0" counts what Velum controls. Velum's contracts are designed with no key that can freeze or
   // withdraw funds; they do have a price-relay key (testnet) and an optional guardian (close-only switch),
@@ -326,10 +346,10 @@ export const LANDING = {
   faqLongShort: HL_PERPS
     ? `Yes. Today the Perps ticket goes long or short on Hyperliquid's stock perps from your own Hyperliquid account, with up to ${HL_MAX_LEVERAGE}× leverage. Velum's own perps, with a maker taking the other side and up to ${P.maxLev} leverage, come later.`
     : `In the demo, yes. Perps will let you go long or short on each stock with up to ${P.maxLev} leverage. A maker will take the other side, and you will be able to close on your own at any time.`,
-  faqWho: `${IS_MAINNET ? (HL_PERPS ? 'Today, spot trades are public Uniswap swaps anyone can see onchain, and perps are public trades on Hyperliquid.' : 'Today, spot trades are public Uniswap swaps anyone can see onchain, and simulated perps stay in this browser.') : 'Today, nobody: demo trades are simulated and stay in this browser.'} Once Velum launches, the maker on the other side will see that one position, against a one-time address. Two risk services will read what they need to liquidate. The public will only see that a position changed.`,
+  faqWho: `${IS_MAINNET ? (HL_PERPS ? 'Today, spot trades are public Uniswap swaps anyone can see onchain, and perps are public trades on Hyperliquid.' : 'Today, spot trades are public Uniswap swaps anyone can see onchain.') : 'Today, nobody: demo trades are simulated and stay in this browser.'} Once Velum launches, the maker on the other side will see that one position, against a one-time address. Two risk services will read what they need to liquidate. The public will only see that a position changed.`,
   faqAnon: 'No. Moving tokens in and out will be public. If you want deposits harder to link, vary amounts and timing and withdraw to a fresh wallet.',
   faqLoss: 'No. Each position is designed to have its own margin, and losses stop there. You could lose all of it, so start small once real trading opens.',
-  faqOffline: `${IS_MAINNET ? (HL_PERPS ? 'Velum holds nothing today: spot trades settle straight to your wallet through Uniswap, and perps margin stays in your own Hyperliquid account.' : 'Velum holds nothing today: spot trades settle straight to your wallet through Uniswap, and perps are simulated.') : 'Nothing is at risk today: trades are simulated and your tokens never leave your wallet.'} Once Velum holds funds, it is designed so you can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.`,
+  faqOffline: `${IS_MAINNET ? (HL_PERPS ? 'Velum holds nothing today: spot trades settle straight to your wallet through Uniswap, and perps margin stays in your own Hyperliquid account.' : 'Velum holds nothing today: spot trades settle straight to your wallet through Uniswap.') : 'Nothing is at risk today: trades are simulated and your tokens never leave your wallet.'} Once Velum holds funds, it is designed so you can unshield with your own wallet as long as the chain runs, and a forced exit settles open positions after ${P.exitDays} days.`,
 } as const;
 
 /**

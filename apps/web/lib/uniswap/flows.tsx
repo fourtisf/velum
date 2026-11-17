@@ -14,7 +14,9 @@
  */
 import { UNISWAP, poolLabel } from '@velum/config/src/uniswap';
 import { parseEventLogs, type Address, type TransactionReceipt } from 'viem';
+import { valueOf } from '../calc';
 import { publicClient } from '../chain';
+import { usd } from '../format';
 import { ERC20_ABI } from '../onchain/abi';
 import { ReceiptMismatch, type FlowProto, type FlowTarget, type Row, type TxFlowSpec, type TxRunCtx, type TxStepSpec } from '../onchain/flow';
 import { exact } from '../onchain/flows';
@@ -34,6 +36,13 @@ const MAX_UINT160 = (1n << 160n) - 1n;
 type A = `0x${string}`;
 const lower = (a: string) => a.toLowerCase() as A;
 const chainNow = async (): Promise<bigint> => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp;
+
+/** "0.05 ETH (≈ $171.20)": an amount with its dollar value at the live price (none for USDG, or without a live price). */
+function withUsd(text: string, sym: string, units: bigint, decimals: number): string {
+  if (sym === 'USDG') return text;
+  const v = valueOf(sym, units * 10n ** BigInt(18 - decimals));
+  return v === null ? text : `${text} (≈ ${usd(v)})`;
+}
 
 /** The flow target for Uniswap trades: mainnet, its curated tokens and their decimals. */
 export function uniTarget(): { d: FlowTarget; proto: FlowProto } {
@@ -181,8 +190,8 @@ export function uniTradeFlow(p: UniTradeInput): TxFlowSpec {
   }
   const route = two ? `${poolLabel(p.first.pool)}, then ${poolLabel(p.second!.pool)}` : poolLabel(p.first.pool);
   const review: Row[] = [
-    ['You pay', amt(p.amountIn, p.from)],
-    ['You get (est.)', amt(p.quoteOut, p.to)],
+    ['You pay', withUsd(amt(p.amountIn, p.from), p.from, p.amountIn, dec(p.from))],
+    ['You get (est.)', withUsd(amt(p.quoteOut, p.to), p.to, p.quoteOut, dec(p.to))],
     ['Minimum you get', amt(p.minOut, p.to)],
     ['Route', route],
     ['Approvals', 'Exact amounts only, skipped when already given'],
@@ -252,8 +261,8 @@ export function uniEthBuyFlow(p: UniEthBuyInput): TxFlowSpec {
   return {
     title: `Buy ${p.sym} with ETH`,
     review: [
-      ['You pay', eth(p.amountIn)],
-      ['You get (est.)', amt(p.quoteOut)],
+      ['You pay', withUsd(eth(p.amountIn), 'ETH', p.amountIn, 18)],
+      ['You get (est.)', withUsd(amt(p.quoteOut), p.sym, p.quoteOut, proto.decimals[p.sym]!)],
       ['Minimum you get', amt(p.minOut)],
       ['Route', route],
       ['Approvals', 'None: the ETH is sent with the swap'],

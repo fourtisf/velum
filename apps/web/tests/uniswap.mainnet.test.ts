@@ -233,7 +233,7 @@ describe('price source wording', () => {
     expect(priceSourceText('uniswap', true)).toMatch(/Uniswap on Robinhood Chain, 24\/7/);
     const m = { noData: false, priceSource: 'uniswap', closed: false } as never;
     expect(priceOrigin({ bySym: { TSLA: m }, source: 'api' }, true)).toBe('uniswap');
-    expect(UNI.banner).toMatch(/Perps are real trades from your own Hyperliquid account\. The private account is simulated\./);
+    expect(UNI.banner).toMatch(/Perps are real trades from your own Hyperliquid account\. Private accounts are in development\./);
   });
 });
 

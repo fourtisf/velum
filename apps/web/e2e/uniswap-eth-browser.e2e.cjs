@@ -59,12 +59,16 @@ async function main() {
   await page.goto(`${BASE}/app/trade/TSLA?mode=spot`, { waitUntil: 'networkidle' });
   await page.locator('header button', { hasText: 'Connect wallet' }).first().click();
   await page.locator('.modal .wopt', { hasText: 'Browser Wallet' }).click();
-  await page.locator('.modal button', { hasText: 'Sign message' }).click();
+  // Mainnet without Velum contracts: the wallet connects without a signature (WALLET_ONLY).
   await page.locator('.walletbtn').waitFor({ timeout: 20_000 });
+  check('connected without any signature request', !wallet.log.some((l) => l.method === 'personal_sign' || l.method === 'eth_signTypedData_v4'));
 
   await page.locator('.ticket button', { hasText: 'Pay with ETH' }).click();
   await page.locator('.ticket .fl', { hasText: '0.200000 ETH' }).waitFor({ timeout: 30_000 });
   check('Pay with ETH: the ticket shows the wallet ETH', true);
+  // The ETH price comes from the WETH/USDG pool on the fork: the wallet line shows its dollar value.
+  await page.locator('.ticket .fl', { hasText: /0\.200000 ETH · \$[\d,]+\.\d\d/ }).waitFor({ timeout: 40_000 });
+  check('the wallet ETH shows its dollar value', true, await page.locator('.ticket .fl').first().innerText());
   await page.locator('.ticket .pcts button', { hasText: 'Max' }).click();
   const maxVal = await page.locator('#t-spot').inputValue();
   check('Max keeps 0.0005 ETH for gas', maxVal === '0.1995', maxVal);
@@ -74,6 +78,9 @@ async function main() {
   await page.waitForFunction(() => !document.querySelector('.ticket button.btn-block')?.hasAttribute('disabled'), null, { timeout: 30_000 });
   const sum = (await page.locator('.ticket .sumbox').innerText()).replace(/\n/g, ' | ');
   check('summary: ETH price, both pool fees, minimum, route', /ETH/.test(sum) && /0\.01% \+ 0\.\d+%/.test(sum) && /Minimum you get \| [\d.]+ TSLA/.test(sum) && /ETH → USDG → TSLA/.test(sum), sum);
+  check('summary: the order value and the price in dollars', /Order value \| ≈ \$[\d,]+\.\d\d/.test(sum) && /Price \| [\d.]+ ETH ≈ \$[\d,]+\.\d\d/.test(sum), sum);
+  const getsUsd = await page.locator('.ticket .fl', { hasText: 'You get (est.)' }).innerText();
+  check('what you get shows its dollar value', /≈ \$[\d,]+\.\d\d/.test(getsUsd), getsUsd);
   await snap(page, 'ticket-eth');
   const tsla0 = await pub.readContract({ address: TSLA, abi: ERC20, functionName: 'balanceOf', args: [me] });
   const eth0 = await pub.getBalance({ address: me });
@@ -82,6 +89,7 @@ async function main() {
   const start = m.locator('button', { hasText: 'Start trade' });
   await start.waitFor({ timeout: 30_000 });
   const review = await m.innerText();
+  check('review: pay 0.05 ETH with its dollar value', /You pay\s*0\.05 ETH \(≈ \$[\d,]+\.\d\d\)/.test(review), review.replace(/\n/g, ' | ').slice(0, 200));
   check('review: pay 0.05 ETH, route through USDG, no approval', /You pay\s*0\.05 ETH/.test(review) && /ETH to USDG \(Uniswap v3, 0\.01%\)/.test(review) && /None: the ETH is sent with the swap/.test(review), review.replace(/\n/g, ' | ').slice(0, 300));
   await m.locator('input[type="checkbox"]').check();
   await start.click();
@@ -100,6 +108,25 @@ async function main() {
   check('it carried exactly 0.05 ETH', tx && tx.value === 5n * 10n ** 16n, tx ? String(tx.value) : 'none');
   const eth1 = await pub.getBalance({ address: me });
   check('the wallet spent exactly 0.05 ETH plus gas', rc && eth0 - eth1 === 5n * 10n ** 16n + rc.gasUsed * rc.effectiveGasPrice, String(eth0 - eth1));
+
+  // Portfolio: real only. The TSLA just bought is in the wallet's assets, the trade is in the activity read from the
+  // chain, ETH is valued, and nothing simulated (practice balance, private address, Shield/Unshield) is shown.
+  await m.locator('button', { hasText: 'Done' }).click();
+  await page.locator('nav.tabs a', { hasText: 'Portfolio' }).click();
+  await page.locator('.pf-hero').waitFor({ timeout: 30_000 });
+  const tslaRow = page.locator('.tbl tr', { hasText: 'Tesla' });
+  await tslaRow.waitFor({ timeout: 30_000 });
+  const pf = await page.locator('main').innerText();
+  check('portfolio: no simulated parts', !/Practice balance|Simulated|Private assets|Shield|Unshield|Send privately/.test(pf), pf.replace(/\n/g, ' | ').slice(0, 300));
+  check('portfolio: wallet value in dollars', /Wallet value[\s\S]{0,40}\$[\d,]+\.\d\d/.test(pf), pf.replace(/\n/g, ' | ').slice(0, 200));
+  const ethRow = (await page.locator('.tbl tr', { hasText: 'Ether' }).innerText()).replace(/\s+/g, ' ');
+  check('portfolio: ETH with its price and value', /ETH Ether [\d.]+ \$[\d,]+\.\d\d \$[\d,]+\.\d\d/.test(ethRow), ethRow);
+  check('portfolio: TSLA bought is in your assets', /TSLA/.test(await tslaRow.innerText()));
+  const act = page.locator('.act', { hasText: /Bought [\d.]+ TSLA/ });
+  await act.waitFor({ timeout: 90_000 }).catch(() => undefined);
+  const actText = (await act.count()) ? (await act.first().innerText()).replace(/\n/g, ' | ') : (await page.locator('main').innerText()).slice(-400);
+  check('portfolio: the buy is in the wallet activity, paid with ETH', /Bought [\d.]+ TSLA/.test(actText) && /Paid 0\.050000 ETH/.test(actText), actText);
+  await snap(page, 'portfolio');
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
   await browser.close();
   console.log(results.join('\n'));

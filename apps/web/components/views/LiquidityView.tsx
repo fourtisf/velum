@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { lpRemove } from '@/lib/demo';
 import { compact, fmt, usdBal } from '@/lib/format';
-import { useOnchain } from '@/lib/onchain/deployment';
+import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
+import { ComingSoon } from './ComingSoon';
 import { bal, useApp } from '@/lib/store';
 import { OcLiquidityView } from '../onchain/lazy';
 import { METRICS, P, UI } from '@/lib/copy';
@@ -68,9 +69,11 @@ function PoolCard({ s, size, apr, demo }: { s: string; size: number; apr: number
   );
 }
 
+const EARN_SOON = "Earning pool fees needs Velum's own pools, which open after an external audit. Until then you can buy and sell Stock Tokens through Uniswap and trade perps from your own Hyperliquid account.";
+
 export function LiquidityView() {
   const oc = useOnchain();
-  return oc ? <OcLiquidityView oc={oc} /> : <DemoLiquidityView />;
+  return oc ? <OcLiquidityView oc={oc} /> : WALLET_ONLY ? <ComingSoon title="Earn" text={EARN_SOON} /> : <DemoLiquidityView />;
 }
 
 function DemoLiquidityView() {

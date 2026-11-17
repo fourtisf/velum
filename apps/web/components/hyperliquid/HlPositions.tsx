@@ -181,6 +181,25 @@ export function HlPortfolioPositions() {
   return <PositionsBody user={s.account?.addr} onConnect={() => s.openModal({ kind: 'connect' })} onDeposit={() => s.openModal({ kind: 'hl-deposit' })} />;
 }
 
+/** The Portfolio page's perps trades on mainnet: the wallet's latest fills on Hyperliquid. */
+export function HlPortfolioActivity() {
+  const user = useApp((s) => s.account?.addr);
+  const fills = useHlFills(user, !!user);
+  if (fills.isError)
+    return (
+      <div className="empty">
+        <p>{HL.unavailable}</p>
+      </div>
+    );
+  return fills.data ? (
+    <Fills list={fills.data} />
+  ) : (
+    <div className="empty" aria-busy="true">
+      <p>Reading your Hyperliquid trades…</p>
+    </div>
+  );
+}
+
 export function HlPositionsCard() {
   const s = useApp();
   const user = s.account?.addr;

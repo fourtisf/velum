@@ -8,10 +8,13 @@
 import { PROTOCOL } from '@velum/config';
 import { UNISWAP, feePct, poolLabel } from '@velum/config/src/uniswap';
 import { parseWad } from '@velum/math';
+import type { Wad } from '@velum/math';
 import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { usePublicBalances } from '@/lib/balances';
+import { valueOf } from '@/lib/calc';
 import { UNI } from '@/lib/copy';
-import { dp, fmt, fmtBal, fmtFloor } from '@/lib/format';
+import { dp, fmt, fmtBal, fmtFloor, usd } from '@/lib/format';
+import { useMarkets, usePriceTick } from '@/lib/markets';
 import { slipBps } from '@/lib/onchain/quote';
 import { unitsToInput, unitsToWad, wadToUnits } from '@/lib/onchain/units';
 import { minOutFor } from '@/lib/uniswap/encode';
@@ -25,6 +28,9 @@ type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void
 const HINT = 't-spot-hint';
 /** ETH kept in the wallet for the network fee when buying with ETH (0.0005 ETH). */
 export const ETH_GAS_RESERVE = 5n * 10n ** 14n;
+
+/** " ≈ $1,234.56" for a dollar value, empty when there is no live price. */
+const worth = (v: Wad | null, sep = ' ≈ '): string => (v === null ? '' : `${sep}${usd(v)}`);
 
 /** Buy and sell through Uniswap; on the Buy side the user pays with USDG or with ETH. */
 export function UniSpotTicket({ sym }: { sym: string }) {
@@ -49,6 +55,7 @@ function PayWith({ eth, onPay }: { eth: boolean; onPay: (eth: boolean) => void }
 }
 
 function UsdgTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void }) {
+  usePriceTick();
   const s = useApp();
   const cfg = UNISWAP!;
   const connected = !!s.account;
@@ -76,6 +83,11 @@ function UsdgTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void
         ? (unitsToWad(quote.amountIn, dIn) * 10n ** 18n) / unitsToWad(quote.amountOut, dOut)
         : (unitsToWad(quote.amountOut, dOut) * 10n ** 18n) / unitsToWad(quote.amountIn, dIn)
       : null;
+
+  // Dollar values at the live price: what you pay, what you get, what the wallet holds.
+  const payUsd = amountIn > 0n && dIn !== undefined ? valueOf(tin, unitsToWad(amountIn, dIn)) : null;
+  const getUsd = quote && dOut !== undefined ? valueOf(tout, unitsToWad(quote.amountOut, dOut)) : null;
+  const haveUsd = haveWad !== null && tin !== 'USDG' ? valueOf(tin, haveWad) : null;
 
   const bad = amountHint(s.spotAmt);
   let hint = bad;
@@ -149,7 +161,7 @@ function UsdgTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void
       <div className="fl">
         <label htmlFor="t-spot">You pay</label>
         <span>
-          Wallet <b className="num">{connected && haveWad !== null ? `${fmtBal(haveWad, dp(tin))} ${tin}` : '—'}</b>
+          Wallet <b className="num">{connected && haveWad !== null ? `${fmtBal(haveWad, dp(tin))} ${tin}${worth(haveUsd, ' · ')}` : '—'}</b>
         </span>
       </div>
       <div className="inp">
@@ -165,6 +177,7 @@ function UsdgTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void
       </div>
       <div className="fl">
         <span>You get (est.)</span>
+        <span className="num">{worth(getUsd, '≈ ')}</span>
       </div>
       <div className="inp">
         <output aria-label="You get (est.)">{quote && dOut !== undefined ? fmt(unitsToWad(quote.amountOut, dOut), dp(tout)) : amountIn > 0n && q.isLoading ? '…' : '0.00'}</output>
@@ -181,6 +194,10 @@ function UsdgTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void
         ))}
       </div>
       <div className="sumbox">
+        <div>
+          <span>Order value</span>
+          <b>{payUsd === null ? '—' : `≈ ${usd(payUsd)}`}</b>
+        </div>
         <div>
           <span>Price</span>
           <b>{avg === null ? '—' : `${fmt(avg)} USDG`}</b>
@@ -225,6 +242,8 @@ function wadToUnitsOr0(w: bigint, decimals: number): bigint {
 
 /** Buying with the ETH in the wallet: ETH -> USDG -> stock in one Uniswap transaction (lib/uniswap/flows.tsx uniEthBuyFlow). */
 function EthBuyTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void }) {
+  usePriceTick();
+  useMarkets((m) => m.ethPx);
   const s = useApp();
   const cfg = UNISWAP!;
   const connected = !!s.account;
@@ -238,6 +257,11 @@ function EthBuyTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => vo
   const min = quote ? minOutFor(quote.amountOut, slipBps(s.slip)) : 0n;
   // ETH per token (fees and price impact included), as a wad.
   const rate = quote && dOut !== undefined && quote.amountOut > 0n ? (amountIn * 10n ** 18n) / unitsToWad(quote.amountOut, dOut) : null;
+  // Dollar values at the live ETH and stock prices.
+  const payUsd = amountIn > 0n ? valueOf('ETH', amountIn) : null;
+  const getUsd = quote && dOut !== undefined ? valueOf(sym, unitsToWad(quote.amountOut, dOut)) : null;
+  const haveUsd = ethWad !== null ? valueOf('ETH', ethWad) : null;
+  const rateUsd = rate !== null ? valueOf('ETH', rate) : null;
   const bad = amountHint(s.spotAmt);
   let hint = bad;
   let b: Btn;
@@ -288,7 +312,7 @@ function EthBuyTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => vo
       <div className="fl">
         <label htmlFor="t-spot">You pay</label>
         <span>
-          Wallet <b className="num">{connected && ethWad !== null ? `${fmtBal(ethWad, 6)} ETH` : '—'}</b>
+          Wallet <b className="num">{connected && ethWad !== null ? `${fmtBal(ethWad, 6)} ETH${worth(haveUsd, ' · ')}` : '—'}</b>
         </span>
       </div>
       <div className="inp">
@@ -304,6 +328,7 @@ function EthBuyTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => vo
       </div>
       <div className="fl">
         <span>You get (est.)</span>
+        <span className="num">{worth(getUsd, '≈ ')}</span>
       </div>
       <div className="inp">
         <output aria-label="You get (est.)">{quote && dOut !== undefined ? fmt(unitsToWad(quote.amountOut, dOut), dp(sym)) : amountIn > 0n && q.isLoading ? '…' : '0.00'}</output>
@@ -321,8 +346,12 @@ function EthBuyTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => vo
       </div>
       <div className="sumbox">
         <div>
+          <span>Order value</span>
+          <b>{payUsd === null ? '—' : `≈ ${usd(payUsd)}`}</b>
+        </div>
+        <div>
           <span>Price</span>
-          <b>{rate === null ? '—' : `${fmt(rate, 6)} ETH`}</b>
+          <b>{rate === null ? '—' : `${fmt(rate, 6)} ETH${worth(rateUsd)}`}</b>
         </div>
         <div>
           <span>Pool fees</span>

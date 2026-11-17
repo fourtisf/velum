@@ -6,7 +6,7 @@ import { inPos, privTotal, valueOf } from '@/lib/calc';
 import { ACCT, SIM, UI } from '@/lib/copy';
 import { fmt, fmtBal, shortH, usdBal } from '@/lib/format';
 import { HL_PERPS } from '@/lib/hyperliquid/enabled';
-import { usePriceTick } from '@/lib/markets';
+import { useMarkets, usePriceTick } from '@/lib/markets';
 import { useOnchain } from '@/lib/onchain/deployment';
 import { bal, useApp } from '@/lib/store';
 import { HlAccountRows } from '../hyperliquid/lazy';
@@ -22,6 +22,7 @@ const STOCKS = Object.keys(TOKENS).filter((sym) => sym !== 'USDG');
 
 function LiveAccountCard() {
   usePriceTick();
+  useMarkets((m) => m.ethPx);
   const account = useApp((s) => s.account);
   const openModal = useApp((s) => s.openModal);
   const pub = usePublicBalances(account?.addr);
@@ -46,7 +47,9 @@ function LiveAccountCard() {
     const v = valueOf(sym, b![sym]!);
     stockValue = v === null || stockValue === null ? null : stockValue + v;
   }
-  const total = usdg !== null && stockValue !== null ? usdg + stockValue : null;
+  // ETH at the live pool price (lib/uniswap/ethPrice.ts); the total counts it too, so it shows a dash until it is known.
+  const ethValue = b?.ETH !== undefined ? valueOf('ETH', b.ETH) : null;
+  const total = usdg !== null && stockValue !== null && (ethValue !== null || b?.ETH === 0n) ? usdg + stockValue + (ethValue ?? 0n) : null;
   const dash = pub.isError ? '—' : '…';
   return (
     <aside className="card acct">
@@ -67,8 +70,8 @@ function LiveAccountCard() {
         <b className="num pv">{stockValue !== null ? usdBal(stockValue) : dash}</b>
       </div>
       <div className="r">
-        <span>ETH for gas</span>
-        <b className="num pv">{b?.ETH !== undefined ? `${fmtBal(b.ETH, 4)} ETH` : dash}</b>
+        <span>ETH</span>
+        <b className="num pv">{b?.ETH !== undefined ? `${fmtBal(b.ETH, 4)} ETH${ethValue !== null ? ` · ${usdBal(ethValue)}` : ''}` : dash}</b>
       </div>
       {HL_PERPS ? <HlAccountRows /> : null}
       <div className="lastc">

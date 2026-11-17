@@ -91,7 +91,7 @@ async function main() {
   await page.locator('.demo-bar', { hasText: 'real Uniswap swaps' }).waitFor({ timeout: 20_000 });
   await page.locator('header button', { hasText: 'Connect wallet' }).first().click();
   await page.locator('.modal .wopt', { hasText: 'Test Wallet' }).click();
-  await page.locator('.modal button', { hasText: 'Sign message' }).click();
+  // Mainnet without Velum contracts: the wallet connects without a signature (WALLET_ONLY).
   await page.locator('.walletbtn').waitFor({ timeout: 20_000 });
   await page.locator('.ticket .fl', { hasText: '300.00 USDG' }).waitFor({ timeout: 30_000 });
   check('the ticket shows the wallet balance', true);

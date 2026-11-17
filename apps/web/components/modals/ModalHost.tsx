@@ -11,10 +11,10 @@ import { amountHint, amountInputProps, amountOrZero } from '@/lib/amount';
 import { usePublicBalances } from '@/lib/balances';
 import { lpGo, moveGo, receiptRows, type MoveKind } from '@/lib/demo';
 import { dp, floorTo, fmt, fmtBal, shortH } from '@/lib/format';
-import { CLOSED, COPY, P, SIM, UI } from '@/lib/copy';
+import { CLOSED, COPY, LIVE, P, SIM, UI } from '@/lib/copy';
 import { mk, useLivePrice } from '@/lib/markets';
 import { ENV } from '@/lib/env';
-import { useOnchain } from '@/lib/onchain/deployment';
+import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
 import { ManageModal, OcLpAddModal, OcMoveModal, TxFlowModal } from '../onchain/lazy';
 import { HlDepositModal, HlFlowModal } from '../hyperliquid/lazy';
@@ -64,6 +64,17 @@ function Head({ title, closable = true }: { title: string; closable?: boolean })
 /** wagmi refuses to connect a connector that is already the current connection. */
 const alreadyConnected = (e: unknown) => e instanceof ConnectorAlreadyConnectedError || (e as { name?: string })?.name === 'ConnectorAlreadyConnectedError';
 
+/**
+ * Mainnet without Velum contracts (WALLET_ONLY): the connected wallet is the account. No signature and no private
+ * address: Velum only reads the wallet's public balances, and every trade is signed in the wallet.
+ */
+function openWalletOnly(addr: Address | undefined) {
+  if (!addr) return;
+  const s = useApp.getState();
+  s.set({ account: { addr, paddr: '' }, ledger: emptyLedger(), openChain: {}, modal: null, modalLocked: false });
+  s.toast('Wallet connected');
+}
+
 function ConnectModal({ error }: { error?: string }) {
   const { mutateAsync: connectAsync, isPending } = useConnect();
   const connectors = useConnectors();
@@ -75,7 +86,11 @@ function ConnectModal({ error }: { error?: string }) {
   const detected = connectors.filter((x, i, all) => x.type === 'injected' && x.id !== 'injected' && all.findIndex((y) => y.name === x.name) === i);
   const generic = connectors.find((x) => x.id === 'injected');
 
-  const next = (chainId: number | undefined) => openModal(chainId === ENV.chainId ? { kind: 'sign' } : { kind: 'network' });
+  const next = (chainId: number | undefined) => {
+    if (chainId !== ENV.chainId) return openModal({ kind: 'network' });
+    if (WALLET_ONLY) return openWalletOnly(getConnection(config).address);
+    openModal({ kind: 'sign' });
+  };
   /**
    * The wallet is already connected through this connector (the sign dialog was closed after
    * connecting, or wagmi reconnected it on reload): connecting again would fail with "Connector
@@ -193,6 +208,7 @@ function ConnectModal({ error }: { error?: string }) {
 /* ---------- wrong network ---------- */
 function NetworkModal() {
   const { mutateAsync: switchChainAsync, isPending } = useSwitchChain();
+  const config = useConfig();
   const account = useApp((s) => s.account);
   const openModal = useApp((s) => s.openModal);
   const close = useApp((s) => s.closeModal);
@@ -202,6 +218,7 @@ function NetworkModal() {
     try {
       await switchChainAsync({ chainId: ENV.chainId });
       if (account) close(true);
+      else if (WALLET_ONLY) openWalletOnly(getConnection(config).address);
       else openModal({ kind: 'sign' });
     } catch (e) {
       setErr(errText(e));
@@ -443,19 +460,21 @@ function AccountModal() {
           <span>Public wallet</span>
           <b>{shortH(addr)}</b>
         </div>
-        <div>
-          <span>Private address</span>
-          <b>
-            <Pv>{paddr.slice(0, 12) + '…' + paddr.slice(-6)}</Pv>
-          </b>
-        </div>
+        {paddr ? (
+          <div>
+            <span>Private address</span>
+            <b>
+              <Pv>{paddr.slice(0, 12) + '…' + paddr.slice(-6)}</Pv>
+            </b>
+          </div>
+        ) : null}
         <div>
           <span>Network</span>
           <b className={wrong ? 'down' : ''}>{wrong ? 'Wrong network' : COPY.chainLabel}</b>
         </div>
       </div>
       <p className="m-text" style={{ marginTop: 12 }}>
-        {UI.accountNote}
+        {WALLET_ONLY ? LIVE.accountNote : UI.accountNote}
       </p>
       {wrong ? (
         <button className="btn btn-white btn-block" onClick={() => s.openModal({ kind: 'network' })}>

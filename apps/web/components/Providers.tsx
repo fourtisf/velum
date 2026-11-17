@@ -2,10 +2,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { WagmiProvider, useConnection } from 'wagmi';
+import { IS_MAINNET } from '@velum/config';
 import { checkLiq, demoTick } from '@/lib/demo';
 import { ENV } from '@/lib/env';
 import { startMarketFeed, useMarkets } from '@/lib/markets';
-import { REAL_BUILD, startOnchainCheck } from '@/lib/onchain/deployment';
+import { REAL_BUILD, WALLET_ONLY, startOnchainCheck } from '@/lib/onchain/deployment';
 import { dropLegacyStorage, emptyLedger, loadLedger, recallSession, saveLedger, seedLedger, useApp } from '@/lib/store';
 import { wagmiConfig } from '@/lib/wagmi';
 import { I } from './icons';
@@ -26,6 +27,11 @@ function AccountSync() {
       return;
     }
     if (cur === address.toLowerCase()) return;
+    // Mainnet without Velum contracts: the connected wallet is the account (no signature, no demo ledger).
+    if (WALLET_ONLY) {
+      s.set({ account: { addr: address, paddr: '' }, ledger: emptyLedger(), openChain: {} });
+      return;
+    }
     const paddr = recallSession(address);
     // A real build never shows the demo, so it never loads a demo ledger either: whatever a simulated
     // session left in this browser stays separate and untouched (web audit W3-06).
@@ -79,6 +85,19 @@ function Feeds() {
   useEffect(() => startMarketFeed(), []);
   // Real transactions only when this build carries a deployment and the API serves the same one.
   useEffect(() => startOnchainCheck(), []);
+  // Mainnet: the live ETH price (from the WETH/USDG pool), so ETH balances and amounts show in dollars.
+  useEffect(() => {
+    if (!IS_MAINNET) return;
+    let stop: (() => void) | null = null;
+    let gone = false;
+    void import('@/lib/uniswap/ethPrice').then((m) => {
+      if (!gone) stop = m.startEthPrice();
+    });
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, []);
   // The demo engine (simulated liquidations, maker fills, LP fees) runs only where the demo can be shown:
   // never on a real build, whatever the API says (web audit W3-06).
   useEffect(() => {

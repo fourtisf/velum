@@ -113,7 +113,7 @@ export function TxFlowModal({ flow }: { flow: TxFlowSpec }) {
     if (phase === 'done') doneBtn.current?.focus({ preventScroll: true });
   }, [phase]);
 
-  const refresh = () => void qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('oc-') || q.queryKey[0] === 'public-balances' });
+  const refresh = () => void qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('oc-') || String(q.queryKey[0]).startsWith('public-') });
 
   const finish = () => {
     const r = flow.done(ctx.current);

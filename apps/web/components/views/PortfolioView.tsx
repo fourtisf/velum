@@ -6,7 +6,8 @@ import { privTotal, valueOf } from '@/lib/calc';
 import { dp, fmtBal, usdBal, usdOrDash } from '@/lib/format';
 import { usePublicBalances } from '@/lib/balances';
 import { tokPx, usePriceTick } from '@/lib/markets';
-import { useOnchain } from '@/lib/onchain/deployment';
+import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
+import { LivePortfolio } from './LivePortfolio';
 import { bal, useApp } from '@/lib/store';
 import { OcPortfolio } from '../onchain/lazy';
 import { HlPortfolioPositions } from '../hyperliquid/lazy';
@@ -90,8 +91,9 @@ const head = (
 
 export function PortfolioView() {
   const oc = useOnchain();
-  // A real build never shows the demo portfolio, signed in or not (web audit W3-02).
-  return oc ? <OcPortfolio oc={oc} /> : <DemoPortfolioView />;
+  // A real build never shows the demo portfolio, signed in or not (web audit W3-02). Mainnet without Velum contracts:
+  // the wallet's real balances, trades and perps account only (components/views/LivePortfolio.tsx).
+  return oc ? <OcPortfolio oc={oc} /> : WALLET_ONLY ? <LivePortfolio /> : <DemoPortfolioView />;
 }
 
 function DemoPortfolioView() {

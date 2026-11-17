@@ -16,6 +16,7 @@
  * deployment is itself for 4663 (the guarded beta); the local development chain (31337) only on a testnet
  * build with a loopback RPC (lib/env.ts).
  */
+import { IS_MAINNET } from '@velum/config';
 import { ONCHAIN_MAINNET_CHAIN_ID, parseDeployment, type Deployment, type LowerAddress } from '@velum/config/src/onchain';
 import { create } from 'zustand';
 import { api, ApiError } from '../api';
@@ -101,6 +102,13 @@ export const PINNED: Deployment | null = pinnedDeployment(process.env.NEXT_PUBLI
 
 /** A real build: a deployment is compiled in, so the simulated demo is never shown (W3-02). */
 export const REAL_BUILD = PINNED !== null;
+
+/**
+ * Mainnet without Velum's own contracts: everything shown is the wallet's real state (balances, Uniswap trades,
+ * Hyperliquid perps). The wallet connects without the private-account signature, and no simulated balance, private
+ * address or demo ledger exists.
+ */
+export const WALLET_ONLY = IS_MAINNET && !REAL_BUILD;
 
 /** The info a real build starts with (and keeps while the API cannot confirm it): exits only. */
 export function unverified(d: Deployment, status: OnchainInfo['status'], mismatch: string | null = null): OnchainInfo {

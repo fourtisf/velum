@@ -4,15 +4,17 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { privTotal } from '@/lib/calc';
 import { shortH, usdBal } from '@/lib/format';
-import { usePriceTick } from '@/lib/markets';
-import { useOnchain } from '@/lib/onchain/deployment';
+import { usePublicBalances } from '@/lib/balances';
+import { useMarkets, usePriceTick } from '@/lib/markets';
+import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
+import { walletValue } from '@/lib/walletValue';
 import { SOCIAL } from '@/lib/copy';
 import { useApp } from '@/lib/store';
 import { OcWalletTotal } from './onchain/lazy';
 import { DemoBanner } from './DemoBanner';
 import { I, Mark, XLogo } from './icons';
 
-const TABS: Array<[string, string]> = [
+const ALL_TABS: Array<[string, string]> = [
   ['trade', 'Trade'],
   ['markets', 'Markets'],
   ['swap', 'Swap'],
@@ -20,6 +22,8 @@ const TABS: Array<[string, string]> = [
   ['liquidity', 'Earn'],
   ['makers', 'Makers'],
 ];
+// Mainnet without Velum contracts: Earn and Makers need Velum's own pools, so they are not shown (nothing simulated).
+const TABS = WALLET_ONLY ? ALL_TABS.filter(([k]) => k !== 'liquidity' && k !== 'makers') : ALL_TABS;
 
 export function Brand() {
   return (
@@ -52,6 +56,15 @@ export function XButton({ className = '' }: { className?: string }) {
 function WalletTotal() {
   const oc = useOnchain();
   return oc ? <OcWalletTotal oc={oc} /> : <DemoWalletTotal />;
+}
+
+/** Mainnet without Velum contracts: the wallet's real value at live prices (USDG, Stock Tokens, ETH). */
+function LiveWalletTotal({ addr }: { addr: `0x${string}` }) {
+  usePriceTick();
+  useMarkets((m) => m.ethPx);
+  const pub = usePublicBalances(addr);
+  const v = walletValue(pub.data?.bal, pub.data?.unavailable);
+  return v.total === null ? null : <span className="b num pv">{usdBal(v.total)}</span>;
 }
 
 function DemoWalletTotal() {
@@ -100,8 +113,8 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
                 <span className="sr">Your account</span>
                 <i />
                 <span className="hide-sm">{shortH(account.addr)}</span>
-                {/* Mainnet: the real wallet address is never shown next to the simulated practice total (audit web F3). */}
-                {IS_MAINNET ? null : <WalletTotal />}
+                {/* Mainnet: only the wallet's real value, never a simulated practice total (audit web F3). */}
+                {WALLET_ONLY ? <LiveWalletTotal addr={account.addr} /> : IS_MAINNET ? null : <WalletTotal />}
               </button>
             ) : app ? (
               <button className="btn btn-white" onClick={() => openModal({ kind: 'connect' })}>

@@ -97,8 +97,12 @@ describe('privacy claims are labelled as simulated (owner decision of 2026-11-15
       SIM.sendLast.d,
     ].join('\n');
     expect(claimsIn(all)).toEqual([]);
-    expect(COPY.heroPill).toBe('Private trading demo on Robinhood Chain');
-    expect(LANDING.metaDescription).toMatch(/^Velum is a private exchange for Stock Tokens/);
+    // Mainnet without Velum contracts is real (Uniswap spot, Hyperliquid perps): no "demo" in the hero, and the private
+    // account is named only as in development.
+    expect(COPY.heroPill).toBe('Stock Tokens and perps on Robinhood Chain');
+    expect(COPY.heroBadge).toBe('Live');
+    expect(LANDING.metaDescription).toMatch(/^Velum is an exchange for Stock Tokens on Robinhood Chain/);
+    expect(LANDING.metaDescription).toMatch(/private accounts in development\.$/);
     expect(UI.perpsNote).toMatch(/^In the full version, size, side and entry stay encrypted/);
     expect(UI.spotNote).toMatch(/^In the full version, pool reserves and your trade stay private/);
     expect(UI.swapNote).toMatch(/^In the full version, pool reserves are private/);
@@ -120,10 +124,11 @@ describe('privacy claims are labelled as simulated (owner decision of 2026-11-15
     expect(COPY.marketsSub('demo')).not.toMatch(/Robinhood/);
   });
 
-  it('connected on the landing page, the caption says what is real and what is simulated (F3)', () => {
+  it('connected on the landing page, the caption says what is real (F3): no practice balance on mainnet', () => {
     expect(COPY.frameCap('robinhood', true)).toBe(
-      "Prices from Robinhood's public Stock Token API. Spot trades are real Uniswap swaps from your wallet and perps are real trades on Hyperliquid; your practice balance is simulated.",
+      "Prices from Robinhood's public Stock Token API. Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own Hyperliquid account.",
     );
+    for (const o of ['uniswap', 'robinhood', 'none'] as const) for (const c of [true, false]) expect(COPY.frameCap(o, c)).not.toMatch(/simulat|practice/i);
     expect(COPY.frameCap('robinhood', false)).toMatch(/Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps on Hyperliquid\.$/);
   });
 

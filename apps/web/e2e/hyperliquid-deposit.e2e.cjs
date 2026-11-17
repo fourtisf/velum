@@ -107,7 +107,7 @@ async function main() {
   await page.goto(`${BASE}/app/trade/TSLA?mode=perps`, { waitUntil: 'networkidle' });
   await page.locator('header button', { hasText: 'Connect wallet' }).first().click();
   await page.locator('.modal .wopt', { hasText: 'Browser Wallet' }).click();
-  await page.locator('.modal button', { hasText: 'Sign message' }).click();
+  // Mainnet without Velum contracts: the wallet connects without a signature (WALLET_ONLY).
   await page.locator('.walletbtn').waitFor({ timeout: 20_000 });
 
   // No Hyperliquid balance yet: the ticket offers the in-app deposit (no link to another site).

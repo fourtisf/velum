@@ -16,7 +16,7 @@ import { HlPerpsTicket } from '../hyperliquid/lazy';
 import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { UNISWAP } from '@velum/config/src/uniswap';
 import { useTradeMode } from './mode';
-import { useOnchain } from '@/lib/onchain/deployment';
+import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
 
@@ -259,6 +259,15 @@ function SpotTicket({ sym }: { sym: string }) {
   );
 }
 
+/** Mainnet with Hyperliquid perps turned off: no simulated perps, only a plain note. */
+function PerpsSoon() {
+  return (
+    <div className="empty" style={{ padding: '48px 12px' }}>
+      <p>Perps are not available on this site right now. Spot trades are real Uniswap swaps from your wallet.</p>
+    </div>
+  );
+}
+
 export function Ticket({ sym }: { sym: string }) {
   const mode = useTradeMode();
   // Real transactions once a deployment is live (lib/onchain/deployment.ts); otherwise the simulated ticket, except
@@ -268,7 +277,7 @@ export function Ticket({ sym }: { sym: string }) {
   if (oc) return <OnchainTicket sym={sym} mode={mode} oc={oc} />;
   return (
     <aside className="card ticket" aria-label="Order ticket">
-      {mode === 'perps' ? HL_PERPS ? <HlPerpsTicket sym={sym} /> : <PerpsTicket sym={sym} /> : UNISWAP ? <UniSpotTicket sym={sym} /> : <SpotTicket sym={sym} />}
+      {mode === 'perps' ? HL_PERPS ? <HlPerpsTicket sym={sym} /> : WALLET_ONLY ? <PerpsSoon /> : <PerpsTicket sym={sym} /> : UNISWAP ? <UniSpotTicket sym={sym} /> : <SpotTicket sym={sym} />}
     </aside>
   );
 }

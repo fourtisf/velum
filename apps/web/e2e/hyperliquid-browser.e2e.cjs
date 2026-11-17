@@ -178,7 +178,7 @@ async function route(context, hl, wallet) {
 async function connect(page) {
   await page.locator('header button', { hasText: 'Connect wallet' }).first().click();
   await page.locator('.modal .wopt', { hasText: 'Test Wallet' }).click();
-  await page.locator('.modal button', { hasText: 'Sign message' }).click();
+  // Mainnet without Velum contracts: the wallet connects without a signature (WALLET_ONLY).
   await page.locator('.walletbtn').waitFor({ timeout: 20_000 });
 }
 
@@ -310,7 +310,7 @@ async function main() {
   await page.locator('.ticket').scrollIntoViewIfNeeded();
   await snap(page, 'mobile-ticket');
 
-  // An account without a deposit is sent to Hyperliquid first.
+  // An account without a deposit is offered the in-app deposit (USDC from Arbitrum), never sent to another site.
   const key2 = generatePrivateKey();
   const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 860 } });
   const wallet2 = await installWallet(ctx2, { privateKey: key2, rpc: RPC, chainId: 4663, anvilChainId: 4663 });
@@ -319,10 +319,13 @@ async function main() {
   const p2 = await ctx2.newPage();
   await p2.goto(`${BASE}/app/trade/TSLA?mode=perps`, { waitUntil: 'domcontentloaded' });
   await connect(p2);
-  const dep = p2.locator('.ticket a.btn-block', { hasText: 'Deposit USDC on Hyperliquid' });
+  const dep = p2.locator('.ticket button.btn-block', { hasText: 'Deposit USDC' });
   await dep.waitFor({ timeout: 30_000 });
-  check('no deposit: the ticket links to Hyperliquid to deposit', (await dep.getAttribute('href')) === 'https://app.hyperliquid.xyz' && (await dep.getAttribute('rel')) === 'noopener noreferrer');
-  check('no deposit: the positions card says so', await p2.locator('.posbox .empty', { hasText: 'No Hyperliquid account for this wallet yet' }).isVisible());
+  check('no deposit: the ticket offers the in-app deposit, no link to another site', (await p2.locator('.ticket a[href*="hyperliquid.xyz"]').count()) === 0);
+  check('no deposit: the positions card says so', await p2.locator('.posbox .empty', { hasText: 'No perps balance for this wallet yet' }).isVisible());
+  await dep.click();
+  await p2.locator('.modal h3', { hasText: 'Deposit USDC' }).waitFor({ timeout: 10_000 });
+  check('no deposit: the button opens the deposit dialog inside Velum', true);
   await snap(p2, 'no-deposit');
   check('no deposit: nothing was signed or sent', wallet2.typed.length === 0 && hl2.exchange.length === 0);
 

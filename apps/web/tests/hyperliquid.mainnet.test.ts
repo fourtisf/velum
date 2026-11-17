@@ -290,7 +290,7 @@ describe('account answers (trimmed real answers)', () => {
 
 describe('wording', () => {
   it('says plainly that perps are real, from the user’s own Hyperliquid account, public and liquidatable', () => {
-    expect(UNI.banner).toBe('Spot trades are real Uniswap swaps from your wallet. Perps are real trades from your own Hyperliquid account. The private account is simulated.');
+    expect(UNI.banner).toBe('Spot trades are real Uniswap swaps from your wallet. Perps are real trades from your own Hyperliquid account. Private accounts are in development.');
     expect(HL.perpsNote).toMatch(/real leveraged trade from your own Hyperliquid account/);
     expect(HL.perpsNote).toMatch(/Public on Hyperliquid, not private/);
     expect(HL.perpsNote).toMatch(/can be liquidated/);

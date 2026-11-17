@@ -117,6 +117,28 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: mainnet is real only, with dollar values (November 17 2026)
+
+On mainnet without Velum's own contracts (`WALLET_ONLY` in `apps/web/lib/onchain/deployment.ts`) nothing is simulated:
+
+- **Dollar values everywhere**: a live ETH price, read every 20 s from the WETH/USDG 0.01% pool
+  (`apps/web/lib/uniswap/ethPrice.ts`, unknown once older than three minutes, never a demo price). The Spot ticket
+  shows the wallet's value, "Order value", "You get ≈ $" and the price in dollars, for USDG and for Pay with ETH; the
+  review shows "You pay 0.05 ETH (≈ $91.40)". ETH counts in the account card, the wallet button and the Portfolio
+  (`apps/web/lib/walletValue.ts`).
+- **Real Portfolio** (`apps/web/components/views/LivePortfolio.tsx`): wallet value at live prices, the wallet's assets
+  (ETH, USDG, Stock Tokens; a token bought anywhere shows up), the Hyperliquid perps balance, open positions and fills,
+  and **wallet activity read from the chain** (`apps/web/lib/walletActivity.ts`: USDG and Stock Token transfers into and
+  out of the wallet over the last ~12 days, grouped per transaction into bought / sold / swapped / sent / received; a
+  buy paid with ETH is recognised from the transaction; each line links to the explorer). No practice balance, private
+  address, Shield/Unshield or demo history.
+- **Connect without a signature**: the wallet is the account; the demo "Sign message" step is gone on mainnet.
+- **Earn and Makers** need Velum's own contracts: hidden from the navigation, and their pages say so.
+- Wording: "private accounts are in development" instead of "simulated" (banner, landing, FAQ, footer).
+- Checked: unit tests (`apps/web/tests/live-wallet.mainnet.test.ts`), and on a mainnet fork in the browser
+  (`apps/web/e2e/uniswap-eth-browser.e2e.cjs`: dollar values, a real ETH buy, then the Portfolio showing the TSLA and
+  the trade "Bought 0.2411 TSLA, Paid 0.050000 ETH"; the USDG spot, perps and deposit suites pass with the new connect).
+
 ## What changed: buy Stock Tokens with ETH (mainnet, November 17 2026)
 
 - **Pay with ETH** on the Spot ticket's Buy side, next to Pay with USDG: the wallet's ETH becomes USDG, then the Stock

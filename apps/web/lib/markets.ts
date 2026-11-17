@@ -79,6 +79,8 @@ interface MarketsState {
   failures: number;
   /** Mainnet only: the feed failed repeatedly or has not succeeded for over a minute. Every price is then stale. */
   feedStale: boolean;
+  /** Mainnet: the live ETH price in USDG (lib/uniswap/ethPrice.ts) and when it was read. */
+  ethPx: { px: Wad; at: number } | null;
 }
 
 /**
@@ -266,6 +268,7 @@ export const useMarkets = create<MarketsState>(() => ({
   lastOkAt: null,
   failures: 0,
   feedStale: false,
+  ethPx: null,
 }));
 
 /** The tradable price for `sym` now, or null (see tradablePrice). Use this, never `.price`, for money. */
@@ -314,7 +317,12 @@ export function useMarket(sym: string): LiveMarket {
 export const ETH_DEMO_PRICE = fromNumber(3420);
 export function tokPx(t: string, now = Date.now()): Wad | null {
   if (t === 'USDG') return 10n ** 18n;
-  if (t === 'ETH') return IS_MAINNET ? null : ETH_DEMO_PRICE;
+  if (t === 'ETH') {
+    if (!IS_MAINNET) return ETH_DEMO_PRICE;
+    // Mainnet: the ETH leg's live price, unknown once older than three minutes.
+    const e = useMarkets.getState().ethPx;
+    return e && now - e.at < 180_000 ? e.px : null;
+  }
   return livePrice(t, now);
 }
 

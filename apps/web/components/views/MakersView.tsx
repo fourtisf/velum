@@ -5,7 +5,8 @@ import { amountHint, amountInputProps, amountOrZero, bpsOrNull } from '@/lib/amo
 import { earnPer1000, postOffer, withdrawOffer } from '@/lib/demo';
 import { fmt, fmtBal, usd, usdBal } from '@/lib/format';
 import { UI } from '@/lib/copy';
-import { useOnchain } from '@/lib/onchain/deployment';
+import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
+import { ComingSoon } from './ComingSoon';
 import { OFFER_EXPIRIES as EXPIRIES, bal, useApp } from '@/lib/store';
 import { OcMakersView } from '../onchain/lazy';
 import { I } from '../icons';
@@ -78,9 +79,11 @@ function Offers() {
   );
 }
 
+const MAKERS_SOON = "Standing maker offers need Velum's own perps contracts, which open after an external audit. Until then perps trade from your own Hyperliquid account on the Trade page.";
+
 export function MakersView() {
   const oc = useOnchain();
-  return oc ? <OcMakersView oc={oc} /> : <DemoMakersView />;
+  return oc ? <OcMakersView oc={oc} /> : WALLET_ONLY ? <ComingSoon title="Maker desk" text={MAKERS_SOON} /> : <DemoMakersView />;
 }
 
 function DemoMakersView() {

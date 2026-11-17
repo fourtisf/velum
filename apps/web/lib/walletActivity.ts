@@ -1,0 +1,157 @@
+'use client';
+/**
+ * A wallet's recent trades and transfers on Robinhood Chain mainnet, read straight from the chain: the ERC-20 Transfer
+ * events of USDG and every Stock Token into and out of the wallet (one single-address query per token and direction,
+ * which the public RPC answers over up to 10,000,000 blocks: about 12 days at its ~0.11 s blocks). Grouped per
+ * transaction into what happened: bought (with USDG or with ETH), sold, swapped, sent, received. Nothing is stored by
+ * Velum; trades made anywhere (another device, another app) show up the same.
+ */
+import { TOKENS } from '@velum/config';
+import { UNISWAP } from '@velum/config/src/uniswap';
+import { useQuery } from '@tanstack/react-query';
+import { pad, type Address, type Hex } from 'viem';
+import { publicClient } from './chain';
+
+const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+/** How far back activity is read, in blocks (under the RPC's 10,000,000-block limit for a single-address query). */
+export const ACTIVITY_BLOCKS = 9_900_000n;
+/** At most this many transactions are shown (each needs its block time, and some their ETH value). */
+export const ACTIVITY_MAX = 15;
+
+export interface Move {
+  sym: string;
+  /** Base units of the token. */
+  units: bigint;
+  decimals: number;
+}
+
+export type ActKind = 'buy' | 'sell' | 'swap' | 'send' | 'receive';
+
+export interface WalletAct {
+  hash: Hex;
+  block: bigint;
+  kind: ActKind;
+  /** What left the wallet and what arrived (net per token in this transaction). */
+  out: Move[];
+  in: Move[];
+  /** ETH sent with the transaction (a buy with ETH), wei. */
+  ethPaid: bigint;
+  /** The other side of a plain transfer. */
+  counterparty: Address | null;
+  /** Block time, ms. */
+  time: number | null;
+}
+
+interface RawLog {
+  address: string;
+  topics: Hex[];
+  data: Hex;
+  blockNumber: Hex;
+  transactionHash: Hex;
+  logIndex: Hex;
+}
+
+const lower = (a: string) => a.toLowerCase();
+const topicAddr = (t: Hex) => `0x${t.slice(26)}`.toLowerCase() as Address;
+
+/** Groups transfer logs of the wallet into transactions, newest first (pure: unit-tested). */
+export function groupMoves(me: Address, logs: RawLog[], tokens: Record<string, { address: string; decimals: number }>): Array<Omit<WalletAct, 'ethPaid' | 'time' | 'kind'> & { kind: ActKind | null }> {
+  const bySym = new Map(Object.entries(tokens).map(([sym, t]) => [lower(t.address), { sym, decimals: t.decimals }]));
+  const self = lower(me);
+  const seen = new Set<string>();
+  const txs = new Map<Hex, { block: bigint; net: Map<string, bigint>; other: Address | null }>();
+  for (const l of logs) {
+    const key = `${l.transactionHash}:${l.logIndex}`;
+    if (seen.has(key) || l.topics[0] !== TRANSFER || l.topics.length < 3) continue;
+    seen.add(key);
+    const tok = bySym.get(lower(l.address));
+    if (!tok) continue;
+    const from = topicAddr(l.topics[1]!);
+    const to = topicAddr(l.topics[2]!);
+    const value = BigInt(l.data === '0x' ? 0 : l.data);
+    const tx = txs.get(l.transactionHash) ?? { block: BigInt(l.blockNumber), net: new Map(), other: null };
+    if (from === self && to !== self) {
+      tx.net.set(tok.sym, (tx.net.get(tok.sym) ?? 0n) - value);
+      tx.other = to;
+    } else if (to === self && from !== self) {
+      tx.net.set(tok.sym, (tx.net.get(tok.sym) ?? 0n) + value);
+      tx.other = from;
+    }
+    txs.set(l.transactionHash, tx);
+  }
+  const out: Array<Omit<WalletAct, 'ethPaid' | 'time' | 'kind'> & { kind: ActKind | null }> = [];
+  for (const [hash, tx] of txs) {
+    const ins: Move[] = [];
+    const outs: Move[] = [];
+    for (const [sym, n] of tx.net) {
+      const decimals = tokens[sym]!.decimals;
+      if (n > 0n) ins.push({ sym, units: n, decimals });
+      else if (n < 0n) outs.push({ sym, units: -n, decimals });
+    }
+    if (!ins.length && !outs.length) continue;
+    const insStock = ins.filter((m) => m.sym !== 'USDG');
+    const outsStock = outs.filter((m) => m.sym !== 'USDG');
+    let kind: ActKind | null;
+    if (ins.length && outs.length) kind = insStock.length && outsStock.length ? 'swap' : insStock.length ? 'buy' : 'sell';
+    else if (outs.length) kind = 'send';
+    else kind = null; // only arrivals: a receive, or a buy paid with ETH (decided from the transaction)
+    out.push({ hash, block: tx.block, kind, out: outs, in: ins, counterparty: ins.length && outs.length ? null : tx.other });
+  }
+  return out.sort((a, b) => (b.block > a.block ? 1 : b.block < a.block ? -1 : 0));
+}
+
+/** Reads the wallet's recent activity (see the file comment). */
+export async function readWalletActivity(me: Address): Promise<WalletAct[]> {
+  const head = await publicClient.getBlockNumber();
+  const fromBlock: Hex = `0x${(head > ACTIVITY_BLOCKS ? head - ACTIVITY_BLOCKS : 0n).toString(16)}`;
+  const toBlock: Hex = `0x${head.toString(16)}`;
+  const mine = pad(me);
+  const queries = Object.values(TOKENS).flatMap((t) => [
+    { address: lower(t.address) as Hex, topics: [TRANSFER, mine] as Array<Hex | null> },
+    { address: lower(t.address) as Hex, topics: [TRANSFER, null, mine] as Array<Hex | null> },
+  ]);
+  const logs = (await Promise.all(queries.map((q) => publicClient.request({ method: 'eth_getLogs', params: [{ ...q, fromBlock, toBlock } as { address: Hex; topics: Array<Hex | null>; fromBlock: Hex; toBlock: Hex }] })))).flat() as RawLog[];
+  const grouped = groupMoves(me, logs, TOKENS).slice(0, ACTIVITY_MAX);
+  const router = UNISWAP ? lower(UNISWAP.contracts.universalRouter) : null;
+  const blocks = new Map<bigint, number | null>();
+  await Promise.all(
+    [...new Set(grouped.map((g) => g.block))].map(async (n) => {
+      try {
+        blocks.set(n, Number((await publicClient.getBlock({ blockNumber: n })).timestamp) * 1000);
+      } catch {
+        blocks.set(n, null);
+      }
+    }),
+  );
+  return Promise.all(
+    grouped.map(async (g): Promise<WalletAct> => {
+      let kind = g.kind;
+      let ethPaid = 0n;
+      if (kind === null) {
+        // Only arrivals: a buy paid with ETH when the wallet sent ETH to the Uniswap router in this transaction.
+        try {
+          const tx = await publicClient.getTransaction({ hash: g.hash });
+          if (tx.value > 0n && router && tx.to && lower(tx.to) === router && lower(tx.from) === lower(me)) {
+            kind = 'buy';
+            ethPaid = tx.value;
+          }
+        } catch {
+          /* unknown: shown as received */
+        }
+        kind ??= 'receive';
+      }
+      return { ...g, kind, ethPaid, counterparty: kind === 'buy' ? null : g.counterparty, time: blocks.get(g.block) ?? null };
+    }),
+  );
+}
+
+export function useWalletActivity(me: Address | undefined) {
+  return useQuery({
+    queryKey: ['public-activity', me],
+    queryFn: () => readWalletActivity(me!),
+    enabled: !!me,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: 1,
+  });
+}

@@ -117,6 +117,21 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: Portfolio P&L, Sell button, USDG logo (November 17 2026)
+
+- **P&L per Stock Token** under its value in the Portfolio, and a **Stock P&L** line on the account card
+  (`apps/web/lib/costBasis.ts`, average cost from the wallet's own trades read from the chain): a buy with USDG costs
+  the USDG paid; a buy with ETH costs the USDG the ETH became inside the swap (read from the receipt,
+  `usdgFromEthLeg`); sells realize P&L at the average cost; swaps carry cost over; sends remove it. Tokens without a
+  known cost (a transfer in, bought before the ~12-day activity window, or more held than the trades explain) show
+  "P&L —", never a guess. The activity read is now rate-limited (4 requests at a time) for the public RPC.
+- **Sell** on each Stock Token row: opens the trade page's Spot ticket on Sell with the whole balance filled in.
+- **USDG logo**: the Global Dollar "G" mark (from the SmolDapp token assets, same as Trust Wallet's), inline.
+- Phone layout: on narrow screens the amount moves under the token name, so value, P&L and Sell fit at 360 px.
+- Checked: `apps/web/tests/cost-basis.mainnet.test.ts`, and on a mainnet fork in the browser
+  (`apps/web/e2e/uniswap-eth-browser.e2e.cjs`: buy TSLA with ETH, P&L shown, Sell from the Portfolio sells the whole
+  balance, the sale appears in the activity).
+
 ## What changed: ETH on Ethereum (ERC20) in the Portfolio (November 17 2026)
 
 - The mainnet Portfolio now also tracks the wallet's **ETH on Ethereum mainnet** (the "ERC20" network, same address):

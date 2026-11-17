@@ -127,7 +127,47 @@ async function main() {
   await act.waitFor({ timeout: 90_000 }).catch(() => undefined);
   const actText = (await act.count()) ? (await act.first().innerText()).replace(/\n/g, ' | ') : (await page.locator('main').innerText()).slice(-400);
   check('portfolio: the buy is in the wallet activity, paid with ETH', /Bought [\d.]+ TSLA/.test(actText) && /Paid 0\.050000 ETH/.test(actText), actText);
+  // P&L: the TSLA cost is the USDG the 0.05 ETH became in the swap, so P&L is the price move and pool fees (small).
+  const pnl = tslaRow.locator('small.pnl');
+  await page.waitForFunction(() => /^[+-]\$/.test(document.querySelector('.tbl tr small.pnl')?.textContent?.trim() ?? ''), null, { timeout: 90_000 }).catch(() => undefined);
+  const pnlText = (await pnl.innerText()).trim();
+  const pnlUsd = Number((/\$([\d,]+\.\d\d)/.exec(pnlText) ?? [0, 'NaN'])[1].replace(/,/g, ''));
+  check('portfolio: TSLA shows its P&L', /^[+-]\$[\d,]+\.\d\d \([+-]\d+\.\d\d%\)$/.test(pnlText) && pnlUsd < 3, pnlText);
+  const card = (await page.locator('.card.acct').innerText()).replace(/\s+/g, ' ');
+  check('portfolio: the account card shows the Stock P&L', /Stock P&L [+-]\$[\d,]+\.\d\d \([+-]\d+\.\d\d%\)/.test(card), card.slice(0, 200));
   await snap(page, 'portfolio');
+
+  // Sell from the Portfolio: the trade page opens on Spot, Sell, with the whole TSLA balance filled in; then sell it all.
+  const held = await pub.readContract({ address: TSLA, abi: ERC20, functionName: 'balanceOf', args: [me] });
+  await tslaRow.locator('button', { hasText: 'Sell' }).click();
+  await page.waitForURL(/\/app\/trade\/TSLA\?mode=spot/, { timeout: 20_000 });
+  const sellBtn = page.locator('.ticket button.btn-block', { hasText: 'Sell TSLA' });
+  await sellBtn.waitFor({ timeout: 30_000 });
+  const amt = await page.locator('#t-spot').inputValue();
+  const want = (Number(held) / 1e18).toString();
+  check('Sell: the trade page opens on Sell with the whole balance', (await page.locator('.ticket .sides button.short.on').count()) === 1 && BigInt(Math.round(Number(amt) * 1e18)) / 1000n === held / 1000n, `${amt} vs ${want}`);
+  await page.waitForFunction(() => !document.querySelector('.ticket button.btn-block')?.hasAttribute('disabled'), null, { timeout: 30_000 });
+  await snap(page, 'sell-ticket');
+  const sent0 = wallet.sent.length;
+  await sellBtn.click();
+  const sm = page.locator('.modal');
+  const sellStart = sm.locator('button', { hasText: 'Start trade' });
+  await sellStart.waitFor({ timeout: 30_000 });
+  await sm.locator('input[type="checkbox"]').check();
+  await sellStart.click();
+  const sellDone = sm.locator('button', { hasText: 'Done' });
+  await Promise.race([sellDone.waitFor({ timeout: 180_000 }), sm.locator('.boxnote.warn[role="alert"]').waitFor({ timeout: 180_000 })]);
+  const sellText = (await sm.innerText()).replace(/\n/g, ' | ');
+  check('Sell: confirmed', await sellDone.isVisible(), sellText.slice(-300));
+  await snap(page, 'sell-receipt');
+  const after = await pub.readContract({ address: TSLA, abi: ERC20, functionName: 'balanceOf', args: [me] });
+  check('Sell: the whole TSLA balance was sold', after === 0n, `${after} left of ${held}; ${wallet.sent.length - sent0} transaction(s)`);
+  await sellDone.click();
+  await page.locator('nav.tabs a', { hasText: 'Portfolio' }).click();
+  await page.locator('.pf-hero').waitFor({ timeout: 30_000 });
+  const sold = page.locator('.act', { hasText: /Sold [\d.]+ TSLA/ });
+  await sold.waitFor({ timeout: 90_000 }).catch(() => undefined);
+  check('portfolio after the sale: the sale is in the activity, TSLA is gone from the assets', (await sold.count()) > 0 && (await page.locator('.tbl tr', { hasText: 'Tesla' }).count()) === 0);
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
   await browser.close();
   console.log(results.join('\n'));

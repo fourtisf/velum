@@ -144,6 +144,7 @@ export const LIVE = {
   valueNote: 'USDG, Stock Tokens and ETH on Robinhood Chain, plus ETH on Ethereum, at live prices.',
   l1Missing: 'ETH on Ethereum could not be read right now, so it is not in this total.',
   l1Name: 'ETH on Ethereum (ERC20)',
+  pnlUnknown: 'P&L needs the cost of every token held: some came without a known cost (a transfer in, or bought more than 12 days ago).',
   assets: 'Your assets',
   assetsSub: 'Held at this address on Robinhood Chain, plus its ETH on Ethereum. Public onchain: you own these tokens.',
   noAssets: 'No ETH, USDG or Stock Tokens in this wallet yet. Send some to this address on Robinhood Chain, or buy with ETH on the Trade page.',

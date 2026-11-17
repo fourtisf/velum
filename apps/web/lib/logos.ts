@@ -16,8 +16,10 @@
  *
  * ETH and WETH (Robinhood Chain's gas token and its wrapped form, owner request of 2026-11-17): the Ethereum glyph from
  * Simple Icons v16.37.0 (icons/ethereum.svg, source ethereum.org/assets), ETH on the blue disc wallets use for it, WETH
- * on Simple Icons' own Ethereum grey. USDG (Paxos' Global Dollar) is not in Simple Icons: a dollar monogram on green,
- * not a redrawn mark.
+ * on Simple Icons' own Ethereum grey. USDG (Paxos' Global Dollar, owner request of 2026-11-17): the "G" mark and its
+ * colours copied unchanged from the SmolDapp tokenAssets repository (tokens/1/0xe343167631d89b6ffc58b88d6b7fb0228795491d/
+ * logo.svg, keyed by USDG's Ethereum contract; Trust Wallet's assets carry the same mark), drawn in its own viewBox on
+ * its own disc colour. A trademark of its owner, used only to identify the token.
  *
  * Discs use the Simple Icons brand hex, except very dark ones (Apple #000000, Palantir #101113),
  * which sit on a light disc with a near-black glyph so they stay visible on the dark UI.
@@ -27,8 +29,10 @@ export interface StockLogo {
   bg: string;
   /** Glyph colour: white when it keeps at least 3:1 contrast on bg (graphics minimum), else near-black. */
   fg: string;
-  /** 24x24 SVG path, or null for a monogram. */
-  path: string | null;
+  /** SVG path(s) in a 24x24 box (or `viewBox`), or null for a monogram. */
+  path: string | string[] | null;
+  /** The glyph's own viewBox when it is not 24x24. */
+  viewBox?: string;
   /** Monogram when there is no path. */
   text?: string;
   /** Glyph size as a share of the disc (default 0.56); wide wordmarks need more. */
@@ -43,7 +47,16 @@ export const LOGOS: Record<string, StockLogo> = {
   // Wrapped Ether on Robinhood Chain
   WETH: { bg: '#3C3C3D', fg: '#FFFFFF', path: ETH_GLYPH, scale: 0.6 },
   // Global Dollar (USDG)
-  USDG: { bg: '#0F8A5F', fg: '#FFFFFF', path: null, text: '$' },
+  USDG: {
+    bg: '#314012',
+    fg: '#C7E36C',
+    viewBox: '24.94 24.95 143.95 144.1',
+    scale: 0.74,
+    path: [
+      'M168.887 102.452C166.099 139.698 134.987 169.051 97.0161 169.051C57.2109 169.051 24.9424 136.793 24.9424 97.0002C24.9424 57.2075 57.2109 24.9492 97.0161 24.9492C134.924 24.9492 165.997 54.2062 168.873 91.3651H134.414C141.936 74.7437 142.391 59.6421 134.165 52.7419C122.017 42.5517 95.537 54.1062 75.0201 78.5496C54.5032 102.993 47.7189 131.069 59.8668 141.259C72.0148 151.449 98.4949 139.895 119.012 115.451C122.588 111.191 125.747 106.82 128.461 102.452H168.887Z',
+      'M102.43 102.452H131.251L120.121 117.025L102.43 109.924V102.452Z',
+    ],
+  },
   // Tesla
   TSLA: { bg: '#CC0000', fg: '#FFFFFF', path: 'M12 5.362l2.475-3.026s4.245.09 8.471 2.054c-1.082 1.636-3.231 2.438-3.231 2.438-.146-1.439-1.154-1.79-4.354-1.79L12 24 8.619 5.034c-3.18 0-4.188.354-4.335 1.792 0 0-2.146-.795-3.229-2.43C5.28 2.431 9.525 2.34 9.525 2.34L12 5.362l-.004.002H12v-.002zm0-3.899c3.415-.03 7.326.528 11.328 2.28.535-.968.672-1.395.672-1.395C19.625.612 15.528.015 12 0 8.472.015 4.375.61 0 2.349c0 0 .195.525.672 1.396C4.674 1.989 8.585 1.435 12 1.46v.003z' },
   // Palantir

@@ -491,3 +491,15 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .hero .ca-row{display:flex;justify-content:center;margin-top:18px}
 .foot .ca-pill{margin-top:14px}
 .foot .ca-pill a.icb{display:grid;padding:0;font-size:inherit}
+/* Portfolio: the P&L line under a Stock Token's value, and the row's Sell button. */
+.tbl td small.pnl{display:block;font-size:12px;margin-top:2px;font-weight:500}
+.tbl td .btn-sm{white-space:nowrap}
+@media (max-width:640px){
+  /* Portfolio assets on a phone: asset (with its amount), value and P&L, Sell all fit at 360 px without scrolling. */
+  .pf .tbl th,.pf .tbl td{padding:12px 7px}
+  .pf .tbl th:first-child,.pf .tbl td:first-child{padding-left:14px}
+  .pf .tbl th:last-child,.pf .tbl td:last-child{padding-right:14px}
+  .pf .tbl .mcell{gap:9px}
+  .pf .tbl .mcell small{font-size:12px}
+  .pf .tbl td .btn-sm{padding:0 10px}
+}

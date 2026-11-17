@@ -13,8 +13,10 @@ export function Av({ sym, size = '' }: { sym: string; size?: '' | 'sm' | 'lg' })
     return (
       <span className={`av logo ${size}`.trim()} aria-hidden="true" style={{ background: logo.bg, color: logo.fg }}>
         {logo.path ? (
-          <svg viewBox="0 0 24 24" fill="currentColor" focusable="false" style={logo.scale ? { width: `${logo.scale * 100}%`, height: `${logo.scale * 100}%` } : undefined}>
-            <path d={logo.path} />
+          <svg viewBox={logo.viewBox ?? '0 0 24 24'} fill="currentColor" fillRule={logo.viewBox ? 'evenodd' : undefined} focusable="false" style={logo.scale ? { width: `${logo.scale * 100}%`, height: `${logo.scale * 100}%` } : undefined}>
+            {(Array.isArray(logo.path) ? logo.path : [logo.path]).map((d) => (
+              <path key={d.slice(0, 24)} d={d} />
+            ))}
           </svg>
         ) : (
           logo.text

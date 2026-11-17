@@ -8,14 +8,18 @@
 import { getMarket, isMarketSymbol } from '@velum/config';
 import type { Wad } from '@velum/math';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { UNISWAP } from '@velum/config/src/uniswap';
 import { valueOf } from '@/lib/calc';
+import { costBasis, pnlOf, type Basis, type Pnl } from '@/lib/costBasis';
 import { ACCT, COPY, LIVE } from '@/lib/copy';
 import { ENV } from '@/lib/env';
-import { ago, dp, fmt, fmtBal, shortH, usd, usdBal, usdOrDash } from '@/lib/format';
+import { ago, dp, fmt, fmtBal, sgnUsd, shortH, usd, usdBal, usdOrDash } from '@/lib/format';
 import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { tokPx, useMarkets, usePriceTick } from '@/lib/markets';
+import { unitsToInput, wadToUnits } from '@/lib/onchain/units';
 import { bal, useApp } from '@/lib/store';
-import { useWalletActivity, type Move, type WalletAct } from '@/lib/walletActivity';
+import { ACTIVITY_MAX, useWalletActivity, type Move, type WalletAct } from '@/lib/walletActivity';
 import { useWalletTotals } from '@/lib/walletTotals';
 import { HlAccountRows, HlPortfolioActivity, HlPortfolioPositions } from '../hyperliquid/lazy';
 import { I } from '../icons';
@@ -26,7 +30,22 @@ const ORDER = ['ETH', 'WETH', 'USDG', 'TSLA', 'AMZN', 'PLTR', 'NVDA', 'NFLX', 'A
 /** ETH here is Robinhood Chain's own ETH (its gas token), so the row says so; WETH is its wrapped form. */
 const tokName = (t: string) => (t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? 'ETH on Robinhood Chain' : t === 'WETH' ? 'Wrapped ETH on Robinhood Chain' : (getMarket(t)?.name ?? t));
 
-function AssetRow({ t, amt }: { t: string; amt: Wad }) {
+/** "+$1.23 (+4.56%)" */
+const pnlText = (p: Pnl) => `${sgnUsd(p.pnl)} (${p.bps >= 0 ? '+' : '-'}${(Math.abs(p.bps) / 100).toFixed(2)}%)`;
+
+/** The P&L line under a Stock Token's value: known, still reading the trades, or not known (a dash, with why). */
+function PnlLine({ pnl, state }: { pnl: Pnl | null; state: 'ok' | 'loading' | 'error' }) {
+  if (pnl) return <small className={`pnl ${pnl.pnl >= 0n ? 'up' : 'down'}`}>{pnlText(pnl)}</small>;
+  if (state === 'loading') return <small className="pnl faint">P&amp;L …</small>;
+  return (
+    <small className="pnl faint" title={LIVE.pnlUnknown}>
+      P&amp;L —
+    </small>
+  );
+}
+
+function AssetRow({ t, amt, pnl, pnlState, onSell }: { t: string; amt: Wad; pnl?: Pnl | null; pnlState?: 'ok' | 'loading' | 'error'; onSell?: () => void }) {
+  const stock = isMarketSymbol(t);
   return (
     <tr>
       <td>
@@ -34,13 +53,30 @@ function AssetRow({ t, amt }: { t: string; amt: Wad }) {
           <Av sym={t} size="sm" />
           <div>
             <b>{t}</b>
-            <small>{tokName(t)}</small>
+            {/* On a phone the amount takes the name's place, so the value, P&L and Sell fit the screen. */}
+            <small>
+              <span className="hide-sm">{tokName(t)}</span>
+              <span className="show-sm num">
+                {fmtBal(amt, t === 'ETH' || t === 'WETH' ? 6 : dp(t))}
+                {t === 'ETH' || t === 'WETH' ? ' · Robinhood' : ''}
+              </span>
+            </small>
           </div>
         </div>
       </td>
-      <td className="r num">{fmtBal(amt, t === 'ETH' || t === 'WETH' ? 6 : dp(t))}</td>
+      <td className="r num hide-sm">{fmtBal(amt, t === 'ETH' || t === 'WETH' ? 6 : dp(t))}</td>
       {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usdOrDash(tokPx(t))}</td>}
-      <td className="r num">{usdBal(valueOf(t, amt))}</td>
+      <td className="r num">
+        {usdBal(valueOf(t, amt))}
+        {stock ? <PnlLine pnl={pnl ?? null} state={pnlState ?? 'loading'} /> : null}
+      </td>
+      <td className="r">
+        {onSell ? (
+          <button className="btn btn-dark btn-sm" onClick={onSell} aria-label={`Sell ${t}`}>
+            Sell
+          </button>
+        ) : null}
+      </td>
     </tr>
   );
 }
@@ -54,13 +90,17 @@ function EthereumRow({ wei, error }: { wei: bigint | undefined; error: boolean }
           <Av sym="ETH" size="sm" />
           <div>
             <b>ETH</b>
-            <small>{error && wei === undefined ? 'ETH on Ethereum: could not be read' : LIVE.l1Name}</small>
+            <small>
+              <span className={wei !== undefined ? 'hide-sm' : undefined}>{error && wei === undefined ? 'ETH on Ethereum: could not be read' : LIVE.l1Name}</span>
+              {wei !== undefined ? <span className="show-sm num">{fmtBal(wei, 6)} · Ethereum</span> : null}
+            </small>
           </div>
         </div>
       </td>
-      <td className="r num">{wei !== undefined ? fmtBal(wei, 6) : '—'}</td>
+      <td className="r num hide-sm">{wei !== undefined ? fmtBal(wei, 6) : '—'}</td>
       <td className="r num hide-sm">{usdOrDash(tokPx('ETH'))}</td>
       <td className="r num">{wei !== undefined ? usdBal(valueOf('ETH', wei)) : '—'}</td>
+      <td />
     </tr>
   );
 }
@@ -77,9 +117,10 @@ function UnavailableRow({ t }: { t: string }) {
           </div>
         </div>
       </td>
-      <td className="r num">—</td>
+      <td className="r num hide-sm">—</td>
       <td className="r num hide-sm">—</td>
       <td className="r num">—</td>
+      <td />
     </tr>
   );
 }
@@ -128,7 +169,7 @@ function WalletActivity({ addr }: { addr: `0x${string}` }) {
     );
   return (
     <>
-      {act.data.map((a) => {
+      {act.data.slice(0, ACTIVITY_MAX).map((a) => {
         const l = actLine(a);
         const Icon = I[l.icon];
         return (
@@ -159,9 +200,12 @@ const head = (
   <thead>
     <tr>
       <th>Asset</th>
-      <th className="r">Amount</th>
+      <th className="r hide-sm">Amount</th>
       <th className="r hide-sm">Price</th>
-      <th className="r">Value</th>
+      <th className="r">Value / P&amp;L</th>
+      <th className="r">
+        <span className="sr">Actions</span>
+      </th>
     </tr>
   </thead>
 );
@@ -170,8 +214,13 @@ export function LivePortfolio() {
   usePriceTick();
   useMarkets((m) => m.ethPx);
   const s = useApp();
+  const router = useRouter();
   const w = useWalletTotals(s.account?.addr);
   const { pub, rh: v, l1 } = w;
+  // Cost basis from the wallet's trades read from the chain (lib/costBasis.ts), for each Stock Token's P&L.
+  const act = useWalletActivity(s.account?.addr);
+  const basis: Record<string, Basis> = act.data ? costBasis(act.data) : {};
+  const pnlState: 'ok' | 'loading' | 'error' = act.data ? 'ok' : act.isError ? 'error' : 'loading';
 
   if (!s.account)
     return (
@@ -202,6 +251,17 @@ export function LivePortfolio() {
     s.toast('Wallet address copied');
   };
   const pending = pub.isError ? '—' : '…';
+  const pnls = Object.fromEntries(v.held.map((t) => [t, pnlOf(basis[t], bal(b, t), valueOf(t, bal(b, t)))]));
+  const known = v.held.filter((t) => pnls[t]);
+  const stockPnl = known.reduce((sum, t) => sum + pnls[t]!.pnl, 0n);
+  const stockCost = known.reduce((sum, t) => sum + pnls[t]!.cost, 0n);
+  /** Sell from here: the trade page's Spot ticket on Sell, with the whole balance filled in. */
+  const sell = (t: string) => {
+    const dec = UNISWAP?.decimals[t];
+    const units = dec === undefined ? null : wadToUnits(bal(b, t) - (bal(b, t) % 10n ** BigInt(18 - dec)), dec);
+    s.set({ spotSide: 'sell', spotAmt: units?.ok ? unitsToInput(units.units, dec!, dec!) : '1' });
+    router.push(`/app/trade/${t}?mode=spot`);
+  };
   return (
     <>
       <div className="vhead">
@@ -263,7 +323,7 @@ export function LivePortfolio() {
                   {head}
                   <tbody>
                     {toks.map((t) => (
-                      <AssetRow key={t} t={t} amt={bal(b, t)} />
+                      <AssetRow key={t} t={t} amt={bal(b, t)} pnl={pnls[t]} pnlState={pnlState} onSell={isMarketSymbol(t) && UNISWAP?.pools[t]?.length ? () => sell(t) : undefined} />
                     )).flatMap((row, i) => (toks[i] === 'ETH' && l1Row ? [row, <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} />] : [row]))}
                     {l1Row && !toks.includes('ETH') ? <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} /> : null}
                     {gone.map((t) => (
@@ -285,6 +345,16 @@ export function LivePortfolio() {
               <span>Stock Tokens{v.held.length ? ` (${v.held.join(', ')})` : ''}</span>
               <b className="num pv">{v.stocks !== null ? usdBal(v.stocks) : pending}</b>
             </div>
+            {v.held.length ? (
+              <div className="r">
+                <span>
+                  Stock P&amp;L{known.length && known.length < v.held.length ? ` (${known.length} of ${v.held.length})` : ''}
+                </span>
+                <b className={`num pv ${known.length ? (stockPnl >= 0n ? 'up' : 'down') : ''}`}>
+                  {known.length ? pnlText({ cost: stockCost, pnl: stockPnl, bps: stockCost > 0n ? Number((stockPnl * 10_000n) / stockCost) : 0 }) : pnlState === 'loading' ? '…' : '—'}
+                </b>
+              </div>
+            ) : null}
             <div className="r">
               <span>USDG</span>
               <b className="num pv">{v.usdg !== null ? usd(v.usdg) : pending}</b>

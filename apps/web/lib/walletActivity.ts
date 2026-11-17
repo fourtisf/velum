@@ -18,8 +18,12 @@ const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523
 export const ACTIVITY_TOKENS: Record<string, { address: string; decimals: number }> = { ...TOKENS, ...(WETH_TOKEN ? { WETH: WETH_TOKEN } : {}) };
 /** How far back activity is read, in blocks (under the RPC's 10,000,000-block limit for a single-address query). */
 export const ACTIVITY_BLOCKS = 9_900_000n;
-/** At most this many transactions are shown (each needs its block time, and some their ETH value). */
+/** At most this many transactions are shown (each needs its block time). */
 export const ACTIVITY_MAX = 15;
+/** At most this many transactions are read for the cost basis (lib/costBasis.ts). */
+export const ACTIVITY_SCAN_MAX = 200;
+/** Parallel requests to the public RPC (it answers HTTP 429 to bursts). */
+const RPC_PARALLEL = 4;
 
 export interface Move {
   sym: string;
@@ -39,6 +43,8 @@ export interface WalletAct {
   in: Move[];
   /** ETH sent with the transaction (a buy with ETH), wei. */
   ethPaid: bigint;
+  /** A buy with ETH: the USDG (base units) the ETH became inside the swap, from the receipt; its cost in dollars. */
+  usdCost: bigint | null;
   /** The other side of a plain transfer. */
   counterparty: Address | null;
   /** Block time, ms. */
@@ -58,7 +64,7 @@ const lower = (a: string) => a.toLowerCase();
 const topicAddr = (t: Hex) => `0x${t.slice(26)}`.toLowerCase() as Address;
 
 /** Groups transfer logs of the wallet into transactions, newest first (pure: unit-tested). */
-export function groupMoves(me: Address, logs: RawLog[], tokens: Record<string, { address: string; decimals: number }>): Array<Omit<WalletAct, 'ethPaid' | 'time' | 'kind'> & { kind: ActKind | null }> {
+export function groupMoves(me: Address, logs: RawLog[], tokens: Record<string, { address: string; decimals: number }>): Array<Omit<WalletAct, 'ethPaid' | 'usdCost' | 'time' | 'kind'> & { kind: ActKind | null }> {
   const bySym = new Map(Object.entries(tokens).map(([sym, t]) => [lower(t.address), { sym, decimals: t.decimals }]));
   const self = lower(me);
   const seen = new Set<string>();
@@ -82,7 +88,7 @@ export function groupMoves(me: Address, logs: RawLog[], tokens: Record<string, {
     }
     txs.set(l.transactionHash, tx);
   }
-  const out: Array<Omit<WalletAct, 'ethPaid' | 'time' | 'kind'> & { kind: ActKind | null }> = [];
+  const out: Array<Omit<WalletAct, 'ethPaid' | 'usdCost' | 'time' | 'kind'> & { kind: ActKind | null }> = [];
   for (const [hash, tx] of txs) {
     const ins: Move[] = [];
     const outs: Move[] = [];
@@ -103,7 +109,38 @@ export function groupMoves(me: Address, logs: RawLog[], tokens: Record<string, {
   return out.sort((a, b) => (b.block > a.block ? 1 : b.block < a.block ? -1 : 0));
 }
 
-/** Reads the wallet's recent activity (see the file comment). */
+/** Runs `fn` over `items` with at most `n` at a time, keeping the order. */
+async function mapLimit<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(n, items.length) }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]!);
+      }
+    }),
+  );
+  return out;
+}
+
+/** The USDG that left the ETH leg pool in a receipt: what the ETH of a buy-with-ETH became (base units). */
+export function usdgFromEthLeg(logs: ReadonlyArray<{ address: string; topics: readonly Hex[]; data: Hex }>, usdg: string, ethLeg: string): bigint | null {
+  let sum = 0n;
+  let seen = false;
+  for (const l of logs) {
+    if (lower(l.address) !== lower(usdg) || l.topics[0] !== TRANSFER || l.topics.length < 3) continue;
+    if (topicAddr(l.topics[1]!) !== lower(ethLeg)) continue;
+    sum += BigInt(l.data === '0x' ? 0 : l.data);
+    seen = true;
+  }
+  return seen ? sum : null;
+}
+
+/**
+ * Reads the wallet's recent activity (see the file comment): every transaction in the window, newest first (at most
+ * ACTIVITY_SCAN_MAX), with block times for the newest ACTIVITY_MAX (the ones shown).
+ */
 export async function readWalletActivity(me: Address): Promise<WalletAct[]> {
   const head = await publicClient.getBlockNumber();
   const fromBlock: Hex = `0x${(head > ACTIVITY_BLOCKS ? head - ACTIVITY_BLOCKS : 0n).toString(16)}`;
@@ -113,39 +150,45 @@ export async function readWalletActivity(me: Address): Promise<WalletAct[]> {
     { address: lower(t.address) as Hex, topics: [TRANSFER, mine] as Array<Hex | null> },
     { address: lower(t.address) as Hex, topics: [TRANSFER, null, mine] as Array<Hex | null> },
   ]);
-  const logs = (await Promise.all(queries.map((q) => publicClient.request({ method: 'eth_getLogs', params: [{ ...q, fromBlock, toBlock } as { address: Hex; topics: Array<Hex | null>; fromBlock: Hex; toBlock: Hex }] })))).flat() as RawLog[];
-  const grouped = groupMoves(me, logs, ACTIVITY_TOKENS).slice(0, ACTIVITY_MAX);
+  const logs = (
+    await mapLimit(queries, RPC_PARALLEL, (q) =>
+      publicClient.request({ method: 'eth_getLogs', params: [{ ...q, fromBlock, toBlock } as { address: Hex; topics: Array<Hex | null>; fromBlock: Hex; toBlock: Hex }] }),
+    )
+  ).flat() as RawLog[];
+  const grouped = groupMoves(me, logs, ACTIVITY_TOKENS).slice(0, ACTIVITY_SCAN_MAX);
   const router = UNISWAP ? lower(UNISWAP.contracts.universalRouter) : null;
   const blocks = new Map<bigint, number | null>();
-  await Promise.all(
-    [...new Set(grouped.map((g) => g.block))].map(async (n) => {
+  await mapLimit([...new Set(grouped.slice(0, ACTIVITY_MAX).map((g) => g.block))], RPC_PARALLEL, async (n) => {
+    try {
+      blocks.set(n, Number((await publicClient.getBlock({ blockNumber: n })).timestamp) * 1000);
+    } catch {
+      blocks.set(n, null);
+    }
+  });
+  return mapLimit(grouped, RPC_PARALLEL, async (g): Promise<WalletAct> => {
+    let kind = g.kind;
+    let ethPaid = 0n;
+    let usdCost: bigint | null = null;
+    if (kind === null) {
+      // Only arrivals: a buy paid with ETH when the wallet sent ETH to the Uniswap router in this transaction; its cost
+      // is the USDG the ETH became in the swap (the receipt's transfer out of the ETH leg pool).
       try {
-        blocks.set(n, Number((await publicClient.getBlock({ blockNumber: n })).timestamp) * 1000);
-      } catch {
-        blocks.set(n, null);
-      }
-    }),
-  );
-  return Promise.all(
-    grouped.map(async (g): Promise<WalletAct> => {
-      let kind = g.kind;
-      let ethPaid = 0n;
-      if (kind === null) {
-        // Only arrivals: a buy paid with ETH when the wallet sent ETH to the Uniswap router in this transaction.
-        try {
-          const tx = await publicClient.getTransaction({ hash: g.hash });
-          if (tx.value > 0n && router && tx.to && lower(tx.to) === router && lower(tx.from) === lower(me)) {
-            kind = 'buy';
-            ethPaid = tx.value;
+        const tx = await publicClient.getTransaction({ hash: g.hash });
+        if (tx.value > 0n && router && tx.to && lower(tx.to) === router && lower(tx.from) === lower(me)) {
+          kind = 'buy';
+          ethPaid = tx.value;
+          if (UNISWAP) {
+            const rc = await publicClient.getTransactionReceipt({ hash: g.hash });
+            usdCost = usdgFromEthLeg(rc.logs, UNISWAP.usdg.address, UNISWAP.ethLeg.address);
           }
-        } catch {
-          /* unknown: shown as received */
         }
-        kind ??= 'receive';
+      } catch {
+        /* unknown: shown as received */
       }
-      return { ...g, kind, ethPaid, counterparty: kind === 'buy' ? null : g.counterparty, time: blocks.get(g.block) ?? null };
-    }),
-  );
+      kind ??= 'receive';
+    }
+    return { ...g, kind, ethPaid, usdCost, counterparty: kind === 'buy' ? null : g.counterparty, time: blocks.get(g.block) ?? null };
+  });
 }
 
 export function useWalletActivity(me: Address | undefined) {

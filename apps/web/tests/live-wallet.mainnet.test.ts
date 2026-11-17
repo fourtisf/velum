@@ -204,7 +204,8 @@ describe('logos', () => {
   it('ETH, WETH and USDG have their own logo, like the Stock Tokens', () => {
     expect(LOGOS.ETH?.path).toMatch(/^M11\.944 17\.97/);
     expect(LOGOS.WETH?.path).toBe(LOGOS.ETH?.path);
-    expect(LOGOS.USDG?.text).toBe('$');
+    expect(LOGOS.USDG?.bg).toBe('#314012');
+    expect((LOGOS.USDG?.path as string[] | undefined)?.length).toBe(2);
     for (const sym of Object.keys(TOKENS)) expect(LOGOS[sym], sym).toBeDefined();
   });
 });

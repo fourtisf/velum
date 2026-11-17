@@ -7,7 +7,8 @@
 // Run: VIDEO_DIR=<dir> node design/marketing/video/edit.cjs
 // Other videos: SCENES=<file in this folder> (default scenes.html) and ORDER=<comma list of scene ids, "ui" for the
 // footage> (default intro,headline,ui,privacy,outro), e.g. the how-to-buy video: SCENES=scenes-howto.html
-// ORDER=intro,steps,ui,outro OUT_FILE=<file>.
+// ORDER=intro,steps,ui,outro OUT_FILE=<file>. MUSIC=<wav> adds a soundtrack (e.g. from music-howto.py), high-passed at
+// 35 Hz and normalised to -16 LUFS (true peak -1.5 dB), the usual level for social video.
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn, execFileSync } = require('node:child_process');
@@ -137,8 +138,14 @@ function assemble(parts) {
   chain.push(`[${last}]fade=t=out:st=${(len - 0.6).toFixed(3)}:d=0.6[out]`);
   const script = path.join(DIR, 'final-filter.txt');
   fs.writeFileSync(script, chain.join(';\n'));
-  run([...inputs, '-filter_complex_script', script, '-map', '[out]', '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', OUT]);
-  console.log('final', len.toFixed(1), 's ->', OUT);
+  const music = process.env.MUSIC;
+  const silent = music ? path.join(DIR, 'final-silent.mp4') : OUT;
+  run([...inputs, '-filter_complex_script', script, '-map', '[out]', '-c:v', 'libx264', '-preset', 'slow', '-crf', '17', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', silent]);
+  if (music) {
+    const a = `highpass=f=35,loudnorm=I=-16:TP=-1.5:LRA=11,afade=t=in:d=0.5,afade=t=out:st=${(len - 2.5).toFixed(3)}:d=2.5`;
+    run(['-i', silent, '-i', music, '-filter_complex', `[1:a]${a}[a]`, '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-t', len.toFixed(3), '-movflags', '+faststart', OUT]);
+  }
+  console.log('final', len.toFixed(1), 's ->', OUT, music ? '(with music)' : '');
 }
 
 (async () => {

@@ -119,7 +119,7 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
 
 ## What changed: "How to buy stocks on Velum" video (November 17 2026)
 
-- `design/marketing/video/velum-how-to-buy-1080p.mp4` (1:46, 1080p, no audio; poster `velum-how-to-buy-poster.jpg`):
+- `design/marketing/video/velum-how-to-buy-1080p.mp4` (1:46, 1080p, with music; poster `velum-how-to-buy-poster.jpg`):
   title, the four steps, then the real app on a mainnet fork with a test wallet: velumtrade.com, Launch app, connect
   (no signature), pick NVDA, Spot, pay with ETH (order value and "You get" in dollars), review and confirm, the
   Portfolio (NVDA with its value and P&L, the account card's Stock P&L, the buy in the wallet activity), Sell from the
@@ -128,6 +128,9 @@ The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scra
 - Rebuild: `record-howto.cjs` (fork, chain-1 anvil, local API and the mainnet web build; see its header), then
   `VIDEO_DIR=<out> SCENES=scenes-howto.html ORDER=intro,steps,ui,outro OUT_FILE=<file> node design/marketing/video/edit.cjs`
   (`edit.cjs` now takes the scene file and order, defaulting to the introduction video's).
+- Music: an original track synthesized by `design/marketing/video/music-howto.py` (no samples or third-party audio, so
+  no licence to clear; 100 BPM, F-C-G-Am, laid out on the video's timeline: pad over the titles, the beat enters with
+  the app, claps from the Portfolio, a bell on the outro). Add it with `MUSIC=<wav>` on `edit.cjs` (-16 LUFS).
 
 ## What changed: Portfolio P&L, Sell button, USDG logo (November 17 2026)
 

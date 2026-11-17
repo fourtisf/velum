@@ -116,6 +116,8 @@ async function main() {
   check('no deposit yet: the ticket offers "Deposit USDC" inside Velum, no external link', (await page.locator('.ticket a[href*="hyperliquid.xyz"]').count()) === 0);
   await depBtn.click();
   const m = page.locator('.modal');
+  // The dialog opens on Robinhood Chain (ETH or USDG through Relay); this test covers USDC from Arbitrum.
+  await m.locator('button', { hasText: 'From Arbitrum' }).click();
   await m.locator('.fl', { hasText: '50.00 USDC' }).waitFor({ timeout: 30_000 });
   check('the dialog shows the USDC on Arbitrum', true);
   await page.locator('#dep-amt').fill('4.99');

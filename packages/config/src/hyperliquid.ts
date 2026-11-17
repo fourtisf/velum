@@ -49,6 +49,23 @@ export const ARB_RPC = 'https://arb1.arbitrum.io/rpc';
 /** Velum refuses anything under Hyperliquid's 5 USDC minimum (smaller deposits are lost). */
 export const HL_MIN_DEPOSIT_USDC = 5;
 
+/**
+ * Deposits from Robinhood Chain straight into the user's Hyperliquid perps balance, through Relay (relay.link), a
+ * cross-chain intent network: the wallet sends ETH or USDG to Relay's depository on Robinhood Chain and a Relay solver
+ * credits USDC to the same address on Hyperliquid (refunded on Robinhood Chain if it cannot be filled). Verified on
+ * 2026-11-17: Relay's chains API lists Robinhood Chain (4663; ETH and USDG) and Hyperliquid (1337; "USDC (Perps)",
+ * address 0x000...0 in 32 hex digits, 8 decimals); its protocol v2 depository on Robinhood Chain is the address below
+ * (code present on chain; the same address Relay lists on 45 chains); live quotes were one deposit transaction to it (ETH)
+ * or an exact USDG approval to it plus the deposit (USDG), about $1.25 in fees, filled in seconds. Velum checks every
+ * quote against these values before the wallet is asked to sign (apps/web/lib/hyperliquid/relay.ts).
+ */
+export const RELAY_API = 'https://api.relay.link';
+export const RELAY_DEPOSITORY = '0x4cd00e387622c35bddb9b4c962c136462338bc31' as const;
+export const RELAY_ORIGIN_CHAIN_ID = 4663;
+export const RELAY_HL_CHAIN_ID = 1337;
+export const RELAY_HL_USDC = '0x00000000000000000000000000000000' as const;
+export const RELAY_HL_USDC_DECIMALS = 8;
+
 export interface HlMarket {
   symbol: string;
   /** The coin name in the xyz dex, e.g. "xyz:TSLA". */

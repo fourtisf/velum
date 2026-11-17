@@ -1,13 +1,21 @@
 'use client';
 /**
- * Deposit USDC into the user's own Hyperliquid account without leaving Velum (lib/hyperliquid/deposit.ts): the user's
- * USDC on Arbitrum, an amount of at least 5 USDC, then the deposit flow dialog.
+ * Deposit into the user's own Hyperliquid account without leaving Velum, from either:
+ *  - Robinhood Chain (default): ETH or USDG from the wallet, bridged by Relay into USDC on Hyperliquid
+ *    (lib/hyperliquid/relay.ts), with a live, validated quote;
+ *  - Arbitrum: native USDC sent to Hyperliquid's bridge (lib/hyperliquid/deposit.ts), at least 5 USDC.
+ * Either way the deposit flow dialog shows every amount before the wallet signs.
  */
 import { HL_MIN_DEPOSIT_USDC } from '@velum/config/src/hyperliquid';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { amountInputProps } from '@/lib/amount';
+import { usePublicBalances } from '@/lib/balances';
+import { valueOf } from '@/lib/calc';
 import { DEPOSIT } from '@/lib/copy';
+import { usd } from '@/lib/format';
 import { depositFlow, planDeposit, usdcText, useArbBalances, type DepositRefusal } from '@/lib/hyperliquid/deposit';
+import { RELAY_ETH_RESERVE, RELAY_MIN_OUT, hlUsdcText, relayDepositFlow, sourceText, sourceUnits, useRelayQuote, type RelaySource } from '@/lib/hyperliquid/relay';
+import { useMarkets, usePriceTick } from '@/lib/markets';
 import { useApp } from '@/lib/store';
 import { I } from '../icons';
 
@@ -20,7 +28,164 @@ const LABEL: Record<DepositRefusal, string> = {
   loading: 'Reading your Arbitrum wallet…',
 };
 
+type From = 'rh' | 'arb';
+
 export function HlDepositModal() {
+  const s = useApp();
+  const [from, setFrom] = useState<From>('rh');
+  return (
+    <>
+      <div className="m-head">
+        <h3 id="m-title">{DEPOSIT.title}</h3>
+        <button className="xbtn" aria-label="Close" onClick={() => s.closeModal(true)}>
+          <I.x />
+        </button>
+      </div>
+      <p className="m-text">{DEPOSIT.intro}</p>
+      <div className="seg full" role="group" aria-label="Deposit from" style={{ marginTop: 14 }}>
+        <button className={from === 'rh' ? 'on' : ''} aria-pressed={from === 'rh'} onClick={() => setFrom('rh')}>
+          From Robinhood Chain
+        </button>
+        <button className={from === 'arb' ? 'on' : ''} aria-pressed={from === 'arb'} onClick={() => setFrom('arb')}>
+          From Arbitrum
+        </button>
+      </div>
+      {from === 'rh' ? <RhDeposit /> : <ArbDeposit />}
+    </>
+  );
+}
+
+/** A value that settles `ms` after it stops changing (quotes are requested for the settled amount only). */
+function useSettled<T>(v: T, ms: number): T {
+  const [x, setX] = useState(v);
+  useEffect(() => {
+    const t = setTimeout(() => setX(v), ms);
+    return () => clearTimeout(t);
+  }, [v, ms]);
+  return x;
+}
+
+/** ETH or USDG on Robinhood Chain, bridged by Relay into USDC on Hyperliquid. */
+function RhDeposit() {
+  usePriceTick();
+  useMarkets((m) => m.ethPx);
+  const s = useApp();
+  const user = s.account?.addr;
+  const pub = usePublicBalances(user);
+  const [src, setSrc] = useState<RelaySource>('ETH');
+  const [amt, setAmt] = useState('');
+  const parsed = sourceUnits(src, amt);
+  const units = parsed ?? 0n;
+  const settled = useSettled(units, 450);
+  const q = useRelayQuote(user, src, settled);
+  const quote = settled === units ? (q.data ?? null) : null;
+  const wad = pub.data?.bal[src] ?? null;
+  // Base units of the source: ETH is already 18 decimals; USDG has 6 (the balance wad rounded down).
+  const have = wad === null ? null : src === 'ETH' ? wad : wad / 10n ** 12n;
+  const eth = pub.data?.bal.ETH ?? null;
+  const spendable = have === null ? null : src === 'ETH' ? (have > RELAY_ETH_RESERVE ? have - RELAY_ETH_RESERVE : 0n) : have;
+  const inUsd = units > 0n ? valueOf(src, src === 'ETH' ? units : units * 10n ** 12n) : null;
+  let hint = '';
+  let label: string;
+  let go: (() => void) | undefined;
+  if (!user) label = 'Connect wallet';
+  else if (amt.trim() !== '' && parsed === null) label = 'Enter a valid amount';
+  else if (units === 0n) label = 'Enter an amount';
+  else if (spendable === null) label = pub.isError ? 'Balance unavailable' : 'Reading your wallet…';
+  else if (units > spendable) {
+    label = `Not enough ${src}`;
+    hint = src === 'ETH' ? DEPOSIT.rhEthHint(sourceText('ETH', spendable)) : DEPOSIT.rhHolds(`${sourceText('USDG', have ?? 0n)} USDG`);
+  } else if (src === 'USDG' && eth === 0n) {
+    label = 'No ETH for gas';
+    hint = DEPOSIT.rhGas;
+  } else if (!quote && (q.isFetching || settled !== units)) label = 'Getting a quote…';
+  else if (q.isError || !quote) {
+    label = 'No route right now';
+    hint = q.error instanceof Error ? q.error.message : DEPOSIT.rhNoRoute;
+  } else if (quote.minOut < RELAY_MIN_OUT) {
+    label = `Minimum ${HL_MIN_DEPOSIT_USDC} USDC on Hyperliquid`;
+    hint = DEPOSIT.rhMin;
+  } else {
+    label = `Deposit ${sourceText(src, units)} ${src}`;
+    go = () => s.runHlFlow(relayDepositFlow({ user, source: src, amount: units, plan: quote }));
+  }
+  const preset = (pct: number) => {
+    if (spendable === null) return;
+    const u = (spendable * BigInt(pct)) / 100n;
+    setAmt(sourceText(src, u));
+  };
+  const pick = (x: RelaySource) => {
+    setSrc(x);
+    setAmt('');
+  };
+  return (
+    <>
+      <div className="seg full" role="group" aria-label="Pay with" style={{ marginTop: 10 }}>
+        <button className={src === 'ETH' ? 'on' : ''} aria-pressed={src === 'ETH'} onClick={() => pick('ETH')}>
+          Pay with ETH
+        </button>
+        <button className={src === 'USDG' ? 'on' : ''} aria-pressed={src === 'USDG'} onClick={() => pick('USDG')}>
+          Pay with USDG
+        </button>
+      </div>
+      <div className="fl" style={{ marginTop: 14 }}>
+        <label htmlFor="dep-amt">You send</label>
+        <span>
+          Wallet{' '}
+          <b className="num">
+            {have !== null ? `${sourceText(src, have)} ${src}` : pub.isError ? '—' : '…'}
+            {have !== null && wad !== null && valueOf(src, wad) !== null ? ` · ${usd(valueOf(src, wad)!)}` : ''}
+          </b>
+        </span>
+      </div>
+      <div className="inp">
+        <input id="dep-amt" {...amountInputProps(amt, HINT)} value={amt} placeholder={src === 'ETH' ? '0.01' : '10.00'} onChange={(e) => setAmt(e.target.value)} />
+        <span className="unit">{src}</span>
+      </div>
+      <div className="seg full pcts" role="group" aria-label="Amount presets">
+        {[25, 50, 75, 100].map((p) => (
+          <button key={p} onClick={() => preset(p)} disabled={!spendable}>
+            {p === 100 ? 'Max' : p + '%'}
+          </button>
+        ))}
+      </div>
+      <div className="receipt" style={{ marginTop: 14 }}>
+        <div>
+          <span>You send (USD)</span>
+          <b>{inUsd !== null ? `≈ ${usd(inUsd)}` : '—'}</b>
+        </div>
+        <div>
+          <span>You receive on Hyperliquid</span>
+          <b>{quote ? `≈ ${hlUsdcText(quote.out)} USDC` : units > 0n && !q.isError ? '…' : '—'}</b>
+        </div>
+        <div>
+          <span>Minimum (guaranteed)</span>
+          <b>{quote ? `${hlUsdcText(quote.minOut)} USDC` : '—'}</b>
+        </div>
+        <div>
+          <span>Fees</span>
+          <b>{quote && quote.feeUsd !== null ? `≈ $${quote.feeUsd.toFixed(2)}` : '—'}</b>
+        </div>
+        <div>
+          <span>Route</span>
+          <b>Relay · arrives in about a minute</b>
+        </div>
+      </div>
+      <button className="btn btn-white btn-block" style={{ marginTop: 12 }} disabled={!go && !!user} onClick={go ?? (() => s.openModal({ kind: 'connect' }))}>
+        {label}
+      </button>
+      <p className="hint" id={HINT}>
+        {hint}
+      </p>
+      <p className="ph-sub" style={{ textAlign: 'center', paddingTop: 8 }}>
+        {DEPOSIT.rhFooter}
+      </p>
+    </>
+  );
+}
+
+/** Native USDC on Arbitrum, sent to Hyperliquid's bridge. */
+function ArbDeposit() {
   const s = useApp();
   const user = s.account?.addr;
   const bal = useArbBalances(user);
@@ -47,13 +212,6 @@ export function HlDepositModal() {
   const preset = (pct: number) => b && setAmt(usdcText((b.usdc * BigInt(pct)) / 100n));
   return (
     <>
-      <div className="m-head">
-        <h3 id="m-title">{DEPOSIT.title}</h3>
-        <button className="xbtn" aria-label="Close" onClick={() => s.closeModal(true)}>
-          <I.x />
-        </button>
-      </div>
-      <p className="m-text">{DEPOSIT.intro}</p>
       <div className="fl" style={{ marginTop: 14 }}>
         <label htmlFor="dep-amt">Amount</label>
         <span>

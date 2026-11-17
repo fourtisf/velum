@@ -117,6 +117,20 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: perps funded from Robinhood Chain (November 17 2026)
+
+- **Deposit to Hyperliquid with ETH or USDG from Robinhood Chain**, the Deposit dialog's new default ("From Robinhood
+  Chain"; "From Arbitrum" keeps the USDC route): a live quote from Relay (relay.link) shows what Hyperliquid receives,
+  the minimum Relay guarantees, fees and route; one transaction from the wallet (plus an exact approval for USDG), and
+  the USDC lands at the same address on Hyperliquid within about a minute. Wallets that hold nothing on Arbitrum can now
+  fund perps and trade. `apps/web/lib/hyperliquid/relay.ts`, constants in `packages/config/src/hyperliquid.ts`.
+- Every quote is checked before the wallet is asked (sender and recipient are the user, output is Hyperliquid perps
+  USDC, only an exact approval and one deposit to Relay's pinned depository with exactly the amount); the deposit is
+  re-quoted when it runs and refused below the reviewed minimum; never sent twice. CSP: `api.relay.link` on mainnet.
+- Checked: `apps/web/tests/relay.mainnet.test.ts` (real quotes recorded on 2026-11-17 accepted, tampered ones refused,
+  the flow) and `apps/web/e2e/hyperliquid-relay.e2e.cjs` (Relay's live quote API and real depository on a Robinhood
+  Chain fork: exactly 0.02 ETH to the depository in one transaction, the perps ticket funded and ready to trade).
+
 ## What changed: VELUM token CA on the site (November 17 2026)
 
 - The landing page's "CA" pill (hero and footer) shows the VELUM token,

@@ -228,10 +228,11 @@ official_rpc() {
 #    https://rpc.wallet.coinbase.com. keys.coinbase.com opens as a popup window, not a frame, and the
 #    web turns telemetry off (no cca-lite/as.coinbase.com).
 CSP_COINBASE_CONNECT='https://www.walletlink.org wss://www.walletlink.org https://rpc.wallet.coinbase.com'
-# Real perps on mainnet go from the browser straight to Hyperliquid's API (apps/web/lib/hyperliquid), and deposits read
-# the user's USDC and confirm the transfer on Arbitrum's public RPC, unless the build turns perps off with
+# Real perps on mainnet go from the browser straight to Hyperliquid's API (apps/web/lib/hyperliquid); deposits from
+# Arbitrum read the user's USDC and confirm the transfer on Arbitrum's public RPC, and deposits from Robinhood Chain get
+# their quote and status from Relay's API (lib/hyperliquid/relay.ts), unless the build turns perps off with
 # NEXT_PUBLIC_HL_PERPS=off.
-CSP_HL_CONNECT='https://api.hyperliquid.xyz https://arb1.arbitrum.io'
+CSP_HL_CONNECT='https://api.hyperliquid.xyz https://arb1.arbitrum.io https://api.relay.link'
 # The mainnet Portfolio reads the wallet's ETH on Ethereum (balance only) from PublicNode's public RPC
 # (packages/config/src/ethereum.ts ETH_L1_RPC).
 CSP_ETH_CONNECT='https://ethereum-rpc.publicnode.com'

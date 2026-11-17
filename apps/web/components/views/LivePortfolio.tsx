@@ -23,8 +23,9 @@ import { I } from '../icons';
 import { Av, Px } from '../ui';
 
 const DUST = 10n ** 11n; // 1e-7, the prototype's display threshold
-const ORDER = ['ETH', 'USDG', 'TSLA', 'AMZN', 'PLTR', 'NVDA', 'NFLX', 'AMD', 'AAPL', 'META', 'MSFT', 'COIN'];
-const tokName = (t: string) => (t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? 'Ether' : (getMarket(t)?.name ?? t));
+const ORDER = ['ETH', 'WETH', 'USDG', 'TSLA', 'AMZN', 'PLTR', 'NVDA', 'NFLX', 'AMD', 'AAPL', 'META', 'MSFT', 'COIN'];
+/** ETH here is Robinhood Chain's own ETH (its gas token), so the row says so; WETH is its wrapped form. */
+const tokName = (t: string) => (t === 'USDG' ? 'Global Dollar' : t === 'ETH' ? 'ETH on Robinhood Chain' : t === 'WETH' ? 'Wrapped ETH on Robinhood Chain' : (getMarket(t)?.name ?? t));
 
 function AssetRow({ t, amt }: { t: string; amt: Wad }) {
   return (
@@ -38,7 +39,7 @@ function AssetRow({ t, amt }: { t: string; amt: Wad }) {
           </div>
         </div>
       </td>
-      <td className="r num">{fmtBal(amt, t === 'ETH' ? 6 : dp(t))}</td>
+      <td className="r num">{fmtBal(amt, t === 'ETH' || t === 'WETH' ? 6 : dp(t))}</td>
       {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usdOrDash(tokPx(t))}</td>}
       <td className="r num">{usdBal(valueOf(t, amt))}</td>
     </tr>
@@ -262,7 +263,7 @@ export function LivePortfolio() {
               <b className="num pv">{v.usdg !== null ? usd(v.usdg) : pending}</b>
             </div>
             <div className="r">
-              <span>ETH</span>
+              <span>ETH (Robinhood Chain){bal(b, 'WETH') > 0n ? ' + WETH' : ''}</span>
               <b className="num pv">{v.eth !== null ? usdBal(v.eth) : pending}</b>
             </div>
             {HL_PERPS ? <HlAccountRows /> : null}

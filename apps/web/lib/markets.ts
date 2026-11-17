@@ -317,7 +317,7 @@ export function useMarket(sym: string): LiveMarket {
 export const ETH_DEMO_PRICE = fromNumber(3420);
 export function tokPx(t: string, now = Date.now()): Wad | null {
   if (t === 'USDG') return 10n ** 18n;
-  if (t === 'ETH') {
+  if (t === 'ETH' || t === 'WETH') {
     if (!IS_MAINNET) return ETH_DEMO_PRICE;
     // Mainnet: the ETH leg's live price, unknown once older than three minutes.
     const e = useMarkets.getState().ethPx;

@@ -3,7 +3,7 @@
  *
  * Spec deviation, on purpose: docs/01-product-spec.md section 5 says "neutral circle with the company
  * initial (no third-party logos)". The owner asked for real logos (commit 2240dd1), so they stay;
- * update the spec if this becomes permanent. USDG, ETH and unknown tokens keep the neutral initial.
+ * update the spec if this becomes permanent. Unknown tokens keep the neutral initial.
  *
  * Attribution: the glyph paths are copied unchanged from Simple Icons v16.37.0 (simpleicons.org,
  * icons/<slug>.svg; checked path-for-path against the npm tarball). The Simple Icons project is
@@ -13,6 +13,11 @@
  * only to identify each company's stock token; Velum is not affiliated with or endorsed by any of
  * them. Amazon and Microsoft are not in Simple Icons, so they get a monogram in their brand colour
  * rather than a redrawn mark. Robinhood's logo is never used (CLAUDE.md brand rules).
+ *
+ * ETH and WETH (Robinhood Chain's gas token and its wrapped form, owner request of 2026-11-17): the Ethereum glyph from
+ * Simple Icons v16.37.0 (icons/ethereum.svg, source ethereum.org/assets), ETH on the blue disc wallets use for it, WETH
+ * on Simple Icons' own Ethereum grey. USDG (Paxos' Global Dollar) is not in Simple Icons: a dollar monogram on green,
+ * not a redrawn mark.
  *
  * Discs use the Simple Icons brand hex, except very dark ones (Apple #000000, Palantir #101113),
  * which sit on a light disc with a near-black glyph so they stay visible on the dark UI.
@@ -30,7 +35,15 @@ export interface StockLogo {
   scale?: number;
 }
 
+const ETH_GLYPH = 'M11.944 17.97L4.58 13.62 11.943 24l7.37-10.38-7.372 4.35h.003zM12.056 0L4.69 12.223l7.365 4.354 7.365-4.35L12.056 0z';
+
 export const LOGOS: Record<string, StockLogo> = {
+  // Ether, the gas token of Robinhood Chain
+  ETH: { bg: '#627EEA', fg: '#FFFFFF', path: ETH_GLYPH, scale: 0.6 },
+  // Wrapped Ether on Robinhood Chain
+  WETH: { bg: '#3C3C3D', fg: '#FFFFFF', path: ETH_GLYPH, scale: 0.6 },
+  // Global Dollar (USDG)
+  USDG: { bg: '#0F8A5F', fg: '#FFFFFF', path: null, text: '$' },
   // Tesla
   TSLA: { bg: '#CC0000', fg: '#FFFFFF', path: 'M12 5.362l2.475-3.026s4.245.09 8.471 2.054c-1.082 1.636-3.231 2.438-3.231 2.438-.146-1.439-1.154-1.79-4.354-1.79L12 24 8.619 5.034c-3.18 0-4.188.354-4.335 1.792 0 0-2.146-.795-3.229-2.43C5.28 2.431 9.525 2.34 9.525 2.34L12 5.362l-.004.002H12v-.002zm0-3.899c3.415-.03 7.326.528 11.328 2.28.535-.968.672-1.395.672-1.395C19.625.612 15.528.015 12 0 8.472.015 4.375.61 0 2.349c0 0 .195.525.672 1.396C4.674 1.989 8.585 1.435 12 1.46v.003z' },
   // Palantir

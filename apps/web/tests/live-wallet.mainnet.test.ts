@@ -42,7 +42,9 @@ import { pad, type Address, type Hex } from 'viem';
 import { tokPx, useMarkets } from '@/lib/markets';
 import { WALLET_ONLY } from '@/lib/onchain/deployment';
 import { readEthPrice } from '@/lib/uniswap/ethPrice';
-import { ACTIVITY_BLOCKS, groupMoves, readWalletActivity } from '@/lib/walletActivity';
+import { ACTIVITY_BLOCKS, ACTIVITY_TOKENS, groupMoves, readWalletActivity } from '@/lib/walletActivity';
+import { WETH_TOKEN } from '@/lib/balances';
+import { LOGOS } from '@/lib/logos';
 import { walletValue } from '@/lib/walletValue';
 import { W, setLiveMarkets } from './helpers';
 
@@ -121,6 +123,16 @@ describe('wallet value', () => {
     expect(v.total).toBe(W('730'));
   });
 
+  it('counts WETH on Robinhood Chain at the ETH price, with the ETH', () => {
+    expect(WETH_TOKEN).toEqual({ symbol: 'WETH', address: UNISWAP!.contracts.weth, decimals: 18 });
+    setLiveMarkets({ TSLA: '400' });
+    useMarkets.setState({ ethPx: { px: W('2000'), at: Date.now() } });
+    expect(tokPx('WETH')).toBe(W('2000'));
+    const v = walletValue({ USDG: 0n, ETH: W('0.1'), WETH: W('0.05') });
+    expect(v.eth).toBe(W('300'));
+    expect(v.total).toBe(W('300'));
+  });
+
   it('shows no total (a dash) while ETH has no price, or a balance could not be read', () => {
     setLiveMarkets({ TSLA: '400' });
     const b = { USDG: W('100'), TSLA: W('1'), ETH: W('0.01') };
@@ -168,7 +180,9 @@ describe('wallet activity', () => {
     h.txs[hash('1')] = { value: 10n ** 16n, to: router, from: ME };
     h.txs[hash('2')] = { value: 0n, to: tok('TSLA'), from: FRIEND };
     const acts = await readWalletActivity(ME);
-    expect(h.queries).toHaveLength(Object.keys(TOKENS).length * 2);
+    // USDG, every Stock Token and WETH, each both ways.
+    expect(Object.keys(ACTIVITY_TOKENS)).toEqual([...Object.keys(TOKENS), 'WETH']);
+    expect(h.queries).toHaveLength(Object.keys(ACTIVITY_TOKENS).length * 2);
     for (const q of h.queries) {
       expect(BigInt(q.toBlock) - BigInt(q.fromBlock)).toBe(ACTIVITY_BLOCKS);
       expect(BigInt(q.toBlock) - BigInt(q.fromBlock) <= 10_000_000n).toBe(true);
@@ -176,11 +190,21 @@ describe('wallet activity', () => {
     for (const sym of Object.keys(TOKENS)) {
       expect(h.queries.filter((q) => q.address === tok(sym))).toHaveLength(2);
     }
+    expect(h.queries.filter((q) => q.address === UNISWAP!.contracts.weth.toLowerCase())).toHaveLength(2);
     expect(acts.map((a) => [a.hash[2], a.kind, a.ethPaid])).toEqual([
       ['1', 'buy', 10n ** 16n],
       ['2', 'receive', 0n],
     ]);
     expect(acts[0]!.time).toBe(Number(h.head - 5n) * 1000);
     expect(acts[1]!.counterparty).toBe(FRIEND.toLowerCase());
+  });
+});
+
+describe('logos', () => {
+  it('ETH, WETH and USDG have their own logo, like the Stock Tokens', () => {
+    expect(LOGOS.ETH?.path).toMatch(/^M11\.944 17\.97/);
+    expect(LOGOS.WETH?.path).toBe(LOGOS.ETH?.path);
+    expect(LOGOS.USDG?.text).toBe('$');
+    for (const sym of Object.keys(TOKENS)) expect(LOGOS[sym], sym).toBeDefined();
   });
 });

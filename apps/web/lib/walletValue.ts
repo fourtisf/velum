@@ -14,9 +14,15 @@ export interface WalletValue {
   /** Stock Tokens held (a balance above zero), in market order. */
   held: string[];
   stocks: Wad | null;
+  /** ETH and WETH (Robinhood Chain), at the live ETH price. */
   eth: Wad | null;
   total: Wad | null;
 }
+
+const ethLike = (b: Record<string, Wad>, sym: 'ETH' | 'WETH'): Wad | null => {
+  const n = b[sym];
+  return n === undefined || n === 0n ? 0n : valueOf(sym, n);
+};
 
 export function walletValue(b: Record<string, Wad> | undefined, unavailable: readonly string[] = []): WalletValue {
   if (!b) return { usdg: null, held: [], stocks: null, eth: null, total: null };
@@ -27,7 +33,9 @@ export function walletValue(b: Record<string, Wad> | undefined, unavailable: rea
     stocks = v === null || stocks === null ? null : stocks + v;
   }
   const usdg = b.USDG ?? null;
-  const eth = b.ETH === undefined ? null : b.ETH === 0n ? 0n : valueOf('ETH', b.ETH);
+  const native = b.ETH === undefined ? null : ethLike(b, 'ETH');
+  const wrapped = ethLike(b, 'WETH');
+  const eth = native === null || wrapped === null ? null : native + wrapped;
   const total = usdg !== null && stocks !== null && eth !== null && unavailable.length === 0 ? usdg + stocks + eth : null;
   return { usdg, held, stocks, eth, total };
 }

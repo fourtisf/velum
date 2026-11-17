@@ -1,8 +1,8 @@
 'use client';
-import { IS_MAINNET, TOKENS } from '@velum/config';
-import type { Wad } from '@velum/math';
+import { IS_MAINNET } from '@velum/config';
 import { usePublicBalances } from '@/lib/balances';
-import { inPos, privTotal, valueOf } from '@/lib/calc';
+import { inPos, privTotal } from '@/lib/calc';
+import { walletValue } from '@/lib/walletValue';
 import { ACCT, SIM, UI } from '@/lib/copy';
 import { fmt, fmtBal, shortH, usdBal } from '@/lib/format';
 import { HL_PERPS } from '@/lib/hyperliquid/enabled';
@@ -17,8 +17,6 @@ export function AccountCard() {
   // Mainnet without Velum contracts: the wallet's real balances and the perps account, never a simulated balance.
   return oc ? <OcAccountCard oc={oc} /> : IS_MAINNET ? <LiveAccountCard /> : <DemoAccountCard />;
 }
-
-const STOCKS = Object.keys(TOKENS).filter((sym) => sym !== 'USDG');
 
 function LiveAccountCard() {
   usePriceTick();
@@ -39,17 +37,8 @@ function LiveAccountCard() {
       </aside>
     );
   const b = pub.data?.bal;
-  const usdg = b?.USDG ?? null;
-  const held = b ? STOCKS.filter((sym) => (b[sym] ?? 0n) > 0n) : [];
-  // Stock Tokens at the live price; any held token without a live price leaves the totals unknown (a dash).
-  let stockValue: Wad | null = b ? 0n : null;
-  for (const sym of held) {
-    const v = valueOf(sym, b![sym]!);
-    stockValue = v === null || stockValue === null ? null : stockValue + v;
-  }
-  // ETH at the live pool price (lib/uniswap/ethPrice.ts); the total counts it too, so it shows a dash until it is known.
-  const ethValue = b?.ETH !== undefined ? valueOf('ETH', b.ETH) : null;
-  const total = usdg !== null && stockValue !== null && (ethValue !== null || b?.ETH === 0n) ? usdg + stockValue + (ethValue ?? 0n) : null;
+  // USDG, Stock Tokens, and ETH (plus any WETH) on Robinhood Chain at live prices (lib/walletValue.ts).
+  const { usdg, held, stocks: stockValue, eth: ethValue, total } = walletValue(b, pub.data?.unavailable);
   const dash = pub.isError ? '—' : '…';
   return (
     <aside className="card acct">
@@ -70,8 +59,8 @@ function LiveAccountCard() {
         <b className="num pv">{stockValue !== null ? usdBal(stockValue) : dash}</b>
       </div>
       <div className="r">
-        <span>ETH</span>
-        <b className="num pv">{b?.ETH !== undefined ? `${fmtBal(b.ETH, 4)} ETH${ethValue !== null ? ` · ${usdBal(ethValue)}` : ''}` : dash}</b>
+        <span>ETH (Robinhood Chain)</span>
+        <b className="num pv">{b?.ETH !== undefined ? `${fmtBal(b.ETH, 4)} ETH${(b.WETH ?? 0n) > 0n ? ` + ${fmtBal(b.WETH!, 4)} WETH` : ''}${ethValue !== null ? ` · ${usdBal(ethValue)}` : ''}` : dash}</b>
       </div>
       {HL_PERPS ? <HlAccountRows /> : null}
       <div className="lastc">

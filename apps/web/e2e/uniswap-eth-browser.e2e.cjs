@@ -119,8 +119,9 @@ async function main() {
   const pf = await page.locator('main').innerText();
   check('portfolio: no simulated parts', !/Practice balance|Simulated|Private assets|Shield|Unshield|Send privately/.test(pf), pf.replace(/\n/g, ' | ').slice(0, 300));
   check('portfolio: wallet value in dollars', /Wallet value[\s\S]{0,40}\$[\d,]+\.\d\d/.test(pf), pf.replace(/\n/g, ' | ').slice(0, 200));
-  const ethRow = (await page.locator('.tbl tr', { hasText: 'Ether' }).innerText()).replace(/\s+/g, ' ');
-  check('portfolio: ETH with its price and value', /ETH Ether [\d.]+ \$[\d,]+\.\d\d \$[\d,]+\.\d\d/.test(ethRow), ethRow);
+  const ethRow = (await page.locator('.tbl tr', { hasText: 'ETH on Robinhood Chain' }).innerText()).replace(/\s+/g, ' ');
+  check('portfolio: Robinhood Chain ETH with its price and value', /ETH ETH on Robinhood Chain [\d.]+ \$[\d,]+\.\d\d \$[\d,]+\.\d\d/.test(ethRow), ethRow);
+  check('portfolio: ETH has its logo', (await page.locator('.tbl tr', { hasText: 'ETH on Robinhood Chain' }).locator('.av.logo svg').count()) === 1);
   check('portfolio: TSLA bought is in your assets', /TSLA/.test(await tslaRow.innerText()));
   const act = page.locator('.act', { hasText: /Bought [\d.]+ TSLA/ });
   await act.waitFor({ timeout: 90_000 }).catch(() => undefined);

@@ -1,7 +1,7 @@
 'use client';
 /**
  * A wallet's recent trades and transfers on Robinhood Chain mainnet, read straight from the chain: the ERC-20 Transfer
- * events of USDG and every Stock Token into and out of the wallet (one single-address query per token and direction,
+ * events of USDG, every Stock Token and WETH into and out of the wallet (one single-address query per token and direction,
  * which the public RPC answers over up to 10,000,000 blocks: about 12 days at its ~0.11 s blocks). Grouped per
  * transaction into what happened: bought (with USDG or with ETH), sold, swapped, sent, received. Nothing is stored by
  * Velum; trades made anywhere (another device, another app) show up the same.
@@ -10,9 +10,12 @@ import { TOKENS } from '@velum/config';
 import { UNISWAP } from '@velum/config/src/uniswap';
 import { useQuery } from '@tanstack/react-query';
 import { pad, type Address, type Hex } from 'viem';
+import { WETH_TOKEN } from './balances';
 import { publicClient } from './chain';
 
 const TRANSFER = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+/** The tokens whose transfers make up the activity: USDG, the Stock Tokens and, on mainnet, WETH. */
+export const ACTIVITY_TOKENS: Record<string, { address: string; decimals: number }> = { ...TOKENS, ...(WETH_TOKEN ? { WETH: WETH_TOKEN } : {}) };
 /** How far back activity is read, in blocks (under the RPC's 10,000,000-block limit for a single-address query). */
 export const ACTIVITY_BLOCKS = 9_900_000n;
 /** At most this many transactions are shown (each needs its block time, and some their ETH value). */
@@ -106,12 +109,12 @@ export async function readWalletActivity(me: Address): Promise<WalletAct[]> {
   const fromBlock: Hex = `0x${(head > ACTIVITY_BLOCKS ? head - ACTIVITY_BLOCKS : 0n).toString(16)}`;
   const toBlock: Hex = `0x${head.toString(16)}`;
   const mine = pad(me);
-  const queries = Object.values(TOKENS).flatMap((t) => [
+  const queries = Object.values(ACTIVITY_TOKENS).flatMap((t) => [
     { address: lower(t.address) as Hex, topics: [TRANSFER, mine] as Array<Hex | null> },
     { address: lower(t.address) as Hex, topics: [TRANSFER, null, mine] as Array<Hex | null> },
   ]);
   const logs = (await Promise.all(queries.map((q) => publicClient.request({ method: 'eth_getLogs', params: [{ ...q, fromBlock, toBlock } as { address: Hex; topics: Array<Hex | null>; fromBlock: Hex; toBlock: Hex }] })))).flat() as RawLog[];
-  const grouped = groupMoves(me, logs, TOKENS).slice(0, ACTIVITY_MAX);
+  const grouped = groupMoves(me, logs, ACTIVITY_TOKENS).slice(0, ACTIVITY_MAX);
   const router = UNISWAP ? lower(UNISWAP.contracts.universalRouter) : null;
   const blocks = new Map<bigint, number | null>();
   await Promise.all(

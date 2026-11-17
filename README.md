@@ -117,6 +117,16 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: token logos, Robinhood Chain ETH and WETH (November 17 2026)
+
+- **Logos** for ETH (Ethereum glyph from Simple Icons on the usual ETH blue), WETH and USDG (a dollar monogram; Paxos'
+  mark is not in Simple Icons), next to the Stock Token logos (`apps/web/lib/logos.ts`).
+- The Portfolio's ETH row now says **"ETH on Robinhood Chain"** (it is the chain's own ETH, the gas token), and the
+  account card says "ETH (Robinhood Chain)".
+- **WETH on Robinhood Chain** is read with the other balances (`WETH_TOKEN` in `apps/web/lib/balances.ts`), valued at the
+  live ETH price, counted in the wallet value, listed in Your assets when held, and its transfers are part of the wallet
+  activity.
+
 ## What changed: mainnet is real only, with dollar values (November 17 2026)
 
 On mainnet without Velum's own contracts (`WALLET_ONLY` in `apps/web/lib/onchain/deployment.ts`) nothing is simulated:

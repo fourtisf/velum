@@ -1,12 +1,15 @@
 'use client';
-/** Real public balances on the selected Robinhood Chain network (ETH + USDG + Stock Tokens). */
+/** Real public balances on the selected Robinhood Chain network (ETH + USDG + Stock Tokens, and WETH on mainnet). */
 import { TOKENS } from '@velum/config';
+import { UNISWAP } from '@velum/config/src/uniswap';
 import { fromUnits, type Wad } from '@velum/math';
 import { useQuery } from '@tanstack/react-query';
 import { erc20Abi } from 'viem';
 import { publicClient } from './chain';
 
-const TOKEN_LIST = Object.values(TOKENS);
+/** Wrapped Ether on Robinhood Chain mainnet (packages/config uniswap-mainnet.json contracts.weth): valued like ETH. */
+export const WETH_TOKEN = UNISWAP ? { symbol: 'WETH', address: UNISWAP.contracts.weth, decimals: 18 } : null;
+const TOKEN_LIST = [...Object.values(TOKENS), ...(WETH_TOKEN ? [WETH_TOKEN] : [])];
 
 export interface PublicBalances {
   /** Balances that were read, by symbol. */

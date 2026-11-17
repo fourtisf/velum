@@ -7,7 +7,7 @@ import { PERP_VENUES, useMarket, useMarkets } from '@/lib/markets';
 import { METRICS } from '@/lib/copy';
 import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { useApp } from '@/lib/store';
-import { HlOrderBook } from '../hyperliquid/lazy';
+import { HlChartLines, HlOrderBook } from '../hyperliquid/lazy';
 import { Av, Chg, DemoTag, Px, RefTag } from '../ui';
 import { AccountCard } from './AccountCard';
 import { Chart } from './Chart';
@@ -133,6 +133,7 @@ export function Terminal({ symbol, embedded }: { symbol?: string; embedded?: boo
             <div className="chart-row">
               <ChartCard sym={sym} />
               <HlOrderBook sym={sym} />
+              <HlChartLines sym={sym} />
             </div>
           ) : (
             <ChartCard sym={sym} />

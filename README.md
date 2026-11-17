@@ -117,6 +117,16 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: chart lines and perps history (November 17 2026)
+
+- **On the chart** (perps mode): the position's entry, liquidation price, take profit, stop loss and resting limit orders
+  as labelled lines (`apps/web/lib/chartLines.ts`, drawn by `components/trade/Chart.tsx`); a line outside the visible range
+  gets its label pinned to the top or bottom edge with an arrow.
+- **Portfolio → Perps trades**: realized P&L, fees paid, funding (last 90 days) and net, trade count and volume, and
+  **Export CSV** of every trade and funding payment (UTC times, amounts in USDC; `apps/web/lib/hyperliquid/history.ts`).
+- Checked: `apps/web/tests/hl-history.mainnet.test.ts` and `apps/web/e2e/hyperliquid-history.e2e.cjs` (the line colors on
+  the canvas, the sums, the downloaded CSV).
+
 ## What changed: perps risk tools (November 17 2026)
 
 - **Take profit / stop loss** on the ticket (checkbox, two prices, the P&L at each trigger) and on any position (TP/SL

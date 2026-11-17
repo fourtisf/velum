@@ -20,3 +20,5 @@ export const HlWithdrawModal = dynamic(() => import('./HlWithdraw').then((m) => 
 export const HlCloseModal = dynamic(() => import('./HlManage').then((m) => m.HlCloseModal), { ssr: false, loading: () => <Busy h={300} /> });
 export const HlTpslModal = dynamic(() => import('./HlManage').then((m) => m.HlTpslModal), { ssr: false, loading: () => <Busy h={360} /> });
 export const HlMarginModal = dynamic(() => import('./HlManage').then((m) => m.HlMarginModal), { ssr: false, loading: () => <Busy h={360} /> });
+export const HlChartLines = dynamic(() => import('./HlChartLines').then((m) => m.HlChartLines), { ssr: false, loading: () => null });
+export const HlHistory = dynamic(() => import('./HlHistory').then((m) => m.HlHistory), { ssr: false, loading: () => <Busy h={90} /> });

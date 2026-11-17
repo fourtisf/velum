@@ -267,6 +267,13 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .tpsl-grid small{display:block;font-size:12px;margin:5px 1px 0;font-variant-numeric:tabular-nums}
 .inp.sm input{height:40px;font-size:15px}
 .tpsl-cell{white-space:nowrap}
+/* Portfolio perps results */
+.hl-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.hl-stats>div{padding:12px 14px;border-radius:12px;background:var(--bg2);border:1px solid var(--line)}
+.hl-stats span{display:block;font-size:12px;color:var(--muted)}
+.hl-stats b{display:block;margin-top:4px;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+.hl-history-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+@media (max-width:640px){.hl-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .orders-tbl td{vertical-align:middle}
 .sumbox{margin-top:16px;padding-top:14px;border-top:1px solid var(--line);display:grid;gap:9px}
 .sumbox>div{display:flex;justify-content:space-between;gap:10px;font-size:13px}

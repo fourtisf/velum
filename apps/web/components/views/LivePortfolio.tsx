@@ -21,7 +21,7 @@ import { unitsToInput, wadToUnits } from '@/lib/onchain/units';
 import { bal, useApp } from '@/lib/store';
 import { ACTIVITY_MAX, useWalletActivity, type Move, type WalletAct } from '@/lib/walletActivity';
 import { useWalletTotals } from '@/lib/walletTotals';
-import { HlAccountRows, HlPortfolioActivity, HlPortfolioPositions } from '../hyperliquid/lazy';
+import { HlAccountRows, HlHistory, HlPortfolioActivity, HlPortfolioPositions } from '../hyperliquid/lazy';
 import { I } from '../icons';
 import { Av, Px } from '../ui';
 
@@ -475,6 +475,9 @@ export function LivePortfolio() {
             <h2 className="ph">
               {LIVE.perpsActivity}
             </h2>
+            <div style={{ marginTop: 8 }}>
+              <HlHistory />
+            </div>
             <div style={{ marginTop: 8 }}>
               <HlPortfolioActivity />
             </div>

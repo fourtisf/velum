@@ -5,6 +5,7 @@ import { toNumber } from '@velum/math';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '@/lib/api';
+import { useChartLines, type LineTone } from '@/lib/chartLines';
 import { chartCandles } from '@/lib/candles';
 import { ENV } from '@/lib/env';
 import { CLOSED } from '@/lib/copy';
@@ -21,6 +22,8 @@ interface C {
 }
 
 const COL = { up: '#3FCF8E', down: '#F25C61', faint: '#5E626A', text: '#F4F5F6' };
+/** Chart line colors and the label text drawn on them (lib/chartLines.ts). */
+const TONE: Record<LineTone, { bg: string; fg: string }> = { up: { bg: COL.up, fg: '#06110B' }, down: { bg: COL.down, fg: '#fff' }, warn: { bg: '#F2C46B', fg: '#1A1405' }, acc: { bg: '#8F96FF', fg: '#0B0C10' } };
 const TFV: Record<Timeframe, number> = { '15m': 1, '1h': 1.9, '4h': 3.6, '1D': 7 };
 const VOL: Record<string, number> = Object.fromEntries(MARKETS.map((m) => [m.symbol, m.vol]));
 const N_CANDLES = 110;
@@ -69,6 +72,7 @@ export function Chart({ sym }: { sym: string }) {
   const tf = useApp((s) => s.tf);
   const veiled = useApp((s) => s.veiled);
   const positions = useApp((s) => s.ledger.positions);
+  const extra = useChartLines((s) => s.lines[sym]);
   const source = useMarkets((s) => s.source);
   const tick = useMarkets((s) => s.tick);
   // Redraw when the feed turns stale (no tick then), so the price tag shows it.
@@ -209,6 +213,53 @@ export function Chart({ sym }: { sym: string }) {
         x.fillStyle = '#06110B';
         x.fillText(lab, 15, ty + 0.5);
       });
+    // Real perps: the position's entry and liquidation, its TP / SL and resting limit orders (lib/chartLines.ts). A
+    // line outside the visible range gets its label pinned to the top or bottom edge, with an arrow.
+    const edges: number[] = [];
+    // Edge labels stack from the edge inward: the lowest price nearest the bottom, the highest nearest the top.
+    const all = [...(useChartLines.getState().lines[sym] ?? [])];
+    [...all.filter((l) => l.price >= lo).sort((a, b) => b.price - a.price), ...all.filter((l) => l.price < lo).sort((a, b) => a.price - b.price)]
+      .forEach((l) => {
+        const tone = TONE[l.tone];
+        if (l.price < lo || l.price > hi) {
+          const below = l.price < lo;
+          let ty = below ? H - PB - 12 : PT + 12;
+          while (edges.some((u) => Math.abs(u - ty) < 22)) ty += below ? -22 : 22;
+          edges.push(ty);
+          const lab = `${st.veiled ? l.label.replace(/[\d.,]+$/, '').trim() : l.label} ${below ? '↓' : '↑'}`;
+          x.font = F(600);
+          const tw = x.measureText(lab).width;
+          x.globalAlpha = 0.85;
+          x.fillStyle = tone.bg;
+          rr(x, cw - tw - 22, ty - 10, tw + 14, 20, 5);
+          x.fill();
+          x.globalAlpha = 1;
+          x.fillStyle = tone.fg;
+          x.fillText(lab, cw - tw - 15, ty + 0.5);
+          return;
+        }
+        const yy = Math.round(Y(l.price)) + 0.5;
+        x.setLineDash(l.dashed ? [4, 4] : []);
+        x.strokeStyle = tone.bg;
+        x.globalAlpha = l.dashed ? 0.75 : 0.9;
+        x.beginPath();
+        x.moveTo(0, yy);
+        x.lineTo(cw, yy);
+        x.stroke();
+        x.setLineDash([]);
+        x.globalAlpha = 1;
+        let ty = yy;
+        while (used.some((u) => Math.abs(u - ty) < 22)) ty += 22;
+        used.push(ty);
+        const lab = st.veiled ? l.label.replace(/[\d.,]+$/, '').trim() : l.label;
+        x.font = F(600);
+        const tw = x.measureText(lab).width;
+        x.fillStyle = tone.bg;
+        rr(x, 8, ty - 10, tw + 14, 20, 5);
+        x.fill();
+        x.fillStyle = tone.fg;
+        x.fillText(lab, 15, ty + 0.5);
+      });
     const L = list[n - 1]!;
     const ly = Math.round(Y(L.c)) + 0.5;
     const up = L.c >= L.o;
@@ -289,7 +340,7 @@ export function Chart({ sym }: { sym: string }) {
 
   useEffect(() => {
     draw();
-  }, [draw, veiled, positions, q.data, useLocal, feedStale]);
+  }, [draw, veiled, positions, extra, q.data, useLocal, feedStale]);
 
   useEffect(() => {
     const cv = cvRef.current;

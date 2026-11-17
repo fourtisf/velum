@@ -1,3 +1,5 @@
+import { createGeo } from './lib/geo';
+import type { ClientErrorRecord } from './lib/deps';
 import { once } from 'node:events';
 import { createCacheMac } from '@velum/config/src/cache-mac';
 import { PrismaClient } from '@velum/db';
@@ -51,6 +53,13 @@ async function main(): Promise<void> {
       deployment: deploymentSource(env.deploymentsDir ?? '', env.chainId),
       onchain: prismaOnchain(prisma),
       rateLimitRedis: redis,
+      geo: createGeo({ header: env.geoHeader, dbPath: env.geoipDb, proxySecret: env.proxySecret, onError: (msg) => console.warn(msg) }),
+      clientErrors: {
+        push: async (rec) => {
+          await redis.multi().lpush('velum:client-errors', JSON.stringify(rec)).ltrim('velum:client-errors', 0, 199).exec();
+        },
+        recent: async (n) => (await redis.lrange('velum:client-errors', 0, Math.max(0, n - 1))).map((s) => JSON.parse(s) as ClientErrorRecord),
+      },
       onClose: async () => {
         await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
       },

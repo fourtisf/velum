@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { DemoBanner } from '@/components/DemoBanner';
 import { TgLogo, XLogo } from '@/components/icons';
@@ -14,6 +15,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         {/* CLAUDE.md §1.7: the brand line on every page, small (audit web F11). */}
         <p className="app-brand">
           {COPY.brand}
+          <Link className="brand-l" href="/terms">
+            Terms
+          </Link>
+          <Link className="brand-l" href="/risk">
+            Risks
+          </Link>
           <a className="brand-x" href={SOCIAL.x} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.xLabel}>
             <XLogo />
           </a>

@@ -4,10 +4,13 @@
  * because it renders inside the layout). It replaces the whole document, so it brings its own
  * <html> and <body> and the global styles (audit web L6), and the brand line (final audit W-10).
  */
+import { useEffect } from 'react';
 import { COPY } from '@/lib/copy';
+import { reportError } from '@/lib/errorReport';
 import './globals.css';
 
-export default function GlobalError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
+export default function GlobalError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }) {
+  useEffect(() => reportError('boundary', error), [error]);
   return (
     <html lang="en">
       <body>

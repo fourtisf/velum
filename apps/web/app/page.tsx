@@ -396,6 +396,8 @@ export default function Landing() {
             <a href="#how">How it works</a>
             <a href="#privacy">Privacy</a>
             <a href="#faq">FAQ</a>
+            <Link href="/terms">Terms of Use</Link>
+            <Link href="/risk">Risk Disclosure</Link>
           </div>
           <div>
             <h3>Developers</h3>

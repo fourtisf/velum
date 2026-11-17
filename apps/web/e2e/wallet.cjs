@@ -39,7 +39,8 @@ const READS = new Set([
  * opts.privateKey (throwaway), opts.rpc (anvil URL), opts.chainId (where the wallet starts), opts.anvilChainId,
  * opts.name (the name it announces; default "Test Wallet"), opts.chains ({ chainId: anvil URL } when the wallet knows
  * several local chains, e.g. Robinhood Chain and Arbitrum forks: it signs on whichever it is switched to and refuses a
- * switch to any other chain with 4902, like a real wallet that does not know it).
+ * switch to any other chain with 4902, like a real wallet that does not know it), opts.perpsTerms (false: leave the perps
+ * statement unaccepted; by default it is accepted for this wallet, as after a first visit).
  * Returns the wallet state: { log, sent, sentOn ([{ hash, chainId }]), typed (EIP-712 requests), wrongChainSends,
  * setChain(id), rejectNext }.
  */
@@ -139,6 +140,17 @@ async function installWallet(context, opts) {
     }
   });
   await context.addInitScript(INJECT({ uuid: '00000000-0000-4000-8000-000000000002', name: opts.name ?? 'Test Wallet', icon: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E', rdns: 'test.velum.wallet' }));
+  // The perps statement (lib/geo.ts) is accepted for this wallet unless a test checks it (opts.perpsTerms === false).
+  if (opts.perpsTerms !== false) {
+    const version = /LEGAL_VERSION = '([^']+)'/.exec(require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'lib', 'legal.ts'), 'utf8'))[1];
+    await context.addInitScript(([k]) => {
+      try {
+        localStorage.setItem(k, '1');
+      } catch {
+        /* no storage */
+      }
+    }, [`velum.perpsTerms.${version}.${account.address.toLowerCase()}`]);
+  }
   state.setChain = async (page, id) => {
     state.chainId = id;
     await page.evaluate((hex) => window.__walletEmit('chainChanged', hex), '0x' + id.toString(16));

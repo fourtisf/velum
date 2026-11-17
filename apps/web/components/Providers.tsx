@@ -1,4 +1,5 @@
 'use client';
+import { installErrorReporting } from '@/lib/errorReport';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { WagmiProvider, useConnection } from 'wagmi';
@@ -83,6 +84,7 @@ function VeilSync() {
 
 function Feeds() {
   useEffect(() => startMarketFeed(), []);
+  useEffect(() => installErrorReporting(), []);
   // Real transactions only when this build carries a deployment and the API serves the same one.
   useEffect(() => startOnchainCheck(), []);
   // Mainnet: the live ETH price (from the WETH/USDG pool), so ETH balances and amounts show in dollars.

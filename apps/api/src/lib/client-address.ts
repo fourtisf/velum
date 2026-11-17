@@ -58,6 +58,23 @@ function requestIp(req: FastifyRequest): string | undefined {
 }
 
 /**
+ * The client's own address (for the country lookup, lib/geo.ts), by the same rules as the rate-limit key below: X-Real-IP
+ * only on requests carrying Nginx's secret when one is configured, otherwise Fastify's req.ip. Null when unknown.
+ */
+export function clientAddress(req: FastifyRequest, secret: string | null): string | null {
+  if (secret) {
+    const got = req.headers[PROXY_SECRET_HEADER];
+    if (typeof got === 'string' && timingSafeEqual(digest(got), digest(secret))) {
+      const real = req.headers['x-real-ip'];
+      if (typeof real === 'string' && REAL_IP_RE.test(real) && isIP(real.replace(/%.*$/, ''))) return real;
+    }
+    return null;
+  }
+  const ip = requestIp(req);
+  return ip && isIP(ip.replace(/%.*$/, '')) ? ip : null;
+}
+
+/**
  * Rate-limit key for a request (audit R2-I4, L-2, L-3). Other programs on a shared server can reach
  * the API locally and send any X-Forwarded-For, so with a proxy secret configured the client address
  * comes from X-Real-IP only when the request also carries the secret Nginx adds. Every other request is

@@ -40,6 +40,14 @@ export interface ApiEnv {
    * trusts X-Forwarded-For from loopback as before.
    */
   proxySecret: string | null;
+  /** Header with the visitor's country set by a trusted edge (GEO_COUNTRY_HEADER, e.g. cf-ipcountry), or null. */
+  geoHeader?: string | null;
+  /** DB-IP / MaxMind country database (GEOIP_DB, mmdb), or null. */
+  geoipDb?: string | null;
+  /** Countries where perps are not offered (PERPS_BLOCKED_COUNTRIES, ISO alpha-2). */
+  perpsBlocked?: string[];
+  /** Token for reading client error reports (ADMIN_TOKEN, at least 32 characters), or null (reading disabled). */
+  adminToken?: string | null;
   /**
    * Unix socket to listen on instead of HOST:PORT_API (audit R3-03). deploy/server-setup.sh sets it to
    * /run/velum-api/api.sock: a directory only the app user and Nginx's user can enter, so no other local
@@ -118,6 +126,16 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     problems.push('SIGNER_STATUS_FILE must be an absolute path of at most 100 plain characters (letters, digits, . _ - /).');
   }
 
+  const geoHeader = (e.GEO_COUNTRY_HEADER ?? '').trim().toLowerCase();
+  if (geoHeader && !/^[a-z0-9-]{1,40}$/.test(geoHeader)) problems.push('GEO_COUNTRY_HEADER must be a header name like cf-ipcountry.');
+  const geoipDb = (e.GEOIP_DB ?? '').trim();
+  if (geoipDb && (!SOCKET_PATH_RE.test(geoipDb) || geoipDb.split('/').includes('..'))) problems.push('GEOIP_DB must be an absolute path of at most 100 plain characters (letters, digits, . _ - /).');
+  const blockedRaw = (e.PERPS_BLOCKED_COUNTRIES ?? '').trim();
+  const perpsBlocked = blockedRaw ? blockedRaw.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean) : ['US', 'CU', 'IR', 'KP', 'SY'];
+  if (perpsBlocked.some((c) => !/^[A-Z]{2}$/.test(c))) problems.push('PERPS_BLOCKED_COUNTRIES must be comma-separated two-letter country codes, e.g. US,CU,IR,KP,SY.');
+  const adminToken = (e.ADMIN_TOKEN ?? '').trim();
+  if (adminToken && adminToken.length < 32) problems.push('ADMIN_TOKEN must be at least 32 characters (openssl rand -hex 24).');
+
   const logLevel = (e.LOG_LEVEL ?? '').trim() || (e.NODE_ENV === 'production' ? 'info' : 'debug');
   if (!(LOG_LEVELS as readonly string[]).includes(logLevel)) problems.push(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')} (got "${e.LOG_LEVEL}").`);
   const network: NetworkName = (e.VELUM_NETWORK ?? '').trim().toLowerCase() === 'mainnet' ? 'mainnet' : NETWORK;
@@ -139,6 +157,10 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     demoMode: true,
     logLevel,
     proxySecret: proxySecret || null,
+    geoHeader: geoHeader || null,
+    geoipDb: geoipDb || null,
+    perpsBlocked,
+    adminToken: adminToken || null,
     socketPath: socketPath || null,
     deploymentsDir: (e.DEPLOYMENTS_DIR ?? '').trim() || defaultDeploymentsDir(),
     signerStatusFile: signerStatusFile || SIGNER_STATUS_FILE_DEFAULT,

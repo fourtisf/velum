@@ -21,6 +21,7 @@
     "@velum/math": "workspace:*",
     "fastify": "5.12.8",
     "ioredis": "5.11.1",
+    "mmdb-lib": "3.0.5",
     "viem": "2.57.19"
   },
   "devDependencies": {

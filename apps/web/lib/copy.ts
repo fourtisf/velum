@@ -120,6 +120,8 @@ export const HL = {
   noAccount: 'No perps balance for this wallet yet. Deposit ETH or USDG from Robinhood Chain, ETH from Ethereum, or USDC from Arbitrum to start trading perps.',
   noPositions: 'No open positions. Pick long or short in the ticket to open one.',
   noFills: 'No perps trades in these markets yet.',
+  geoBlocked: 'Perps are not offered in the United States or in sanctioned countries. You can still manage and close positions and withdraw.',
+  termsHint: 'Confirm a few statements once for this wallet, then trade.',
 } as const;
 
 /**

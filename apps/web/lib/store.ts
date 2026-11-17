@@ -111,6 +111,7 @@ export type ModalState =
   | { kind: 'hl-close'; sym: string }
   | { kind: 'hl-tpsl'; sym: string }
   | { kind: 'hl-margin'; sym: string }
+  | { kind: 'perps-terms' }
   /** Phase 3 position management: add or remove margin, forced exit. */
   | { kind: 'manage'; id: string };
 

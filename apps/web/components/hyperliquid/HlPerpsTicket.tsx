@@ -12,6 +12,7 @@ import { HL_MAX_LEVERAGE, HL_MAX_TOKENS, HL_MIN_ORDER_USD } from '@velum/config/
 import { parseWad, toDecimalString } from '@velum/math';
 import { amountHint, amountInputProps } from '@/lib/amount';
 import { HL } from '@/lib/copy';
+import { usePerpsGeo, usePerpsTerms } from '@/lib/geo';
 import { fmt, fmtLev } from '@/lib/format';
 import { BUILDER, builderRate, useHlBalances, useHlMarkets, useHlMid, useHlMode } from '@/lib/hyperliquid/client';
 import { openFlow } from '@/lib/hyperliquid/flows';
@@ -67,6 +68,8 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   const avail = bal.data ? bal.data.xyzAvailable + bal.data.mainAvailable : null;
   const slip = slipBps(s.slip);
   const bad = amountHint(s.size);
+  const geo = usePerpsGeo();
+  const accepted = usePerpsTerms((t) => (user ? t.isAccepted(user) : false));
   const limit = s.otype === 'limit';
   const res =
     market && !bad && (limit || px)
@@ -93,6 +96,9 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   } else if (!market) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = HL.noMarket(sym);
+  } else if (geo === 'blocked') {
+    b = { label: 'Not available in your region', cls: 'btn-dark', disabled: true };
+    hint = HL.geoBlocked;
   } else if (mode.isError || bal.isError) {
     b = { label: 'Perps unavailable', cls: 'btn-dark', disabled: true };
     hint = HL.unavailable;
@@ -116,6 +122,9 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   } else if (tpslBad) {
     b = { label: tpslBad.label, cls: 'btn-dark', disabled: true };
     hint = tpslBad.hint;
+  } else if (!accepted) {
+    b = { label: 'Review perps terms', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'perps-terms' }) };
+    hint = HL.termsHint;
   } else {
     const p = res.plan;
     b = {

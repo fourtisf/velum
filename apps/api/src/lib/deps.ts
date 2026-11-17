@@ -1,3 +1,4 @@
+import type { GeoLookup } from './geo';
 import type { Candle, CandleCache, MarketSnapshot, Timeframe } from '@velum/config';
 import type { OnchainStatus, SignerStatus } from '@velum/config/src/onchain';
 import type { PerpRef } from '@velum/config/src/perps-ref';
@@ -70,7 +71,26 @@ export interface AppDeps {
   onchain?: OnchainReader;
   /** ioredis client for the shared rate-limit store; omitted in tests (in-memory store). */
   rateLimitRedis?: unknown;
+  /** The visitor's country for the perps geoblock (lib/geo.ts); absent: unknown. */
+  geo?: GeoLookup;
+  /** Where client error reports are kept (a capped Redis list in production). */
+  clientErrors?: ClientErrorSink;
   now?: () => number;
   /** Extra cleanup on app.close(), e.g. disconnect Prisma and Redis. */
   onClose?: () => Promise<void>;
+}
+
+/** One error the web reported (routes/client-errors.ts), already scrubbed of addresses and long hex. */
+export interface ClientErrorRecord {
+  at: number;
+  kind: string;
+  message: string;
+  stack: string;
+  path: string;
+  release: string;
+}
+
+export interface ClientErrorSink {
+  push(rec: ClientErrorRecord): Promise<void>;
+  recent(n: number): Promise<ClientErrorRecord[]>;
 }

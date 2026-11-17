@@ -8,8 +8,10 @@ import { ApiError, ERROR_CODES, errorBody, type ErrorCode } from './lib/errors';
 import { fallbackStore } from './lib/rate-limit-store';
 import { accountsRoutes } from './routes/accounts';
 import { candlesRoutes } from './routes/candles';
+import { clientErrorRoutes } from './routes/client-errors';
 import { deploymentRoutes } from './routes/deployment';
 import { fundingRoutes } from './routes/funding';
+import { geoRoutes } from './routes/geo';
 import { healthRoutes } from './routes/health';
 import { marketsRoutes } from './routes/markets';
 import { poolsRoutes } from './routes/pools';
@@ -97,6 +99,8 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
   await app.register(deploymentRoutes(deps));
   await app.register(accountsRoutes(deps));
   await app.register(fundingRoutes(deps));
+  await app.register(geoRoutes(deps));
+  await app.register(clientErrorRoutes(deps));
 
   if (deps.onClose) app.addHook('onClose', async () => deps.onClose?.());
   return app;

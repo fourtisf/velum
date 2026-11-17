@@ -19,6 +19,8 @@ import { useEthereumEth } from '@/lib/ethereumEth';
 import { depositFlow, planDeposit, usdcText, useArbBalances, type DepositRefusal } from '@/lib/hyperliquid/deposit';
 import { ORIGINS, RELAY_MIN_OUT, ethReserve, hlUsdcText, relayDepositFlow, sourceText, sourceUnits, useRelayQuote, type RelayOrigin, type RelaySource } from '@/lib/hyperliquid/relay';
 import { useMarkets, usePriceTick } from '@/lib/markets';
+import { usePerpsGeo } from '@/lib/geo';
+import { HL } from '@/lib/copy';
 import { useApp } from '@/lib/store';
 import { I } from '../icons';
 
@@ -41,6 +43,19 @@ const FROM: Array<[From, string]> = [
 export function HlDepositModal() {
   const s = useApp();
   const [from, setFrom] = useState<From>('robinhood');
+  const geo = usePerpsGeo();
+  if (geo === 'blocked')
+    return (
+      <>
+        <div className="m-head">
+          <h3 id="m-title">{DEPOSIT.title}</h3>
+          <button className="xbtn" aria-label="Close" onClick={() => s.closeModal(true)}>
+            <I.x />
+          </button>
+        </div>
+        <p className="m-text">Deposits for perps are not available in your region. {HL.geoBlocked}</p>
+      </>
+    );
   return (
     <>
       <div className="m-head">

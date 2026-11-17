@@ -1,8 +1,11 @@
 'use client';
+import { useEffect } from 'react';
 import { COPY } from '@/lib/copy';
+import { reportError } from '@/lib/errorReport';
 
-/** Shown instead of a blank "Application error" when a page throws (audit web L3). */
-export default function Error({ reset }: { error: Error; reset: () => void }) {
+/** Shown instead of a blank "Application error" when a page throws (audit web L3); the error is reported (lib/errorReport.ts). */
+export default function Error({ error, reset }: { error: Error; reset: () => void }) {
+  useEffect(() => reportError('boundary', error), [error]);
   return (
     <main className="wrap">
       <div className="empty" style={{ padding: '120px 20px' }}>

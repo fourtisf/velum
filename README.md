@@ -117,6 +117,27 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: terms, perps geoblock, error reports (November 17 2026)
+
+- **Terms of Use** (`/terms`) and **Risk Disclosure** (`/risk`), linked from the landing footer and the app's brand line
+  (`apps/web/lib/legal.ts`; a draft for the product as it is, to be reviewed by a lawyer). Before a wallet's first perps
+  order it accepts a short statement once (not a US person or in a sanctioned country; read the terms and risks; can
+  lose all margin), remembered per wallet and terms version (`LEGAL_VERSION`).
+- **Perps geoblock**: the API's `GET /v1/geo` returns the visitor's country and `perps: allowed | blocked | unknown`
+  (`PERPS_BLOCKED_COUNTRIES`, default US, CU, IR, KP, SY). Blocked: no new orders and no perps deposits, with the reason;
+  closing positions and withdrawing stay available. The country comes from `GEO_COUNTRY_HEADER` (only behind Cloudflare)
+  and/or DB-IP's free country database (`GEOIP_DB`; `sudo bash deploy/geoip-update.sh --install-cron` downloads it and
+  refreshes it monthly; attribution on the legal pages). Without either it is unknown and the statement applies.
+- **Error reports**: uncaught errors in production builds go to `POST /v1/client-errors` (at most 10 per page load, each
+  message once, extensions and wallet rejections ignored), with wallet addresses, long hex, emails and query strings
+  scrubbed in the browser and again on the server. The API logs them (`pm2 logs velum-api`) and keeps the last 200 in
+  Redis, readable with `ADMIN_TOKEN` (`curl -H "X-Velum-Admin-Token: …" https://<domain>/api/v1/client-errors`).
+- **WalletConnect** was already built: it appears once `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is set (free at
+  cloud.reown.com), and the release adds its hosts to the CSP.
+- Checked: `apps/api/src/geo.test.ts`, `apps/web/tests/compliance.mainnet.test.ts`, and `apps/web/e2e/compliance.e2e.cjs`
+  (13 checks: a blocked region, the statement and its memory, an error report scrubbed, the pages and links). The e2e
+  wallet accepts the statement by default (`perpsTerms: false` to test it); every perps suite passes.
+
 ## What changed: chart lines and perps history (November 17 2026)
 
 - **On the chart** (perps mode): the position's entry, liquidation price, take profit, stop loss and resting limit orders

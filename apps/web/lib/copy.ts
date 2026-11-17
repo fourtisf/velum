@@ -38,6 +38,10 @@ export const SOCIAL = {
   x: 'https://x.com/velumtrade',
   xHandle: '@velumtrade',
   xLabel: 'Velum on X',
+  /** Velum on Telegram (owner-provided, 2026-11-17). */
+  tg: 'https://t.me/velumtrade',
+  tgHandle: '@velumtrade',
+  tgLabel: 'Velum on Telegram',
 } as const;
 
 /** §5 numbers as copy (CLAUDE.md section 5; values in @velum/config PROTOCOL). */

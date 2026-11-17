@@ -4,7 +4,7 @@ import { ContractPill } from '@/components/landing/ContractPill';
 import { FrameCap, HeroFrame, LandingMarkets, OcText, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
 import { LandingPortfolio } from '@/components/landing/Portfolio';
 import { Av, DemoTag } from '@/components/ui';
-import { I, Mark, XLogo } from '@/components/icons';
+import { I, Mark, TgLogo, XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
 import { COPY, LANDING, METRICS, ONCHAIN, P, SOCIAL } from '@/lib/copy';
 
@@ -364,6 +364,10 @@ export default function Landing() {
               <XLogo />
               Follow {SOCIAL.xHandle}
             </a>
+            <a className="btn btn-dark btn-lg follow-x" href={SOCIAL.tg} target="_blank" rel="noopener noreferrer">
+              <TgLogo />
+              Join on Telegram
+            </a>
           </div>
         </section>
       </main>
@@ -400,6 +404,10 @@ export default function Landing() {
             <Link href="/">Contact</Link>
             <a className="foot-x" href={SOCIAL.x} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.xLabel}>
               <XLogo />X
+            </a>
+            <a className="foot-x" href={SOCIAL.tg} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.tgLabel}>
+              <TgLogo />
+              Telegram
             </a>
           </div>
         </div>

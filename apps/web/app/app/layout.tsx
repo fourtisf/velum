@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { DemoBanner } from '@/components/DemoBanner';
-import { XLogo } from '@/components/icons';
+import { TgLogo, XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
 import { COPY, SOCIAL } from '@/lib/copy';
 
@@ -16,6 +16,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           {COPY.brand}
           <a className="brand-x" href={SOCIAL.x} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.xLabel}>
             <XLogo />
+          </a>
+          <a className="brand-x" href={SOCIAL.tg} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.tgLabel}>
+            <TgLogo />
           </a>
         </p>
       </main>

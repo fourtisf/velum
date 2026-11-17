@@ -11,7 +11,7 @@ import { SOCIAL } from '@/lib/copy';
 import { useApp } from '@/lib/store';
 import { OcWalletTotal } from './onchain/lazy';
 import { DemoBanner } from './DemoBanner';
-import { I, Mark, XLogo } from './icons';
+import { I, Mark, TgLogo, XLogo } from './icons';
 
 const ALL_TABS: Array<[string, string]> = [
   ['trade', 'Trade'],
@@ -40,6 +40,15 @@ export function EyeButton() {
     <button className="iconbtn" aria-pressed={veiled} aria-label="Hide balances on screen" title="Hide balances on screen" onClick={() => set({ veiled: !veiled })}>
       {veiled ? <I.eyeOff /> : <I.eye />}
     </button>
+  );
+}
+
+/** Velum on Telegram, next to X in the nav of every page (owner request). */
+export function TgButton({ className = '' }: { className?: string }) {
+  return (
+    <a className={`iconbtn iconbtn-x iconbtn-tg ${className}`} href={SOCIAL.tg} target="_blank" rel="noopener noreferrer" aria-label={SOCIAL.tgLabel} title={`${SOCIAL.tgHandle} on Telegram`}>
+      <TgLogo />
+    </a>
   );
 }
 
@@ -106,6 +115,7 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
           <div className="nright">
             {/* In the app on a phone the nav keeps the wallet button; X stays in the brand line under the page. */}
             <XButton className={app ? 'hide-sm' : ''} />
+            <TgButton className={app ? 'hide-sm' : ''} />
             {app || connected ? <EyeButton /> : null}
             {connected ? (
               <button className="walletbtn" onClick={() => openModal({ kind: 'account' })}>

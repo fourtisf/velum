@@ -117,6 +117,13 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: Telegram on the site (November 17 2026)
+
+- Velum's Telegram (`https://t.me/velumtrade`, `SOCIAL.tg` in `apps/web/lib/copy.ts`) next to X everywhere X appears:
+  a Telegram button in the top navigation of every page (on phones in the app it stays in the brand line, like X),
+  "Join on Telegram" in the landing page's closing call to action, and in the footer. The mark is Simple Icons'
+  `telegram.svg`, inline.
+
 ## What changed: Portfolio on the landing page, video copy (November 17 2026)
 
 - **Landing page Portfolio** (mainnet without Velum contracts): a "Portfolio" link in the landing navigation and a

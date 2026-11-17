@@ -523,3 +523,5 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
   .lpf .tbl td .btn-sm{padding:0 9px}
   .lpf-top,.lpf-foot{padding-left:14px;padding-right:14px}
 }
+/* Telegram's mark is a filled disc: a little larger than X's so the paper plane reads at nav size. */
+.iconbtn.iconbtn-tg svg{width:18px;height:18px}

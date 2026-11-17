@@ -311,9 +311,16 @@ describe('W-07 / DV-F3 / W-06: copy', () => {
   });
 });
 
-describe("Velum on X (owner request): one constant, the owner's exact URL", () => {
-  it('URL, handle and accessible name', () => {
-    expect(SOCIAL).toEqual({ x: 'https://x.com/velumtrade', xHandle: '@velumtrade', xLabel: 'Velum on X' });
+describe("Velum on X and Telegram (owner requests): one constant, the owner's exact URLs", () => {
+  it('URLs, handles and accessible names', () => {
+    expect(SOCIAL).toEqual({
+      x: 'https://x.com/velumtrade',
+      xHandle: '@velumtrade',
+      xLabel: 'Velum on X',
+      tg: 'https://t.me/velumtrade',
+      tgHandle: '@velumtrade',
+      tgLabel: 'Velum on Telegram',
+    });
   });
 });
 

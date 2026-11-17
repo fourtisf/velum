@@ -30,9 +30,9 @@ const usdWad = (n: number): bigint => (Number.isFinite(n) && n > 0 ? (parseWad((
 
 const REFUSAL: Record<OpenRefusal, { label: string; hint: string }> = {
   size: { label: 'Enter a size', hint: '' },
-  min: { label: `Minimum ${HL_MIN_ORDER_USD} USD`, hint: `Hyperliquid accepts orders of at least ${HL_MIN_ORDER_USD} USD.` },
+  min: { label: `Minimum ${HL_MIN_ORDER_USD} USD`, hint: `Orders must be at least ${HL_MIN_ORDER_USD} USD.` },
   max: { label: `Above the ${HL_MAX_TOKENS}-token limit`, hint: `One position can hold up to ${HL_MAX_TOKENS} tokens.` },
-  leverage: { label: 'Leverage not allowed', hint: `Velum trades up to ${HL_MAX_LEVERAGE}× on Hyperliquid.` },
+  leverage: { label: 'Leverage not allowed', hint: `Velum trades up to ${HL_MAX_LEVERAGE}×.` },
   price: { label: 'Price unavailable', hint: '' },
 };
 
@@ -65,17 +65,17 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
   let hint = bad;
   let b: Btn;
   if (!connected) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
-  else if (markets.isLoading) b = { label: 'Loading Hyperliquid…', cls: 'btn-dark', disabled: true };
+  else if (markets.isLoading) b = { label: 'Loading perps…', cls: 'btn-dark', disabled: true };
   else if (markets.isError) {
-    b = { label: 'Hyperliquid unavailable', cls: 'btn-dark', disabled: true };
+    b = { label: 'Perps unavailable', cls: 'btn-dark', disabled: true };
     hint = HL.unavailable;
   } else if (!market) {
     b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
     hint = HL.noMarket(sym);
   } else if (mode.isError || bal.isError) {
-    b = { label: 'Hyperliquid unavailable', cls: 'btn-dark', disabled: true };
+    b = { label: 'Perps unavailable', cls: 'btn-dark', disabled: true };
     hint = HL.unavailable;
-  } else if (!bal.data) b = { label: 'Reading your Hyperliquid account…', cls: 'btn-dark', disabled: true };
+  } else if (!bal.data) b = { label: 'Reading your perps account…', cls: 'btn-dark', disabled: true };
   else if (!bal.data.funded) {
     b = { label: 'Deposit USDC', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'hl-deposit' }) };
     hint = HL.depositHint;
@@ -89,12 +89,12 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
     b = { label: r.label, cls: 'btn-dark', disabled: true };
     hint = res && !res.ok && res.reason === 'leverage' && lockedLev !== null ? HL.levHint(sym, lockedLev) : r.hint;
   } else if (usdWad(avail ?? 0) < (parseWad(res.plan.margin) ?? 0n)) {
-    b = { label: 'Not enough USDC on Hyperliquid', cls: 'btn-dark', disabled: true };
+    b = { label: 'Not enough USDC in your perps account', cls: 'btn-dark', disabled: true };
     hint = HL.notEnough(fmt(usdWad(avail ?? 0)));
   } else {
     const p = res.plan;
     b = {
-      label: `Open ${s.side} on Hyperliquid`,
+      label: `Open ${s.side}`,
       cls: long ? 'btn-up' : 'btn-down',
       disabled: false,
       onClick: () =>
@@ -140,7 +140,7 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
       <div className="fl">
         <label htmlFor="t-size">Size</label>
         <span>
-          Hyperliquid <b className="num">{connected && avail !== null ? `${fmt(usdWad(avail))} USDC` : '—'}</b>
+          Perps balance <b className="num">{connected && avail !== null ? `${fmt(usdWad(avail))} USDC` : '—'}</b>
           {connected && bal.data?.funded ? (
             <button type="button" className="linkbtn" onClick={() => s.openModal({ kind: 'hl-deposit' })}>
               + Deposit
@@ -214,7 +214,7 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
         </div>
         <div>
           <span>Fee</span>
-          <b>{BUILDER ? `Hyperliquid + ${builderRate(BUILDER.f)}` : "Hyperliquid's"}</b>
+          <b>{BUILDER ? `Exchange fee + ${builderRate(BUILDER.f)}` : 'Exchange fee only'}</b>
         </div>
         <div>
           <span>Funding{refVenue ? <RefTag venue={refVenue} sym={sym} /> : null}</span>

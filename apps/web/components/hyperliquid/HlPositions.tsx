@@ -154,7 +154,7 @@ function PositionsBody({ user, onConnect, onDeposit }: { user: `0x${string}` | u
   if (!bal.data)
     return (
       <div className="empty" aria-busy="true">
-        <p>Reading your Hyperliquid account…</p>
+        <p>Reading your perps account…</p>
       </div>
     );
   if (!bal.data.funded)
@@ -195,7 +195,7 @@ export function HlPortfolioActivity() {
     <Fills list={fills.data} />
   ) : (
     <div className="empty" aria-busy="true">
-      <p>Reading your Hyperliquid trades…</p>
+      <p>Reading your perps trades…</p>
     </div>
   );
 }
@@ -221,7 +221,7 @@ export function HlPositionsCard() {
       <Fills list={fills.data} />
     ) : (
       <div className="empty" aria-busy="true">
-        <p>Reading your Hyperliquid trades…</p>
+        <p>Reading your perps trades…</p>
       </div>
     );
   return (

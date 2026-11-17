@@ -138,7 +138,7 @@ async function main() {
   const start = m.locator('button', { hasText: /^Deposit$/ });
   await start.waitFor({ timeout: 20_000 });
   const review = await m.innerText();
-  check('review: amount, from Arbitrum, to the same address on Hyperliquid, minimum note', /20\.00 USDC/.test(review) && /Your wallet on Arbitrum/.test(review) && /this same address/.test(review) && /under 5 USDC are lost/.test(review), review.replace(/\n/g, ' | ').slice(0, 300));
+  check('review: amount, from Arbitrum, to the same address on Hyperliquid, minimum note', /20\.00 USDC/.test(review) && /Your wallet on Arbitrum/.test(review) && /this same address/.test(review) && /under 5 USDC are lost/.test(review) && /Venue\s*Hyperliquid/.test(review), review.replace(/\n/g, ' | ').slice(0, 300));
   check('confirm stays off until the statement is ticked', await start.isDisabled());
   await m.locator('input[type="checkbox"]').check();
   await snap(page, 'deposit-review');
@@ -168,7 +168,7 @@ async function main() {
   await page.locator('.ticket .fl', { hasText: '20.00 USDC' }).waitFor({ timeout: 30_000 });
   check('ticket: the Hyperliquid balance shows the deposit, with "+ Deposit" for more', (await page.locator('.ticket .linkbtn', { hasText: '+ Deposit' }).count()) === 1);
   await page.locator('#t-size').fill('30');
-  await page.locator('.ticket button.btn-block', { hasText: 'Open long on Hyperliquid' }).waitFor({ timeout: 20_000 });
+  await page.locator('.ticket button.btn-block', { hasText: 'Open long' }).waitFor({ timeout: 20_000 });
   check('ticket: ready to open a position', true);
   await snap(page, 'ticket-funded');
   check('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));

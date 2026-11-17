@@ -67,6 +67,12 @@ function hyperliquid(user, { funded = true } = {}) {
         return b.dex === 'xyz' ? meta : null;
       case 'allMids':
         return b.dex === 'xyz' ? MIDS : {};
+      case 'l2Book': {
+        // A small live-like book around the mid.
+        const m = Number(MIDS[b.coin] ?? 384.1);
+        const lv = (k, d) => ({ px: (m + d * (k * 0.02 + 0.01)).toFixed(2), sz: (1.5 + k * 0.7).toFixed(3), n: 1 + (k % 3) });
+        return { coin: b.coin, time: Date.now(), levels: [Array.from({ length: 20 }, (_, k) => lv(k, -1)), Array.from({ length: 20 }, (_, k) => lv(k, 1))] };
+      }
       case 'userAbstraction':
         return 'disabled';
       case 'extraAgents':
@@ -228,16 +234,29 @@ async function main() {
   page.on('request', (r) => r.postData() && bodies.push(r.postData()));
 
   await page.goto(`${BASE}/app/trade/TSLA?mode=perps`, { waitUntil: 'domcontentloaded' });
-  await page.locator('.demo-bar', { hasText: 'Perps are real trades from your own Hyperliquid account' }).waitFor({ timeout: 30_000 });
-  check('the banner says perps are real Hyperliquid trades', true);
+  await page.locator('.demo-bar', { hasText: 'Perps are real leveraged trades from your own account' }).waitFor({ timeout: 30_000 });
+  check('the banner says perps are real trades from your own account', true);
+  // The live order book next to the chart, from Hyperliquid's l2Book (the model above).
+  await page.locator('.obook .ob-row.bid').first().waitFor({ timeout: 30_000 });
+  const asks = await page.locator('.obook .ob-row.ask').count();
+  const bids = await page.locator('.obook .ob-row.bid').count();
+  const mid = await page.locator('.obook .ob-mid b').innerText();
+  check('order book: 12 asks over 12 bids, the mid price between them', asks === 12 && bids === 12 && /^383\.9\d$/.test(mid), `${asks} asks, ${bids} bids, mid ${mid}`);
+  const bestAsk = Number((await page.locator('.obook .ob-row.ask .ob-px').last().innerText()).replace(/,/g, ''));
+  const bestBid = Number((await page.locator('.obook .ob-row.bid .ob-px').first().innerText()).replace(/,/g, ''));
+  check('order book: the best ask sits above the best bid, next to the mid', bestAsk > bestBid && bestAsk - bestBid < 0.05, `${bestBid} / ${bestAsk}`);
+  const rows = await page.locator('.chart-row').evaluate((el) => getComputedStyle(el).gridTemplateColumns);
+  check('order book: beside the chart on a wide screen', /268px/.test(rows), rows);
   await connect(page);
   await page.locator('.ticket .fl', { hasText: '550.00 USDC' }).waitFor({ timeout: 30_000 });
-  check('the ticket shows the Hyperliquid balance (xyz 50 + main 500)', true);
+  check('the ticket shows the perps balance (xyz 50 + main 500)', true);
+  const visible = await page.evaluate(() => document.querySelector('main')?.innerText ?? '');
+  check('no venue name on the trade page (owner request)', !/Hyperliquid/.test(visible), (visible.match(/.{0,40}Hyperliquid.{0,40}/) ?? [''])[0]);
 
   // Open: long 1000 USD at 3x.
   await page.locator('#t-size').fill('1000');
   await page.locator('#t-lev').fill('3');
-  const openBtn = page.locator('.ticket button.btn-block', { hasText: 'Open long on Hyperliquid' });
+  const openBtn = page.locator('.ticket button.btn-block', { hasText: 'Open long' });
   await openBtn.waitFor({ timeout: 20_000 });
   await page.waitForFunction(() => !document.querySelector('.ticket button.btn-block')?.hasAttribute('disabled'), null, { timeout: 20_000 });
   const sum = flat(await page.locator('.ticket .sumbox').innerText());
@@ -246,7 +265,7 @@ async function main() {
   await openBtn.click();
   const o = await confirm(page, 'open-long', 'Start trade');
   check('open review: every number', /Size \| 2\.604 TSLA \(about 999\.75 USD\)/.test(flat(o.review)) && /Margin \| 334\.26 USDC/.test(flat(o.review)) && /At most 385\.84 \(0\.5% slippage\)/.test(o.review) && /Velum adds none/.test(o.review), flat(o.review).slice(0, 500));
-  check('open: receipt', o.ok && /Filled \| 2\.604 TSLA/.test(flat(o.text)) && /384\.12 USDC/.test(o.text) && /#4242 on Hyperliquid/.test(o.text), flat(o.text).slice(-400));
+  check('open: receipt', o.ok && /Filled \| 2\.604 TSLA/.test(flat(o.text)) && /384\.12 USDC/.test(o.text) && /#4242/.test(o.text), flat(o.text).slice(-400));
   const ex = hl.exchange;
   check('open: approveAgent, agentSendAsset, updateLeverage, order, in that order', ex.map((e) => e.type).join(',') === 'approveAgent,agentSendAsset,updateLeverage,order', ex.map((e) => e.type).join(','));
   const agent = hl.agents[0]?.address;
@@ -271,13 +290,13 @@ async function main() {
   const cl = hl.exchange[4];
   check('close order: signed by the agent, reduce-only IOC sell of the whole size', hl.exchange.length === 5 && cl.signer === agent && JSON.stringify(cl.action.orders) === JSON.stringify([{ a: 110001, b: false, p: '382.01', s: '2.604', r: true, t: { limit: { tif: 'Ioc' } } }]), JSON.stringify(cl?.action));
   await page.locator('.modal button', { hasText: 'Done' }).click();
-  await page.locator('.posbox .empty', { hasText: 'No open positions on Hyperliquid' }).waitFor({ timeout: 20_000 });
+  await page.locator('.posbox .empty', { hasText: 'No open positions' }).waitFor({ timeout: 20_000 });
   check('positions: empty after the close', true);
 
   // A cancelled IOC order reads plainly; Try again re-sends only the order.
   await page.locator('.ticket .sides button', { hasText: 'Short' }).click();
   await page.locator('#t-size').fill('100');
-  const shortBtn = page.locator('.ticket button.btn-block', { hasText: 'Open short on Hyperliquid' });
+  const shortBtn = page.locator('.ticket button.btn-block', { hasText: 'Open short' });
   await shortBtn.waitFor({ timeout: 20_000 });
   await page.waitForFunction(() => !document.querySelector('.ticket button.btn-block')?.hasAttribute('disabled'), null, { timeout: 20_000 });
   hl.orderReplies.push({ error: 'Order could not immediately match against any resting orders. asset=110001' });

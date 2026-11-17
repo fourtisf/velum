@@ -3,6 +3,7 @@ import { getMarket } from '@velum/config';
 import { useEffect, useRef, type ElementType, type ReactNode } from 'react';
 import { CLOSED, isDemoMetric, refTitle } from '@/lib/copy';
 import { fmt, pct, usd } from '@/lib/format';
+import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { LOGOS } from '@/lib/logos';
 import { useMarket, usePriceState } from '@/lib/markets';
 
@@ -102,6 +103,8 @@ export function ComingSoon() {
  */
 /** The venue label of a perps metric taken from another venue's live market (mainnet), with what it means. */
 export function RefTag({ venue, sym }: { venue: string; sym?: string }) {
+  // Mainnet with live perps: the metrics are the traded market's own, so no venue label (owner request).
+  if (HL_PERPS) return null;
   return (
     <span className="badge demo-tag" title={refTitle(venue, sym)}>
       {venue}

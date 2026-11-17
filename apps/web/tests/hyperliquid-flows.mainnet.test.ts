@@ -67,8 +67,8 @@ beforeEach(() => {
 
 describe('open flow', () => {
   it('standard accounts move margin to the stock perps balance first; unified accounts do not', () => {
-    expect(open('standard').steps.map((s) => s.t)).toEqual(['Enable trading on Hyperliquid', 'Move margin to your stock perps balance', 'Set 3x isolated leverage', 'Long 2.604 TSLA']);
-    expect(open('unified').steps.map((s) => s.t)).toEqual(['Enable trading on Hyperliquid', 'Set 3x isolated leverage', 'Long 2.604 TSLA']);
+    expect(open('standard').steps.map((s) => s.t)).toEqual(['Enable trading', 'Move margin to your stock perps balance', 'Set 3x isolated leverage', 'Long 2.604 TSLA']);
+    expect(open('unified').steps.map((s) => s.t)).toEqual(['Enable trading', 'Set 3x isolated leverage', 'Long 2.604 TSLA']);
   });
 
   it('reviews every number before anything is signed, and asks the user to acknowledge real money', () => {
@@ -80,10 +80,11 @@ describe('open flow', () => {
       Margin: '334.26 USDC',
       'Price limit': 'At most 385.84 (0.5% slippage)',
       'Liquidation (est.)': '262.52',
-      Market: 'xyz:TSLA on Hyperliquid',
-      Fees: "Hyperliquid's trading fee; Velum adds none",
+      Market: 'TSLA stock perp',
+      Venue: 'Hyperliquid, from your own account at this address',
+      Fees: "The exchange's trading fee; Velum adds none",
     });
-    expect(f.note).toMatch(/234\.26 USDC moves from your main Hyperliquid balance/);
+    expect(f.note).toMatch(/234\.26 USDC moves from your main balance/);
     expect(f.ack).toMatch(/real leveraged trade with real money/);
     expect(open('unified', 0).note).not.toMatch(/moves from your main/);
   });
@@ -135,7 +136,7 @@ describe('open flow', () => {
     const c = ctx();
     expect(await s.run(c)).toBe('Filled 2.604 TSLA at 384.12');
     expect(h.order).toHaveBeenCalledWith({ orders: [{ a: 110001, b: true, p: '385.84', s: '2.604', r: false, t: { limit: { tif: 'Ioc' } } }], grouping: 'na' });
-    expect(text(f.done(c).rows)).toMatchObject({ Filled: '2.604 TSLA', 'Average price': '384.12 USDC', Order: '#4242 on Hyperliquid' });
+    expect(text(f.done(c).rows)).toMatchObject({ Filled: '2.604 TSLA', 'Average price': '384.12 USDC', Order: '#4242' });
   });
 
   it('an order that did not fill fails the step with the reason (nothing was traded)', async () => {
@@ -149,8 +150,8 @@ describe('open flow', () => {
   it("with a builder fee in the build, the wallet allows Velum's fee once and orders carry it", async () => {
     h.builder = { b: '0x00000000000000000000000000000000000000fe', f: 10 };
     const f = open('unified');
-    expect(f.steps.map((s) => s.t)).toEqual(['Enable trading on Hyperliquid', "Allow Velum's fee", 'Set 3x isolated leverage', 'Long 2.604 TSLA']);
-    expect(text(f.review).Fees).toBe("Hyperliquid's trading fee, plus Velum's 0.01%");
+    expect(f.steps.map((s) => s.t)).toEqual(['Enable trading', "Allow Velum's fee", 'Set 3x isolated leverage', 'Long 2.604 TSLA']);
+    expect(text(f.review).Fees).toBe("The exchange's trading fee, plus Velum's 0.01%");
     h.builderApproved.mockResolvedValue(false);
     expect(await f.steps[1]!.run(ctx())).toBe('Approved in your wallet');
     expect(h.approveBuilder).toHaveBeenCalledWith(USER, h.builder);
@@ -174,7 +175,7 @@ describe('close flow', () => {
   it('closes the whole position with one reduce-only IOC order on the other side', async () => {
     const plan = planClose({ market: TSLA, szi: '6.22', markPx: '383.93', slipBps: 50n })!;
     const f = closeFlow({ user: USER, sym: 'TSLA', plan, slipPct: 0.5, pnl: '-11.06' });
-    expect(f.steps.map((s) => s.t)).toEqual(['Enable trading on Hyperliquid', 'Close 6.220 TSLA']);
+    expect(f.steps.map((s) => s.t)).toEqual(['Enable trading', 'Close 6.220 TSLA']);
     expect(text(f.review)).toEqual({ Position: 'Long 6.220 TSLA', 'Price limit': 'At least 382.01 (0.5% slippage)', 'Unrealized P&L': '-11.06 USDC' });
     h.order.mockResolvedValue(filled('6.22', '383.5'));
     const c = ctx();
@@ -190,10 +191,10 @@ describe('error wording', () => {
     expect(hlErrorText(new Error('Must deposit before performing actions. User: 0x11'))).toMatch(/no deposit yet/);
     expect(hlErrorText(new Error('order 0: Order could not immediately match against any resting orders. asset=110001'))).toMatch(/price moved past your slippage limit/);
     expect(hlErrorText(new Error('Insufficient margin to place order. asset=110001'))).toMatch(/Not enough margin/);
-    expect(hlErrorText(new Error('Order must have minimum value of $10. asset=110001'))).toBe('Hyperliquid accepts orders of at least 10 USD.');
+    expect(hlErrorText(new Error('Order must have minimum value of $10. asset=110001'))).toBe('Orders must be at least 10 USD.');
     expect(hlErrorText(new Error('User or API Wallet 0x00000000000000000000000000000000000000a1 does not exist.'))).toMatch(/no longer approved/);
     expect(hlErrorText(new Error('Your wallet switched to another account. Reconnect the account you trade with.'))).toMatch(/^Your wallet switched/);
-    expect(hlErrorText(new Error('order 0: Something odd\nstack'))).toBe('Hyperliquid refused the request: Something odd');
-    expect(hlErrorText(new Error(''))).toBe('Hyperliquid did not answer. Nothing was traded; try again.');
+    expect(hlErrorText(new Error('order 0: Something odd\nstack'))).toBe('The exchange refused the request: Something odd');
+    expect(hlErrorText(new Error(''))).toBe('The exchange did not answer. Nothing was traded; try again.');
   });
 });

@@ -532,3 +532,27 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .rowname:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:4px}
 /* Deposit dialog: the three sources stay on one line each. */
 .seg.seg-src button{white-space:nowrap;font-size:13.5px;padding-left:6px;padding-right:6px}
+/* Perps: the live order book next to the chart (components/hyperliquid/HlOrderBook.tsx). */
+.chart-row{display:grid;grid-template-columns:minmax(0,1fr) 268px;gap:12px;align-items:stretch;min-width:0}
+.obook{padding:14px 0 8px;display:flex;flex-direction:column;min-width:0;min-height:300px;overflow:hidden}
+.ob-head{display:flex;justify-content:space-between;align-items:baseline;padding:0 14px 10px}
+.ob-head h2{font-size:13.5px;font-weight:500;color:var(--muted)}
+.ob-head span{font-size:11.5px}
+.ob-cols,.ob-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:0 14px}
+.ob-cols{font-size:11.5px;color:var(--faint);padding-bottom:6px;border-bottom:1px solid var(--line)}
+.ob-side{display:flex;flex-direction:column;padding:4px 0}
+.ob-side.asks{justify-content:flex-end;flex:1}
+.ob-side.bids{flex:1}
+.ob-row{position:relative;font-size:12.5px;line-height:21px}
+.ob-row .ob-bar{position:absolute;right:0;top:1px;bottom:1px;border-radius:2px;pointer-events:none}
+.ob-row.ask .ob-bar{background:rgba(242,92,97,.12)}
+.ob-row.bid .ob-bar{background:rgba(63,207,142,.12)}
+.ob-row.ask .ob-px{color:var(--down)}
+.ob-row.bid .ob-px{color:var(--up)}
+.ob-row span{position:relative}
+.ob-tot{color:var(--muted)}
+.ob-mid{display:flex;align-items:baseline;gap:8px;padding:7px 14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:rgba(255,255,255,.015)}
+.ob-mid b{font-size:15px;font-weight:600}
+.ob-mid span{font-size:11.5px}
+.ob-msg{padding:24px 14px;color:var(--muted);font-size:13px}
+@media (max-width:1180px){.chart-row{grid-template-columns:minmax(0,1fr)}.obook{min-height:0}.ob-side.asks,.ob-side.bids{flex:none}}

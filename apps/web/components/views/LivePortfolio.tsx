@@ -451,7 +451,7 @@ export function LivePortfolio() {
         {HL_PERPS ? (
           <section className="card">
             <h2 className="ph">
-              Open positions<span className="faint"> on Hyperliquid</span>
+              Open positions<span className="faint"> · perps</span>
             </h2>
             <div style={{ marginTop: 8 }}>
               <HlPortfolioPositions />
@@ -469,7 +469,6 @@ export function LivePortfolio() {
           <section className="card">
             <h2 className="ph">
               {LIVE.perpsActivity}
-              <span className="faint"> on Hyperliquid</span>
             </h2>
             <div style={{ marginTop: 8 }}>
               <HlPortfolioActivity />

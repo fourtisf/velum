@@ -241,7 +241,7 @@ function DemoPortfolioView() {
           </section>
         </div>
         <section className="card">
-          <h2 className="ph">Open positions{HL_PERPS ? <span className="faint"> on Hyperliquid</span> : null}</h2>
+          <h2 className="ph">Open positions{HL_PERPS ? <span className="faint"> · perps</span> : null}</h2>
           {HL_PERPS ? (
             <div style={{ marginTop: 8 }}>
               <HlPortfolioPositions />

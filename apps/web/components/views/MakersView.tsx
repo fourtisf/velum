@@ -79,7 +79,7 @@ function Offers() {
   );
 }
 
-const MAKERS_SOON = "Standing maker offers need Velum's own perps contracts, which open after an external audit. Until then perps trade from your own Hyperliquid account on the Trade page.";
+const MAKERS_SOON = "Standing maker offers need Velum's own perps contracts, which open after an external audit. Until then perps trade from your own account on the Trade page.";
 
 export function MakersView() {
   const oc = useOnchain();

@@ -120,16 +120,16 @@ describe('privacy claims are labelled as simulated (owner decision of 2026-11-15
     expect(priceSourceText('robinhood')).toBe("Prices from Robinhood's public Stock Token API.");
     expect(priceSourceText('chainlink')).toBe('Prices from Chainlink price feeds.');
     expect(priceSourceText('demo')).toBe('Live prices are unavailable right now.');
-    expect(COPY.marketsSub('none')).toBe('Live prices are unavailable right now. Spot trades are real Uniswap swaps; perps trade for real on Hyperliquid from your own account.');
+    expect(COPY.marketsSub('none')).toBe('Live prices are unavailable right now. Spot trades are real Uniswap swaps; perps trade for real from your own account.');
     expect(COPY.marketsSub('demo')).not.toMatch(/Robinhood/);
   });
 
   it('connected on the landing page, the caption says what is real (F3): no practice balance on mainnet', () => {
     expect(COPY.frameCap('robinhood', true)).toBe(
-      "Prices from Robinhood's public Stock Token API. Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own Hyperliquid account.",
+      "Prices from Robinhood's public Stock Token API. Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own account.",
     );
     for (const o of ['uniswap', 'robinhood', 'none'] as const) for (const c of [true, false]) expect(COPY.frameCap(o, c)).not.toMatch(/simulat|practice/i);
-    expect(COPY.frameCap('robinhood', false)).toMatch(/Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps on Hyperliquid\.$/);
+    expect(COPY.frameCap('robinhood', false)).toMatch(/Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps\.$/);
   });
 
   it('metrics stay dashes on mainnet; a demo flag from the API is honoured where they are shown', () => {

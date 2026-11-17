@@ -51,23 +51,23 @@ export interface HlFlowSpec {
 export function hlErrorText(e: unknown): string {
   if (isUserRejection(e)) return 'You declined the request in your wallet. Nothing was sent.';
   const msg = String((e as { message?: unknown })?.message ?? e ?? '');
-  if (/Must deposit before performing actions/i.test(msg)) return 'Your Hyperliquid account has no deposit yet. Deposit USDC on Hyperliquid first, then come back.';
+  if (/Must deposit before performing actions/i.test(msg)) return 'Your perps account has no deposit yet. Deposit USDC first, then come back.';
   if (/could not immediately match|no resting orders|IocCancel/i.test(msg)) return 'The price moved past your slippage limit, so the order was cancelled and nothing was traded. Try again, or allow more slippage.';
-  if (/Insufficient margin/i.test(msg)) return 'Not enough margin in your Hyperliquid account for this order. Deposit more USDC or lower the size.';
-  if (/minimum value of \$10/i.test(msg)) return 'Hyperliquid accepts orders of at least 10 USD.';
+  if (/Insufficient margin/i.test(msg)) return 'Not enough margin in your perps account for this order. Deposit more USDC or lower the size.';
+  if (/minimum value of \$10/i.test(msg)) return 'Orders must be at least 10 USD.';
   if (/does not exist|not approved|agent/i.test(msg) && /wallet|agent/i.test(msg)) return 'This browser is no longer approved to trade for your account. Start again to approve it.';
   if (/switched to another account/i.test(msg)) return msg;
   if (/insufficient funds for (gas|intrinsic)|gas required exceeds/i.test(msg)) return 'Your wallet needs a little ETH on Arbitrum to pay the gas. Nothing was sent.';
   if (/transfer amount exceeds balance/i.test(msg)) return 'Not enough USDC on Arbitrum for this deposit. Nothing was sent.';
   if (/Nothing was sent|credited|Arbiscan|not shown the deposit/i.test(msg)) return msg;
   const short = msg.replace(/^order \d+: /, '').split('\n')[0]!.slice(0, 200);
-  return short ? `Hyperliquid refused the request: ${short}` : 'Hyperliquid did not answer. Nothing was traded; try again.';
+  return short ? `The exchange refused the request: ${short}` : 'The exchange did not answer. Nothing was traded; try again.';
 }
 
 /** Step: make sure this browser holds an agent Hyperliquid still lists for the user, approving a fresh one if needed. */
 export function enableStep(): HlStep {
   return {
-    t: 'Enable trading on Hyperliquid',
+    t: 'Enable trading',
     wallet: true,
     d: 'Your wallet signs once (no gas) to let this browser place orders for you for 30 days. It cannot withdraw.',
     run: async (ctx) => {
@@ -129,7 +129,7 @@ export function openFlow(p: OpenInput): HlFlowSpec {
   if (p.mode === 'standard') {
     steps.push({
       t: 'Move margin to your stock perps balance',
-      d: 'Within your Hyperliquid account: from the main USDC balance to the XYZ stock market balance',
+      d: 'Within your perps account: from the main USDC balance to the stock perps balance',
       run: async (ctx) => {
         const st = await info.clearinghouseState({ user: ctx.user, dex: HL_DEX });
         const shortfall = margin - Number(st.withdrawable);
@@ -164,7 +164,7 @@ export function openFlow(p: OpenInput): HlFlowSpec {
     },
   });
   return {
-    title: `${side} ${p.sym} on Hyperliquid`,
+    title: `${side} ${p.sym}`,
     review: [
       ['Side', side],
       ['Size', `${p.plan.size} ${p.sym} (about ${p.plan.notional} USD)`],
@@ -172,13 +172,14 @@ export function openFlow(p: OpenInput): HlFlowSpec {
       ['Margin', `${p.plan.margin} USDC`],
       ['Price limit', `${p.plan.isBuy ? 'At most' : 'At least'} ${p.plan.limitPx} (${p.slipPct}% slippage)`],
       ['Liquidation (est.)', p.liqEst ?? '—'],
-      ['Market', `${p.market.coin} on Hyperliquid`],
-      ['Fees', BUILDER ? `Hyperliquid's trading fee, plus Velum's ${builderRate(BUILDER.f)}` : "Hyperliquid's trading fee; Velum adds none"],
+      ['Market', `${p.sym} stock perp`],
+      ['Venue', 'Hyperliquid, from your own account at this address'],
+      ['Fees', BUILDER ? `The exchange's trading fee, plus Velum's ${builderRate(BUILDER.f)}` : "The exchange's trading fee; Velum adds none"],
     ],
     note:
-      'A real perps order from your own Hyperliquid account, routed through Hyperliquid (trade.xyz market). Funding is paid hourly and the position can be liquidated. Public on Hyperliquid, not private.' +
-      (p.mode === 'standard' && p.xyzAvailable < margin ? ` ${cents(margin - p.xyzAvailable)} USDC moves from your main Hyperliquid balance to the stock market balance first.` : ''),
-    ack: 'I understand this is a real leveraged trade with real money on Hyperliquid, and that I can lose my margin.',
+      'A real perps order from your own account. Funding is paid hourly and the position can be liquidated. Public, not private.' +
+      (p.mode === 'standard' && p.xyzAvailable < margin ? ` ${cents(margin - p.xyzAvailable)} USDC moves from your main balance to the stock perps balance first.` : ''),
+    ack: 'I understand this is a real leveraged trade with real money, and that I can lose my margin.',
     confirmLabel: 'Start trade',
     steps,
     done: (ctx) => {
@@ -189,7 +190,7 @@ export function openFlow(p: OpenInput): HlFlowSpec {
           ['Filled', f ? `${f.totalSz} ${p.sym}` : '—'],
           ['Average price', f ? `${f.avgPx} USDC` : '—'],
           ['Leverage', `${p.plan.leverage}x isolated`],
-          ['Order', f ? `#${f.oid} on Hyperliquid` : '—'],
+          ['Order', f ? `#${f.oid}` : '—'],
         ],
         toast: `${side} ${p.sym} opened`,
       };
@@ -201,13 +202,13 @@ export function openFlow(p: OpenInput): HlFlowSpec {
 /** Closing a whole position. */
 export function closeFlow(p: { user: `0x${string}`; sym: string; plan: ClosePlan; slipPct: number; pnl: string }): HlFlowSpec {
   return {
-    title: `Close ${p.sym} on Hyperliquid`,
+    title: `Close ${p.sym}`,
     review: [
       ['Position', `${p.plan.isBuy ? 'Short' : 'Long'} ${p.plan.size} ${p.sym}`],
       ['Price limit', `${p.plan.isBuy ? 'At most' : 'At least'} ${p.plan.limitPx} (${p.slipPct}% slippage)`],
       ['Unrealized P&L', `${p.pnl} USDC`],
     ],
-    note: 'A reduce-only order for the whole position on Hyperliquid; it can only close, never open the other way.',
+    note: 'A reduce-only order for the whole position; it can only close, never open the other way.',
     confirmLabel: 'Close position',
     steps: [
       ...firstSteps(),

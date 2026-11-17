@@ -21,9 +21,9 @@ import { HL_PERPS } from './hyperliquid/enabled';
 export const METRICS = { real: !IS_MAINNET, dash: '—' } as const;
 
 /** The tooltip of a perps metric that comes from another venue's market (mainnet, lib/markets.ts `ref`). */
-export const refTitle = (venue: string, sym?: string, hl = HL_PERPS): string =>
+export const refTitle = (venue: string, sym?: string): string =>
   venue === 'Hyperliquid'
-    ? `${sym ? `${sym} perp` : "Each market's perp"} on Hyperliquid's XYZ stock market: live mark, funding and open interest.${hl ? " The Perps ticket trades this market for real from your own Hyperliquid account." : ''}`
+    ? `${sym ? `${sym} perp` : "Each market's perp"}: live mark, funding and open interest of the market the Perps ticket trades.`
     : `${sym ? `${sym} perp` : "Each market's perp"} on ${venue}, the perps venue of Robinhood Chain: live mark, funding and open interest, shown as a market reference until Velum's own perps are live.`;
 
 /**
@@ -95,7 +95,7 @@ export const UNI = {
   swapSub: 'Trade USDG and Stock Tokens through Uniswap on Robinhood Chain, straight from your wallet. Stock to stock routes through USDG in two swaps.',
   swapNote: 'Public onchain. The minimum protects you: if the price moves past it, the swap is refused and nothing is traded.',
   banner: HL_PERPS
-    ? 'Spot trades are real Uniswap swaps from your wallet. Perps are real trades from your own Hyperliquid account. Private accounts are in development.'
+    ? 'Spot trades are real Uniswap swaps from your wallet. Perps are real leveraged trades from your own account. Private accounts are in development.'
     : 'Spot trades are real Uniswap swaps from your wallet. Perps and private accounts are in development.',
   badge: 'Live spot',
   gasHint: 'You need a little ETH on Robinhood Chain to pay the gas.',
@@ -108,18 +108,18 @@ export const UNI = {
  * positions card say. Plain that it is real money, public on Hyperliquid, leveraged and liquidatable.
  */
 export const HL = {
-  perpsNote: 'A real leveraged trade from your own Hyperliquid account on its XYZ stock perps, isolated margin. Public on Hyperliquid, not private. Velum never holds your funds. Funding is paid hourly and a position can be liquidated.',
-  unavailable: 'Hyperliquid cannot be reached right now. Try again in a moment.',
-  noMarket: (sym: string) => `${sym} has no stock perp on Hyperliquid's XYZ market right now.`,
-  depositHint: 'Fund your Hyperliquid account from here: deposit ETH or USDG from Robinhood Chain, ETH from Ethereum, or USDC from Arbitrum.',
-  crossHint: (sym: string) => `You hold a cross-margin ${sym} position on Hyperliquid. Manage it on Hyperliquid: Velum trades isolated margin only.`,
+  perpsNote: 'A real leveraged trade from your own perps account, isolated margin. Public, not private. Velum never holds your funds. Funding is paid hourly and a position can be liquidated.',
+  unavailable: 'Perps cannot be reached right now. Try again in a moment.',
+  noMarket: (sym: string) => `${sym} has no stock perp right now.`,
+  depositHint: 'Fund your perps account from here: deposit ETH or USDG from Robinhood Chain, ETH from Ethereum, or USDC from Arbitrum.',
+  crossHint: (sym: string) => `You hold a cross-margin ${sym} position. Velum trades isolated margin only: manage that position where you opened it.`,
   levLocked: (sym: string, lev: number) => `Adding to your ${sym} position keeps its ${lev}× leverage.`,
-  levHint: (sym: string, lev: number) => `Your ${sym} position uses ${lev}× leverage, above Velum's ${HL_MAX_LEVERAGE}× limit. Add to it on Hyperliquid.`,
-  notEnough: (amount: string) => `You have ${amount} USDC available on Hyperliquid. Deposit more, or lower the size.`,
-  connectPositions: 'Connect your wallet to see your positions on Hyperliquid.',
+  levHint: (sym: string, lev: number) => `Your ${sym} position uses ${lev}× leverage, above Velum's ${HL_MAX_LEVERAGE}× limit, so Velum cannot add to it.`,
+  notEnough: (amount: string) => `You have ${amount} USDC available in your perps account. Deposit more, or lower the size.`,
+  connectPositions: 'Connect your wallet to see your perps positions.',
   noAccount: 'No perps balance for this wallet yet. Deposit ETH or USDG from Robinhood Chain, ETH from Ethereum, or USDC from Arbitrum to start trading perps.',
-  noPositions: 'No open positions on Hyperliquid. Pick long or short in the ticket to open one.',
-  noFills: 'No Hyperliquid trades in these markets yet.',
+  noPositions: 'No open positions. Pick long or short in the ticket to open one.',
+  noFills: 'No perps trades in these markets yet.',
 } as const;
 
 /**
@@ -130,7 +130,7 @@ export const ACCT = {
   title: 'Your account',
   badge: 'Live',
   connect: 'Connect your wallet to see your balances on Robinhood Chain and your perps account.',
-  perps: 'Perps (Hyperliquid)',
+  perps: 'Perps account',
   noDeposit: 'No deposit yet',
   privateLabel: 'Private account',
   privateState: 'In development',
@@ -143,7 +143,7 @@ export const ACCT = {
  * balance, private address or demo history.
  */
 export const LIVE = {
-  portfolioSub: 'Your wallet on Robinhood Chain at live prices, and your perps account on Hyperliquid. Everything here is real.',
+  portfolioSub: 'Your wallet on Robinhood Chain at live prices, and your perps account. Everything here is real.',
   valueLabel: 'Wallet value',
   valueNote: 'USDG, Stock Tokens and ETH on Robinhood Chain, plus ETH on Ethereum, at live prices.',
   l1Missing: 'ETH on Ethereum could not be read right now, so it is not in this total.',
@@ -165,15 +165,15 @@ export const LIVE = {
 /** Depositing USDC into the user's own Hyperliquid account from inside Velum (components/hyperliquid/HlDeposit.tsx). */
 export const DEPOSIT = {
   title: 'Deposit USDC',
-  intro: 'Fund your Hyperliquid account without leaving Velum: with ETH or USDG from Robinhood Chain, ETH from Ethereum, or USDC on Arbitrum. It arrives at this same address, usually within a minute.',
+  intro: 'Fund your perps account without leaving Velum: with ETH or USDG from Robinhood Chain, ETH from Ethereum, or USDC on Arbitrum. It arrives at this same address, usually within a minute.',
   rhEthHint: (max: string) => `You can send up to ${max} ETH: a little stays in your wallet for the network fee.`,
   ethHint: (max: string, chain: string) => `You can send up to ${max} ETH from ${chain}: a little stays in your wallet for the network fee.`,
   rhHolds: (amount: string) => `Your wallet holds ${amount} on Robinhood Chain.`,
   rhGas: 'Your wallet needs a little ETH on Robinhood Chain to pay the gas.',
   rhNoRoute: 'Relay has no route for this amount right now. Try again in a moment, or another amount.',
-  rhMin: 'Hyperliquid needs at least 5 USDC after fees. Send a little more.',
+  rhMin: 'Your perps account needs at least 5 USDC after fees. Send a little more.',
   rhFooter: 'Bridged by Relay, a cross-chain service, usually within a minute. Your wallet signs every transaction; Velum never holds your funds.',
-  minHint: 'Hyperliquid loses deposits under 5 USDC, so Velum asks for at least 5.',
+  minHint: 'Deposits under 5 USDC are lost, so Velum asks for at least 5.',
   noUsdc: 'This wallet has no USDC on Arbitrum yet. Send USDC on Arbitrum to this address (from an exchange or a bridge), then deposit it here.',
   holds: (amount: string) => `Your wallet holds ${amount} USDC on Arbitrum.`,
   gasHint: 'Your wallet needs a little ETH on Arbitrum to pay the gas.',
@@ -198,8 +198,8 @@ export const COPY = {
       ? `${priceSourceText(origin, true)} ${
           HL_PERPS
             ? connected
-              ? 'Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own Hyperliquid account.'
-              : 'Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps on Hyperliquid.'
+              ? 'Spot trades are real Uniswap swaps from your wallet and perps are real trades from your own account.'
+              : 'Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps.'
             : connected
               ? 'Spot trades are real Uniswap swaps from your wallet.'
               : 'Connect your wallet to buy Stock Tokens through Uniswap.'
@@ -212,7 +212,7 @@ export const COPY = {
     : 'No. Velum runs on Robinhood Chain testnet. Test tokens have no value, so you can learn how private trading works without risk.',
   ctaSub: IS_MAINNET
     ? HL_PERPS
-      ? 'Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps on Hyperliquid, in under a minute.'
+      ? 'Connect your wallet to buy Stock Tokens through Uniswap or trade stock perps, in under a minute.'
       : 'Connect your wallet to buy Stock Tokens through Uniswap, in under a minute.'
     : 'Get free test USDG from the faucet and make your first simulated private trade in under a minute.',
   // No claim about prices here (final audit W-07): this line is static, while prices can be closed,
@@ -226,7 +226,7 @@ export const COPY = {
   brand: 'An independent project on Robinhood Chain, not affiliated with Robinhood.',
   marketsSub: (origin: PriceOrigin, mainnet = IS_MAINNET): string =>
     mainnet
-      ? `${priceSourceText(origin, true)} Spot trades are real Uniswap swaps; ${HL_PERPS ? 'perps trade for real on Hyperliquid from your own account.' : "perps come with Velum's contracts."}`
+      ? `${priceSourceText(origin, true)} Spot trades are real Uniswap swaps; ${HL_PERPS ? 'perps trade for real from your own account.' : "perps come with Velum's contracts."}`
       : `${priceSourceText(origin, false)} Trading here is simulated.`,
   networkNotice: IS_MAINNET ? '' : ' Test tokens have no value.',
   notOnNetwork: (sym: string) => `${sym} isn't on ${CHAIN.label} yet.`,

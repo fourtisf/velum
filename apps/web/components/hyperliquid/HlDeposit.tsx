@@ -125,7 +125,7 @@ function RelayDeposit({ origin }: { origin: RelayOrigin }) {
     label = 'No route right now';
     hint = q.error instanceof Error ? q.error.message : DEPOSIT.rhNoRoute;
   } else if (quote.minOut < RELAY_MIN_OUT) {
-    label = `Minimum ${HL_MIN_DEPOSIT_USDC} USDC on Hyperliquid`;
+    label = `Minimum ${HL_MIN_DEPOSIT_USDC} USDC after fees`;
     hint = DEPOSIT.rhMin;
   } else {
     label = `Deposit ${sourceText(src, units)} ${src}`;
@@ -178,7 +178,7 @@ function RelayDeposit({ origin }: { origin: RelayOrigin }) {
           <b>{inUsd !== null ? `≈ ${usd(inUsd)}` : '—'}</b>
         </div>
         <div>
-          <span>You receive on Hyperliquid</span>
+          <span>You receive in your perps account</span>
           <b>{quote ? `≈ ${hlUsdcText(quote.out)} USDC` : units > 0n && !q.isError ? '…' : '—'}</b>
         </div>
         <div>
@@ -255,7 +255,7 @@ function ArbDeposit() {
       <div className="receipt" style={{ marginTop: 14 }}>
         <div>
           <span>To</span>
-          <b>Your Hyperliquid account</b>
+          <b>Your perps account</b>
         </div>
         <div>
           <span>Gas (ETH on Arbitrum)</span>

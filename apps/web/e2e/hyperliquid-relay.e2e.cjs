@@ -120,7 +120,7 @@ async function main() {
   const go = dlg.locator('button', { hasText: 'Deposit 0.02 ETH' });
   await go.waitFor({ timeout: 40_000 });
   const rec = (await dlg.locator('.receipt').innerText()).replace(/\n/g, ' | ');
-  check('live Relay quote: what Hyperliquid receives, the guaranteed minimum, fees, route', /You receive on Hyperliquid \| ≈ [\d.]+ USDC/.test(rec) && /Minimum \(guaranteed\) \| [\d.]+ USDC/.test(rec) && /Fees \| ≈ \$[\d.]+/.test(rec) && /Relay/.test(rec), rec);
+  check('live Relay quote: what Hyperliquid receives, the guaranteed minimum, fees, route', /You receive in your perps account \| ≈ [\d.]+ USDC/.test(rec) && /Minimum \(guaranteed\) \| [\d.]+ USDC/.test(rec) && /Fees \| ≈ \$[\d.]+/.test(rec) && /Relay/.test(rec), rec);
   check('the quote came from Relay\'s real API', m.quotes > 0, String(m.quotes));
   await snap(page, 'relay-form');
   await go.click();
@@ -128,7 +128,7 @@ async function main() {
   const start = dlg.locator('button', { hasText: /^Deposit$/ });
   await start.waitFor({ timeout: 20_000 });
   const review = (await dlg.innerText()).replace(/\n/g, ' | ');
-  check('review: 0.02 ETH from Robinhood Chain, USDC on Hyperliquid at this address, minimum, Relay', /You send \| 0\.02 ETH from your wallet on Robinhood Chain/.test(review) && /USDC in your Hyperliquid account/.test(review) && /guaranteed by Relay/.test(review) && /this same address/.test(review), review.slice(0, 400));
+  check('review: 0.02 ETH from Robinhood Chain, USDC on Hyperliquid at this address, minimum, Relay', /You send \| 0\.02 ETH from your wallet on Robinhood Chain/.test(review) && /USDC in your perps account/.test(review) && /guaranteed by Relay/.test(review) && /Venue \| Hyperliquid/.test(review) && /this same address/.test(review), review.slice(0, 400));
   check('confirm stays off until the statement is ticked', await start.isDisabled());
   await dlg.locator('input[type="checkbox"]').check();
   await snap(page, 'relay-review');
@@ -158,9 +158,9 @@ async function main() {
   await page.waitForFunction(() => /\d+\.\d\d USDC/.test(document.querySelector('.ticket')?.textContent ?? ''), null, { timeout: 30_000 }).catch(() => undefined);
   check('ticket: the Hyperliquid balance shows the deposit, with "+ Deposit" for more', (await page.locator('.ticket .linkbtn', { hasText: '+ Deposit' }).count()) === 1, (await page.locator('.ticket .fl').first().innerText()).replace(/\n/g, ' '));
   await page.locator('#t-size').fill('30');
-  const open = page.locator('.ticket button.btn-block', { hasText: 'Open long on Hyperliquid' });
+  const open = page.locator('.ticket button.btn-block', { hasText: 'Open long' });
   await open.waitFor({ timeout: 20_000 }).catch(() => undefined);
-  await page.waitForFunction(() => { const b = [...document.querySelectorAll('.ticket button.btn-block')].find((x) => x.textContent.includes('Open long on Hyperliquid')); return b && !b.disabled; }, null, { timeout: 20_000 }).catch(() => undefined);
+  await page.waitForFunction(() => { const b = [...document.querySelectorAll('.ticket button.btn-block')].find((x) => x.textContent.includes('Open long')); return b && !b.disabled; }, null, { timeout: 20_000 }).catch(() => undefined);
   await page.waitForTimeout(500);
   const look = (await open.count()) ? await open.evaluate((el) => ({ disabled: el.disabled, opacity: getComputedStyle(el).opacity })) : null;
   check('ticket: ready to open a position (button enabled)', !!look && !look.disabled && look.opacity === '1', JSON.stringify(look));

@@ -290,12 +290,14 @@ describe('account answers (trimmed real answers)', () => {
 
 describe('wording', () => {
   it('says plainly that perps are real, from the user’s own Hyperliquid account, public and liquidatable', () => {
-    expect(UNI.banner).toBe('Spot trades are real Uniswap swaps from your wallet. Perps are real trades from your own Hyperliquid account. Private accounts are in development.');
-    expect(HL.perpsNote).toMatch(/real leveraged trade from your own Hyperliquid account/);
-    expect(HL.perpsNote).toMatch(/Public on Hyperliquid, not private/);
+    expect(UNI.banner).toBe('Spot trades are real Uniswap swaps from your wallet. Perps are real leveraged trades from your own account. Private accounts are in development.');
+    expect(HL.perpsNote).toMatch(/real leveraged trade from your own perps account/);
+    expect(HL.perpsNote).toMatch(/Public, not private/);
+    // The app's wording names no venue (owner request); the confirmation dialog's "Venue" row discloses it.
+    for (const t of [UNI.banner, HL.perpsNote, HL.unavailable, HL.noPositions, HL.noFills, HL.depositHint, HL.connectPositions]) expect(t).not.toMatch(/Hyperliquid/);
     expect(HL.perpsNote).toMatch(/can be liquidated/);
-    expect(refTitle('Hyperliquid', 'TSLA')).toMatch(/^TSLA perp on Hyperliquid's XYZ stock market/);
-    expect(refTitle('Hyperliquid', 'TSLA', false)).not.toMatch(/trades this market for real/);
+    // No venue name in the app's wording (owner request): the metrics are the traded market's own.
+    expect(refTitle('Hyperliquid', 'TSLA')).toMatch(/^TSLA perp: live mark, funding and open interest of the market the Perps ticket trades\.$/);
     expect(refTitle('Lighter', 'TSLA')).toMatch(/until Velum's own perps are live/);
   });
 });

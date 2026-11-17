@@ -192,7 +192,7 @@ describe('the deposit flow', () => {
 
   it('ETH: sends one deposit to the depository, waits for Relay, and never sends twice', async () => {
     const f = relayDepositFlow({ user: USER, source: 'ETH', amount: ETH_AMT, plan: plan(), fetchImpl: statusFetch(['pending', 'success']), pollMs: 1, waitMs: 2000 });
-    expect(f.steps.map((s) => s.t)).toEqual(['Send 0.02 ETH to Hyperliquid through Relay', 'Wait for Relay to deliver it to Hyperliquid']);
+    expect(f.steps.map((s) => s.t)).toEqual(['Send 0.02 ETH to your perps account through Relay', 'Wait for Relay to deliver it']);
     const c = ctx();
     expect(await f.steps[0]!.run(c)).toMatch(/^Confirmed on Robinhood Chain/);
     expect(h.sent).toHaveLength(1);
@@ -259,7 +259,7 @@ describe('deposits from Ethereum', () => {
       const plan = validateQuote(l1Quote, { user: L1_USER, source: 'ETH', amount: ETH_AMT, origin: 'ethereum' });
       const statusFetch = (async (url: string) => (String(url).endsWith('/quote') ? jsonRes(l1Quote) : jsonRes({ status: 'success' }))) as unknown as typeof fetch;
       const f = relayDepositFlow({ user: L1_USER, origin: 'ethereum', source: 'ETH', amount: ETH_AMT, plan, fetchImpl: statusFetch, pollMs: 1, waitMs: 500 });
-      expect(f.steps.map((s) => s.t)).toEqual(['Send 0.02 ETH to Hyperliquid through Relay', 'Wait for Relay to deliver it to Hyperliquid', 'Switch your wallet back to Robinhood Chain']);
+      expect(f.steps.map((s) => s.t)).toEqual(['Send 0.02 ETH to your perps account through Relay', 'Wait for Relay to deliver it', 'Switch your wallet back to Robinhood Chain']);
       const c: HlCtx = { user: L1_USER, agent: null, out: {} };
       expect(await f.steps[0]!.run(c)).toMatch(/^Confirmed on Ethereum/);
       expect(h.requests).toContain('wallet_switchEthereumChain');

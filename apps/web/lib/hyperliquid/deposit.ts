@@ -99,13 +99,13 @@ export function depositFlow(p: { user: `0x${string}`; units: bigint; pollMs?: nu
     {
       t: 'Switch your wallet to Arbitrum',
       wallet: true,
-      d: 'Hyperliquid takes USDC deposits from Arbitrum',
+      d: 'USDC deposits arrive from Arbitrum',
       run: async (ctx) => ((await switchWallet(await walletProvider(ctx.user), ARB_CHAIN_ID, ARB_PARAMS)) ? 'Switched to Arbitrum' : null),
     },
     {
-      t: `Send ${amount} USDC to Hyperliquid`,
+      t: `Send ${amount} USDC to your perps account`,
       wallet: true,
-      d: "A USDC transfer on Arbitrum from your wallet to Hyperliquid's bridge",
+      d: 'A USDC transfer on Arbitrum from your wallet to the deposit bridge',
       run: async (ctx) => {
         let hash = ctx.out.depositHash as Hex | undefined;
         if (!hash) {
@@ -132,9 +132,9 @@ export function depositFlow(p: { user: `0x${string}`; units: bigint; pollMs?: nu
       },
     },
     {
-      t: 'Wait for Hyperliquid to credit it',
+      t: 'Wait for the deposit to be credited',
       d: 'Usually under a minute',
-      active: 'Waiting for Hyperliquid to credit the deposit…',
+      active: 'Waiting for the deposit to be credited…',
       run: async (ctx) => {
         const base = Number(ctx.out.base ?? 0);
         const need = Number(amount) * 0.99;
@@ -144,7 +144,7 @@ export function depositFlow(p: { user: `0x${string}`; units: bigint; pollMs?: nu
           if (now !== null && now - base >= need) return `${amount} USDC credited`;
           await sleep(p.pollMs ?? 4000);
         }
-        throw new Error('Hyperliquid has not shown the deposit yet. The transfer is confirmed on Arbitrum and deposits usually arrive within a minute: try again to keep waiting.');
+        throw new Error('The deposit has not shown up yet. The transfer is confirmed on Arbitrum and deposits usually arrive within a minute: try again to keep waiting.');
       },
     },
     {
@@ -161,16 +161,17 @@ export function depositFlow(p: { user: `0x${string}`; units: bigint; pollMs?: nu
     },
   ];
   return {
-    title: 'Deposit USDC to Hyperliquid',
+    title: 'Deposit USDC to your perps account',
     review: [
       ['Amount', `${amount} USDC`],
       ['From', 'Your wallet on Arbitrum'],
-      ['To', 'Your Hyperliquid account (this same address)'],
+      ['To', 'Your perps account (this same address)'],
+      ['Venue', 'Hyperliquid, where your perps account is held'],
       ['Network fee', 'A little ETH on Arbitrum'],
       ['Arrives', 'Usually within a minute'],
     ],
-    note: "A real USDC transfer on Arbitrum from your wallet to Hyperliquid's bridge contract, credited to this same address on Hyperliquid. Velum never holds the funds. Deposits under 5 USDC are lost, so Velum only sends 5 USDC or more.",
-    ack: 'I understand this sends real USDC from my wallet on Arbitrum to Hyperliquid.',
+    note: "A real USDC transfer on Arbitrum from your wallet to the deposit bridge contract, credited to your perps account at this same address. Velum never holds the funds. Deposits under 5 USDC are lost, so Velum only sends 5 USDC or more.",
+    ack: 'I understand this sends real USDC from my wallet on Arbitrum to my perps account.',
     confirmLabel: 'Deposit',
     steps,
     done: (ctx) => {
@@ -178,7 +179,7 @@ export function depositFlow(p: { user: `0x${string}`; units: bigint; pollMs?: nu
       return {
         rows: [
           ['Deposited', `${amount} USDC`],
-          ['To', 'Your Hyperliquid account'],
+          ['To', 'Your perps account'],
           ['Arbitrum transfer', h ? short(h) : '—'],
         ],
         toast: 'Deposit credited',

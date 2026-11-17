@@ -126,8 +126,8 @@ describe('amounts', () => {
 describe('deposit flow', () => {
   it('switch to Arbitrum, send, wait for the credit, switch back; reviewed first with a real-money statement', () => {
     const f = depositFlow({ user: USER, units: 25_000000n });
-    expect(f.steps.map((s) => s.t)).toEqual(['Switch your wallet to Arbitrum', 'Send 25.00 USDC to Hyperliquid', 'Wait for Hyperliquid to credit it', 'Switch your wallet back to Robinhood Chain']);
-    expect(Object.fromEntries(f.review.map(([k, v]) => [String(k), String(v)]))).toMatchObject({ Amount: '25.00 USDC', From: 'Your wallet on Arbitrum', To: 'Your Hyperliquid account (this same address)' });
+    expect(f.steps.map((s) => s.t)).toEqual(['Switch your wallet to Arbitrum', 'Send 25.00 USDC to your perps account', 'Wait for the deposit to be credited', 'Switch your wallet back to Robinhood Chain']);
+    expect(Object.fromEntries(f.review.map(([k, v]) => [String(k), String(v)]))).toMatchObject({ Amount: '25.00 USDC', From: 'Your wallet on Arbitrum', To: 'Your perps account (this same address)' });
     expect(f.ack).toMatch(/real USDC/);
     expect(f.note).toMatch(/under 5 USDC are lost/);
   });
@@ -186,7 +186,7 @@ describe('deposit flow', () => {
     h.totals = [10, 10, 34.9];
     expect(await f.steps[2]!.run(c)).toBe('25.00 USDC credited');
     h.totals = [10];
-    await expect(f.steps[2]!.run({ ...c, out: { base: 10 } })).rejects.toThrow(/not shown the deposit yet/);
+    await expect(f.steps[2]!.run({ ...c, out: { base: 10 } })).rejects.toThrow(/has not shown up yet/);
   });
 
   it('switches back to Robinhood Chain and never fails the deposit over it', async () => {

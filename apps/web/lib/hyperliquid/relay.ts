@@ -263,7 +263,7 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
     });
   steps.push(
     {
-      t: `Send ${paid} to Hyperliquid through Relay`,
+      t: `Send ${paid} to your perps account through Relay`,
       wallet: true,
       d: `One transaction on ${origin.label} from your wallet to Relay${originKey === 'ethereum' ? ' (your wallet switches to Ethereum for it)' : ''}`,
       run: async (ctx) => {
@@ -290,9 +290,9 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
       },
     },
     {
-      t: 'Wait for Relay to deliver it to Hyperliquid',
+      t: 'Wait for Relay to deliver it',
       d: 'Usually within a minute',
-      active: 'Waiting for Relay to credit USDC on Hyperliquid…',
+      active: 'Waiting for Relay to credit USDC to your perps account…',
       run: async (ctx) => {
         const check = String(ctx.out.relayCheck ?? p.plan.check);
         const end = Date.now() + (p.waitMs ?? 600_000);
@@ -337,19 +337,20 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
     });
   const fee = p.plan.feeUsd !== null ? `About $${p.plan.feeUsd.toFixed(2)} (network and Relay fees, in the quote)` : 'Included in the quote';
   return {
-    title: 'Deposit to Hyperliquid',
+    title: 'Deposit to your perps account',
     review: [
       ['You send', `${paid} from your wallet on ${origin.label}`],
-      ['You receive (est.)', `${hlUsdcText(p.plan.out)} USDC in your Hyperliquid account`],
+      ['You receive (est.)', `${hlUsdcText(p.plan.out)} USDC in your perps account`],
       ['Minimum', `${hlUsdcText(p.plan.minOut)} USDC (guaranteed by Relay)`],
-      ['To', 'Your Hyperliquid account (this same address)'],
+      ['To', 'Your perps account (this same address)'],
+      ['Venue', 'Hyperliquid, where your perps account is held'],
       ['Route', 'Relay, a cross-chain service'],
       ['Fees', fee],
       ...(originKey === 'ethereum' ? ([['Network', 'Ethereum mainnet: your wallet switches there for the deposit and back to Robinhood Chain after']] as Array<[string, string]>) : []),
       ['Arrives', p.plan.seconds !== null && p.plan.seconds <= 60 ? 'Usually within a minute' : 'Usually within a few minutes'],
     ],
-    note: `A real deposit: your wallet sends ${paid} to Relay's contract on ${origin.label}, and Relay credits USDC to this same address on Hyperliquid. If Relay cannot complete it, it refunds you on ${origin.label}. Velum never holds the funds.`,
-    ack: `I understand this sends real ${p.source} from my wallet on ${origin.label} through Relay to my Hyperliquid account.`,
+    note: `A real deposit: your wallet sends ${paid} to Relay's contract on ${origin.label}, and Relay credits USDC to your perps account at this same address. If Relay cannot complete it, it refunds you on ${origin.label}. Velum never holds the funds.`,
+    ack: `I understand this sends real ${p.source} from my wallet on ${origin.label} through Relay to my perps account.`,
     confirmLabel: 'Deposit',
     steps,
     done: (ctx) => {
@@ -357,10 +358,10 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
       return {
         rows: [
           ['Sent', paid],
-          ['Delivered', `${hlUsdcText((ctx.out.relayOut as bigint | undefined) ?? p.plan.out)} USDC to your Hyperliquid account`],
+          ['Delivered', `${hlUsdcText((ctx.out.relayOut as bigint | undefined) ?? p.plan.out)} USDC to your perps account`],
           [`${origin.label} tx`, h ? short(h) : '—'],
         ],
-        toast: 'Deposit delivered to Hyperliquid',
+        toast: 'Deposit delivered',
       };
     },
     user: p.user,

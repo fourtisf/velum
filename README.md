@@ -117,6 +117,21 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: perps order book, neutral perps wording (November 17 2026)
+
+- In Perps mode the trade page shows an **Order book** beside the chart (`apps/web/components/hyperliquid/HlOrderBook.tsx`):
+  the market's live book read from Hyperliquid's public `l2Book` every 1.5 s (`useHlBook` in
+  `apps/web/lib/hyperliquid/book.ts`), 12 levels per side, cumulative size in USD with depth bars, spread and mid price.
+  Under 1180 px wide it goes below the chart. Spot mode is unchanged.
+- The venue name is gone from labels, tags, buttons, the banner, balances and error messages ("Perps account",
+  "Open long", "Exchange fee only", "Send X to your perps account through Relay"). It stays only where it is a
+  disclosure: the **Venue** row of the confirmation dialogs (the wallet's signature prompt names it anyway) and the
+  footer and FAQ.
+- Checked: `apps/web/tests/hl-book.mainnet.test.ts` (book shaping, spread, cumulative totals), the updated flow and copy
+  tests (400 web tests), and the browser e2e suites on forks: perps 35, Relay 17, Relay from Ethereum 18, Arbitrum
+  deposit 18. The perps e2e checks the book (12 asks, 12 bids, best ask above best bid, 268 px beside the chart) and that
+  no visible app text names the venue.
+
 ## What changed: perps deposits from Ethereum (November 17 2026)
 
 - The Deposit dialog now offers three sources: **Robinhood Chain** (ETH or USDG), **Ethereum** (ETH from Ethereum

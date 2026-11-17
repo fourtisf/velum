@@ -5,7 +5,9 @@ import { useEffect, useRef } from 'react';
 import { compact, fmt } from '@/lib/format';
 import { PERP_VENUES, useMarket, useMarkets } from '@/lib/markets';
 import { METRICS } from '@/lib/copy';
+import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { useApp } from '@/lib/store';
+import { HlOrderBook } from '../hyperliquid/lazy';
 import { Av, Chg, DemoTag, Px, RefTag } from '../ui';
 import { AccountCard } from './AccountCard';
 import { Chart } from './Chart';
@@ -119,12 +121,22 @@ function ChartCard({ sym }: { sym: string }) {
 export function Terminal({ symbol, embedded }: { symbol?: string; embedded?: boolean }) {
   const storeSel = useApp((s) => s.sel);
   const sym = symbol ?? storeSel;
+  const mode = useTradeMode();
+  // Perps on mainnet: the market's live order book next to the chart (not in the landing page's demo terminal).
+  const book = HL_PERPS && !embedded && mode === 'perps';
   return (
     <>
       <Strip sym={sym} embedded={embedded} />
       <div className="tr-grid">
         <div className="lcol">
-          <ChartCard sym={sym} />
+          {book ? (
+            <div className="chart-row">
+              <ChartCard sym={sym} />
+              <HlOrderBook sym={sym} />
+            </div>
+          ) : (
+            <ChartCard sym={sym} />
+          )}
           <PositionsCard />
         </div>
         <div className="rcol">

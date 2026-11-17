@@ -69,7 +69,7 @@ function PoolCard({ s, size, apr, demo }: { s: string; size: number; apr: number
   );
 }
 
-const EARN_SOON = "Earning pool fees needs Velum's own pools, which open after an external audit. Until then you can buy and sell Stock Tokens through Uniswap and trade perps from your own Hyperliquid account.";
+const EARN_SOON = "Earning pool fees needs Velum's own pools, which open after an external audit. Until then you can buy and sell Stock Tokens through Uniswap and trade perps from your own account.";
 
 export function LiquidityView() {
   const oc = useOnchain();

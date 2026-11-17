@@ -1,5 +1,5 @@
 // Checks every post in x-posts.md, or the file given as the first argument (the text between <!-- post --> and <!-- /post -->) against X's 280 limit, counted
-// the way X counts: a URL ([link]) is 23 characters; code points in X's light ranges weigh 1, everything else
+// the way X counts: a URL ([link], or a bare domain such as velumtrade.com) is 23 characters; code points in X's light ranges weigh 1, everything else
 // (emoji, arrows, most symbols, CJK) weighs 2. Run: node design/marketing/check-x-posts.cjs [file.md]
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
@@ -12,8 +12,11 @@ const LIGHT = [
 ];
 const weight = (cp) => (LIGHT.some(([a, b]) => cp >= a && cp <= b) ? 1 : 2);
 
+// X turns bare domains (velumtrade.com, x.com/velumtrade) into links too, each counted as 23 characters.
+const URL_RE = /(?:https?:\/\/)?(?:[a-z0-9-]+\.)+(?:com|xyz|io|org|net|app|trade|co)(?:\/[^\s)]*)?/gi;
+
 function xLength(text) {
-  const t = text.replace(/\[link\]/g, '\u0000'.repeat(1));
+  const t = text.replace(/\[link\]/g, '\u0000').replace(URL_RE, '\u0000');
   let n = 0;
   for (const ch of t.normalize('NFC')) {
     if (ch === '\u0000') n += 23;

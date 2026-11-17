@@ -210,17 +210,114 @@ const head = (
   </thead>
 );
 
-export function LivePortfolio() {
-  usePriceTick();
-  useMarkets((m) => m.ethPx);
+/**
+ * Everything the Portfolio shows, for the app page and the landing page's preview: balances on Robinhood Chain and
+ * Ethereum, the rows to list, each Stock Token's P&L (cost basis from the wallet's own trades), the total stock P&L,
+ * and Sell (the trade page's Spot ticket on Sell with the whole balance).
+ */
+export function usePortfolioData() {
   const s = useApp();
   const router = useRouter();
   const w = useWalletTotals(s.account?.addr);
   const { pub, rh: v, l1 } = w;
-  // Cost basis from the wallet's trades read from the chain (lib/costBasis.ts), for each Stock Token's P&L.
   const act = useWalletActivity(s.account?.addr);
   const basis: Record<string, Basis> = act.data ? costBasis(act.data) : {};
   const pnlState: 'ok' | 'loading' | 'error' = act.data ? 'ok' : act.isError ? 'error' : 'loading';
+  const b = pub.data?.bal ?? {};
+  const toks = ORDER.filter((t) => bal(b, t) > DUST);
+  const gone = ORDER.filter((t) => pub.data?.unavailable.includes(t));
+  // ETH on Ethereum: listed when held (or when it could not be read), right after Robinhood Chain's ETH.
+  const l1Row = (l1.data !== undefined && l1.data > DUST) || (l1.isError && l1.data === undefined);
+  const pnls = Object.fromEntries(v.held.map((t) => [t, pnlOf(basis[t], bal(b, t), valueOf(t, bal(b, t)))]));
+  const known = v.held.filter((t) => pnls[t]);
+  const stockPnl = known.reduce((sum, t) => sum + pnls[t]!.pnl, 0n);
+  const stockCost = known.reduce((sum, t) => sum + pnls[t]!.cost, 0n);
+  const sell = (t: string) => {
+    const dec = UNISWAP?.decimals[t];
+    const units = dec === undefined ? null : wadToUnits(bal(b, t) - (bal(b, t) % 10n ** BigInt(18 - dec)), dec);
+    s.set({ spotSide: 'sell', spotAmt: units?.ok ? unitsToInput(units.units, dec!, dec!) : '1' });
+    router.push(`/app/trade/${t}?mode=spot`);
+  };
+  const canSell = (t: string) => isMarketSymbol(t) && !!UNISWAP?.pools[t]?.length;
+  const stockPnlTotal: Pnl | null = known.length ? { cost: stockCost, pnl: stockPnl, bps: stockCost > 0n ? Number((stockPnl * 10_000n) / stockCost) : 0 } : null;
+  return { s, w, pub, v, l1, b, toks, gone, l1Row, pnls, known, stockPnlTotal, pnlState, sell, canSell };
+}
+
+/** The asset rows: Robinhood Chain tokens (ETH first), ETH on Ethereum after it, then any balance that could not be read. */
+function AssetRows({ d, limit }: { d: ReturnType<typeof usePortfolioData>; limit?: number }) {
+  const { toks, gone, l1Row, l1, b, pnls, pnlState, sell, canSell } = d;
+  const rows = toks
+    .map((t) => <AssetRow key={t} t={t} amt={bal(b, t)} pnl={pnls[t]} pnlState={pnlState} onSell={canSell(t) ? () => sell(t) : undefined} />)
+    .flatMap((row, i) => (toks[i] === 'ETH' && l1Row ? [row, <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} />] : [row]));
+  if (l1Row && !toks.includes('ETH')) rows.push(<EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} />);
+  rows.push(...gone.map((t) => <UnavailableRow key={t} t={t} />));
+  // A preview lists Stock Tokens first (what P&L and Sell are about), then the rest.
+  if (limit !== undefined) rows.sort((x, y) => Number(!isMarketSymbol(String(x.key))) - Number(!isMarketSymbol(String(y.key))));
+  return <>{limit !== undefined ? rows.slice(0, limit) : rows}</>;
+}
+
+/** The landing page's live Portfolio preview (components/landing/Portfolio.tsx), once a wallet is connected. */
+export function PortfolioPreview() {
+  usePriceTick();
+  useMarkets((m) => m.ethPx);
+  const d = usePortfolioData();
+  const { s, w, pub, v, toks, gone, l1Row, stockPnlTotal, pnlState } = d;
+  if (!s.account) return null;
+  const pending = pub.isError ? '—' : '…';
+  const empty = !(toks.length || gone.length || l1Row);
+  return (
+    <div className="card lpf" style={{ marginTop: 40 }}>
+      <div className="lpf-top">
+        <div>
+          <span className="muted" style={{ fontSize: 13.5 }}>
+            {LIVE.valueLabel}{' '}
+            <span className="badge up" style={{ color: 'var(--up)' }}>
+              <span className="d" />
+              {ACCT.badge}
+            </span>
+          </span>
+          <div className="lpf-big num pv">{w.total !== null ? usdBal(w.total) : pending}</div>
+        </div>
+        {v.held.length ? (
+          <div className="lpf-pnl">
+            <span className="muted" style={{ fontSize: 13.5 }}>
+              Stock P&amp;L
+            </span>
+            <b className={`num pv ${stockPnlTotal ? (stockPnlTotal.pnl >= 0n ? 'up' : 'down') : ''}`}>{stockPnlTotal ? pnlText(stockPnlTotal) : pnlState === 'loading' ? '…' : '—'}</b>
+          </div>
+        ) : null}
+      </div>
+      {empty ? (
+        <div className="empty">
+          <p>{pub.isLoading ? `Reading your wallet on ${COPY.chainLabel}…` : pub.isError ? `Could not reach ${COPY.chainLabel}. Retrying…` : LIVE.noAssets}</p>
+        </div>
+      ) : (
+        <div className="tbl-wrap pf">
+          <table className="tbl">
+            {head}
+            <tbody>
+              <AssetRows d={d} limit={6} />
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="lpf-foot">
+        <Link className="btn btn-white btn-sm" href={`/app/trade/${s.sel}?mode=spot`}>
+          Buy Stock Tokens
+        </Link>
+        <Link className="btn btn-dark btn-sm" href="/app/portfolio">
+          Open full Portfolio
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+export function LivePortfolio() {
+  usePriceTick();
+  useMarkets((m) => m.ethPx);
+  const d = usePortfolioData();
+  const { s, w, pub, v, l1, b, toks, gone, l1Row, known, stockPnlTotal, pnlState } = d;
 
   if (!s.account)
     return (
@@ -241,27 +338,11 @@ export function LivePortfolio() {
     );
 
   const addr = s.account.addr;
-  const b = pub.data?.bal ?? {};
-  const toks = ORDER.filter((t) => bal(b, t) > DUST);
-  const gone = ORDER.filter((t) => pub.data?.unavailable.includes(t));
-  // ETH on Ethereum: listed when held (or when it could not be read), right after Robinhood Chain's ETH.
-  const l1Row = (l1.data !== undefined && l1.data > DUST) || (l1.isError && l1.data === undefined);
   const copy = () => {
     if (navigator.clipboard) navigator.clipboard.writeText(addr).catch(() => undefined);
     s.toast('Wallet address copied');
   };
   const pending = pub.isError ? '—' : '…';
-  const pnls = Object.fromEntries(v.held.map((t) => [t, pnlOf(basis[t], bal(b, t), valueOf(t, bal(b, t)))]));
-  const known = v.held.filter((t) => pnls[t]);
-  const stockPnl = known.reduce((sum, t) => sum + pnls[t]!.pnl, 0n);
-  const stockCost = known.reduce((sum, t) => sum + pnls[t]!.cost, 0n);
-  /** Sell from here: the trade page's Spot ticket on Sell, with the whole balance filled in. */
-  const sell = (t: string) => {
-    const dec = UNISWAP?.decimals[t];
-    const units = dec === undefined ? null : wadToUnits(bal(b, t) - (bal(b, t) % 10n ** BigInt(18 - dec)), dec);
-    s.set({ spotSide: 'sell', spotAmt: units?.ok ? unitsToInput(units.units, dec!, dec!) : '1' });
-    router.push(`/app/trade/${t}?mode=spot`);
-  };
   return (
     <>
       <div className="vhead">
@@ -322,13 +403,7 @@ export function LivePortfolio() {
                 <table className="tbl">
                   {head}
                   <tbody>
-                    {toks.map((t) => (
-                      <AssetRow key={t} t={t} amt={bal(b, t)} pnl={pnls[t]} pnlState={pnlState} onSell={isMarketSymbol(t) && UNISWAP?.pools[t]?.length ? () => sell(t) : undefined} />
-                    )).flatMap((row, i) => (toks[i] === 'ETH' && l1Row ? [row, <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} />] : [row]))}
-                    {l1Row && !toks.includes('ETH') ? <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} /> : null}
-                    {gone.map((t) => (
-                      <UnavailableRow key={t} t={t} />
-                    ))}
+                    <AssetRows d={d} />
                   </tbody>
                 </table>
               </div>
@@ -350,9 +425,7 @@ export function LivePortfolio() {
                 <span>
                   Stock P&amp;L{known.length && known.length < v.held.length ? ` (${known.length} of ${v.held.length})` : ''}
                 </span>
-                <b className={`num pv ${known.length ? (stockPnl >= 0n ? 'up' : 'down') : ''}`}>
-                  {known.length ? pnlText({ cost: stockCost, pnl: stockPnl, bps: stockCost > 0n ? Number((stockPnl * 10_000n) / stockCost) : 0 }) : pnlState === 'loading' ? '…' : '—'}
-                </b>
+                <b className={`num pv ${stockPnlTotal ? (stockPnlTotal.pnl >= 0n ? 'up' : 'down') : ''}`}>{stockPnlTotal ? pnlText(stockPnlTotal) : pnlState === 'loading' ? '…' : '—'}</b>
               </div>
             ) : null}
             <div className="r">

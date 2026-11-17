@@ -144,6 +144,8 @@ export const LIVE = {
   valueNote: 'USDG, Stock Tokens and ETH on Robinhood Chain, plus ETH on Ethereum, at live prices.',
   l1Missing: 'ETH on Ethereum could not be read right now, so it is not in this total.',
   l1Name: 'ETH on Ethereum (ERC20)',
+  landingLead: 'Every Stock Token in your wallet at live prices, with its P&L from your own trades on the chain. Sell any of them in one tap.',
+  landingNote: 'Read-only: connecting asks for no signature, and Velum never holds your tokens.',
   pnlUnknown: 'P&L needs the cost of every token held: some came without a known cost (a transfer in, or bought more than 12 days ago).',
   assets: 'Your assets',
   assetsSub: 'Held at this address on Robinhood Chain, plus its ETH on Ethereum. Public onchain: you own these tokens.',

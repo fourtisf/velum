@@ -99,6 +99,7 @@ export function Nav({ variant }: { variant: 'landing' | 'app' }) {
               <a href="#how">How it works</a>
               <a href="#privacy">Privacy</a>
               <a href="#markets">Markets</a>
+              {WALLET_ONLY ? <a href="#portfolio">Portfolio</a> : null}
               <a href="#developers">Developers</a>
             </nav>
           )}

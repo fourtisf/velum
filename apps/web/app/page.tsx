@@ -2,6 +2,7 @@ import { POOLS } from '@velum/config';
 import Link from 'next/link';
 import { ContractPill } from '@/components/landing/ContractPill';
 import { FrameCap, HeroFrame, LandingMarkets, OcText, PoolSpark, PrivacyRows, RevealCard } from '@/components/landing/Islands';
+import { LandingPortfolio } from '@/components/landing/Portfolio';
 import { Av, DemoTag } from '@/components/ui';
 import { I, Mark, XLogo } from '@/components/icons';
 import { Nav } from '@/components/Nav';
@@ -304,6 +305,8 @@ export default function Landing() {
               </table>
             </div>
           </section>
+
+          <LandingPortfolio />
 
           <section className="sec" id="faq">
             <div className="faqgrid">

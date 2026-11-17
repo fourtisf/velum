@@ -117,6 +117,18 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: Portfolio on the landing page, video copy (November 17 2026)
+
+- **Landing page Portfolio** (mainnet without Velum contracts): a "Portfolio" link in the landing navigation and a
+  `#portfolio` section (`apps/web/components/landing/Portfolio.tsx`). Not connected: what the Portfolio does and a
+  "Connect wallet to see yours" button (no sample balances). Connected: the live preview (wallet value, Stock P&L, the
+  holdings with value, P&L and Sell, links to Buy and the full Portfolio), loaded on demand so the landing page stays
+  light. It shares one hook with the app's Portfolio page (`usePortfolioData` in
+  `apps/web/components/views/LivePortfolio.tsx`), so both show the same numbers.
+- **Video copy** (`design/marketing/how-to-buy-video-copy.md`): X posts with the video (English and Indonesian), a
+  six-post thread, Reels/TikTok/Shorts captions, YouTube titles and a description with chapters, alt text, the
+  on-screen text and posting tips. `check-x-posts.cjs` now counts bare domains (velumtrade.com) as 23-character links.
+
 ## What changed: "How to buy stocks on Velum" video (November 17 2026)
 
 - `design/marketing/video/velum-how-to-buy-1080p.mp4` (1:46, 1080p, with music; poster `velum-how-to-buy-poster.jpg`):

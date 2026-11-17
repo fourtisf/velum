@@ -503,3 +503,23 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
   .pf .tbl .mcell small{font-size:12px}
   .pf .tbl td .btn-sm{padding:0 10px}
 }
+/* Landing page: the Portfolio section (components/landing/Portfolio.tsx). */
+.lpf{padding:0;overflow:hidden}
+.lpf-top{display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap;padding:22px 22px 18px}
+.lpf-big{font-family:var(--display);font-size:clamp(30px,4vw,40px);font-weight:600;letter-spacing:-.035em;margin-top:6px}
+.lpf-pnl{text-align:right}
+.lpf-pnl b{display:block;font-size:18px;font-weight:500;margin-top:6px}
+.lpf .tbl-wrap{border-top:1px solid var(--line)}
+.lpf-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:16px 22px;border-top:1px solid var(--line)}
+.lpf-points{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line)}
+.lpf-points>div{background:var(--bg1);padding:26px 22px}
+.lpf-points b{font-family:var(--display);font-weight:600;font-size:19px;letter-spacing:-.02em}
+.lpf-points p{color:var(--muted);font-size:14.5px;line-height:1.55;margin-top:8px}
+@media (max-width:760px){.lpf-points{grid-template-columns:1fr}.lpf-pnl{text-align:left}}
+@media (max-width:640px){
+  .lpf .tbl th,.lpf .tbl td{padding:12px 6px}
+  .lpf .tbl th:first-child,.lpf .tbl td:first-child{padding-left:14px}
+  .lpf .tbl th:last-child,.lpf .tbl td:last-child{padding-right:12px}
+  .lpf .tbl td .btn-sm{padding:0 9px}
+  .lpf-top,.lpf-foot{padding-left:14px;padding-right:14px}
+}

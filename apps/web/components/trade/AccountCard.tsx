@@ -1,8 +1,7 @@
 'use client';
 import { IS_MAINNET } from '@velum/config';
-import { usePublicBalances } from '@/lib/balances';
 import { inPos, privTotal } from '@/lib/calc';
-import { walletValue } from '@/lib/walletValue';
+import { useWalletTotals } from '@/lib/walletTotals';
 import { ACCT, SIM, UI } from '@/lib/copy';
 import { fmt, fmtBal, shortH, usdBal } from '@/lib/format';
 import { HL_PERPS } from '@/lib/hyperliquid/enabled';
@@ -23,7 +22,8 @@ function LiveAccountCard() {
   useMarkets((m) => m.ethPx);
   const account = useApp((s) => s.account);
   const openModal = useApp((s) => s.openModal);
-  const pub = usePublicBalances(account?.addr);
+  const w = useWalletTotals(account?.addr);
+  const pub = w.pub;
   if (!account)
     return (
       <aside className="card acct">
@@ -37,8 +37,9 @@ function LiveAccountCard() {
       </aside>
     );
   const b = pub.data?.bal;
-  // USDG, Stock Tokens, and ETH (plus any WETH) on Robinhood Chain at live prices (lib/walletValue.ts).
-  const { usdg, held, stocks: stockValue, eth: ethValue, total } = walletValue(b, pub.data?.unavailable);
+  // USDG, Stock Tokens, and ETH (plus any WETH) on Robinhood Chain, and ETH on Ethereum, at live prices.
+  const { usdg, held, stocks: stockValue, eth: ethValue } = w.rh;
+  const { total, l1 } = w;
   const dash = pub.isError ? '—' : '…';
   return (
     <aside className="card acct">
@@ -61,6 +62,10 @@ function LiveAccountCard() {
       <div className="r">
         <span>ETH (Robinhood Chain)</span>
         <b className="num pv">{b?.ETH !== undefined ? `${fmtBal(b.ETH, 4)} ETH${(b.WETH ?? 0n) > 0n ? ` + ${fmtBal(b.WETH!, 4)} WETH` : ''}${ethValue !== null ? ` · ${usdBal(ethValue)}` : ''}` : dash}</b>
+      </div>
+      <div className="r">
+        <span>ETH (Ethereum)</span>
+        <b className="num pv">{l1.data !== undefined ? `${fmtBal(l1.data, 4)} ETH${w.l1Value !== null ? ` · ${usdBal(w.l1Value)}` : ''}` : l1.isError ? '—' : '…'}</b>
       </div>
       {HL_PERPS ? <HlAccountRows /> : null}
       <div className="lastc">

@@ -39,3 +39,23 @@ export function walletValue(b: Record<string, Wad> | undefined, unavailable: rea
   const total = usdg !== null && stocks !== null && eth !== null && unavailable.length === 0 ? usdg + stocks + eth : null;
   return { usdg, held, stocks, eth, total };
 }
+
+/** ETH on Ethereum mainnet ("ERC20"), valued at the live ETH price: null while unknown (not read, or no price). */
+export function l1EthValue(wei: bigint | undefined): Wad | null {
+  if (wei === undefined) return null;
+  return wei === 0n ? 0n : valueOf('ETH', wei); // 18 decimals: wei is already a wad
+}
+
+/**
+ * The whole wallet: Robinhood Chain (walletValue) plus ETH on Ethereum. While the Ethereum balance is loading the total is
+ * unknown; if it cannot be read, the total is Robinhood Chain only and `l1Missing` says so (shown under the total).
+ */
+export function fullTotal(rh: WalletValue, l1: { wei: bigint | undefined; pending: boolean; error: boolean }): { total: Wad | null; l1Missing: boolean } {
+  if (rh.total === null) return { total: null, l1Missing: false };
+  if (l1.wei !== undefined) {
+    const v = l1EthValue(l1.wei);
+    return v === null ? { total: null, l1Missing: false } : { total: rh.total + v, l1Missing: false };
+  }
+  if (l1.error) return { total: rh.total, l1Missing: true };
+  return { total: null, l1Missing: false };
+}

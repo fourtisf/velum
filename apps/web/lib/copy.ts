@@ -141,9 +141,11 @@ export const ACCT = {
 export const LIVE = {
   portfolioSub: 'Your wallet on Robinhood Chain at live prices, and your perps account on Hyperliquid. Everything here is real.',
   valueLabel: 'Wallet value',
-  valueNote: 'USDG, Stock Tokens and ETH in this wallet, at live prices.',
+  valueNote: 'USDG, Stock Tokens and ETH on Robinhood Chain, plus ETH on Ethereum, at live prices.',
+  l1Missing: 'ETH on Ethereum could not be read right now, so it is not in this total.',
+  l1Name: 'ETH on Ethereum (ERC20)',
   assets: 'Your assets',
-  assetsSub: 'Held in your wallet on Robinhood Chain. Public onchain: you own these tokens.',
+  assetsSub: 'Held at this address on Robinhood Chain, plus its ETH on Ethereum. Public onchain: you own these tokens.',
   noAssets: 'No ETH, USDG or Stock Tokens in this wallet yet. Send some to this address on Robinhood Chain, or buy with ETH on the Trade page.',
   activity: 'Wallet activity',
   activitySub: 'Your trades and transfers on Robinhood Chain over the last 12 days, read from the chain.',

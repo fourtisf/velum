@@ -232,6 +232,9 @@ CSP_COINBASE_CONNECT='https://www.walletlink.org wss://www.walletlink.org https:
 # the user's USDC and confirm the transfer on Arbitrum's public RPC, unless the build turns perps off with
 # NEXT_PUBLIC_HL_PERPS=off.
 CSP_HL_CONNECT='https://api.hyperliquid.xyz https://arb1.arbitrum.io'
+# The mainnet Portfolio reads the wallet's ETH on Ethereum (balance only) from PublicNode's public RPC
+# (packages/config/src/ethereum.ts ETH_L1_RPC).
+CSP_ETH_CONNECT='https://ethereum-rpc.publicnode.com'
 #  - WalletConnect 2.21.1 (@walletconnect/ethereum-provider, Apache-2.0, a direct pinned web dependency;
 #    @walletconnect/core: relay, Verify API iframe + attestation fetch; its own telemetry is off in
 #    lib/wagmi.ts) and Reown AppKit 1.7.8 (Apache-2.0), the QR modal (appkit-common ConstantsUtil: blockchain API
@@ -251,7 +254,8 @@ CSP_IMG="'self' data:"
 
 # render_security_headers ENV_FILE — prints the Nginx headers snippet for the full app (audit L10).
 # connect-src follows the configured network and NEXT_PUBLIC_RPC_URL; WalletConnect hosts appear only
-# when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set, Hyperliquid's API only on mainnet (real perps). Fails on an unusable RPC URL.
+# when NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID is set, Hyperliquid's API only on mainnet (real perps), the Ethereum
+# balance RPC only on mainnet (Portfolio). Fails on an unusable RPC URL.
 render_security_headers() {
   local env_file="$1" net rpc rpc_origin official origins connect frame="'none'" style="'self' 'unsafe-inline'" font="'self'" img="${CSP_IMG}"
   net="$(env_get "${env_file}" NEXT_PUBLIC_VELUM_NETWORK)"
@@ -266,6 +270,9 @@ render_security_headers() {
   connect="'self' ${origins} ${CSP_COINBASE_CONNECT}"
   if [ "${net}" = mainnet ] && [ "$(env_get "${env_file}" NEXT_PUBLIC_HL_PERPS)" != off ]; then
     connect="${connect} ${CSP_HL_CONNECT}"
+  fi
+  if [ "${net}" = mainnet ]; then
+    connect="${connect} ${CSP_ETH_CONNECT}"
   fi
   if [ -n "$(env_get "${env_file}" NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID)" ]; then
     connect="${connect} ${CSP_WC_CONNECT}"

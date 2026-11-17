@@ -4,10 +4,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { privTotal } from '@/lib/calc';
 import { shortH, usdBal } from '@/lib/format';
-import { usePublicBalances } from '@/lib/balances';
 import { useMarkets, usePriceTick } from '@/lib/markets';
 import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
-import { walletValue } from '@/lib/walletValue';
+import { useWalletTotals } from '@/lib/walletTotals';
 import { SOCIAL } from '@/lib/copy';
 import { useApp } from '@/lib/store';
 import { OcWalletTotal } from './onchain/lazy';
@@ -58,13 +57,12 @@ function WalletTotal() {
   return oc ? <OcWalletTotal oc={oc} /> : <DemoWalletTotal />;
 }
 
-/** Mainnet without Velum contracts: the wallet's real value at live prices (USDG, Stock Tokens, ETH). */
+/** Mainnet without Velum contracts: the wallet's real value at live prices (Robinhood Chain, plus ETH on Ethereum). */
 function LiveWalletTotal({ addr }: { addr: `0x${string}` }) {
   usePriceTick();
   useMarkets((m) => m.ethPx);
-  const pub = usePublicBalances(addr);
-  const v = walletValue(pub.data?.bal, pub.data?.unavailable);
-  return v.total === null ? null : <span className="b num pv">{usdBal(v.total)}</span>;
+  const { total } = useWalletTotals(addr);
+  return total === null ? null : <span className="b num pv">{usdBal(total)}</span>;
 }
 
 function DemoWalletTotal() {

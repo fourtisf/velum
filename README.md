@@ -117,6 +117,19 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: ETH on Ethereum (ERC20) in the Portfolio (November 17 2026)
+
+- The mainnet Portfolio now also tracks the wallet's **ETH on Ethereum mainnet** (the "ERC20" network, same address):
+  its own row ("ETH on Ethereum (ERC20)") next to "ETH on Robinhood Chain", an "ETH (Ethereum)" line on both account
+  cards, and it is added to the wallet value (Portfolio and wallet button), at the live ETH price.
+- Read from the browser through PublicNode's free public RPC (`packages/config/src/ethereum.ts`; balance only, no key),
+  which must answer chain 1 first (`apps/web/lib/ethereumEth.ts`). If it cannot be read, the row says so and the total
+  is Robinhood Chain only, with a note saying Ethereum is left out (`fullTotal` in `apps/web/lib/walletValue.ts`).
+- The site's Content-Security-Policy allows `https://ethereum-rpc.publicnode.com` on mainnet (`deploy/lib/common.sh`):
+  run `deploy/deploy.sh` to apply it.
+- Checked: `apps/web/tests/ethereum-eth.mainnet.test.ts` and `apps/web/e2e/ethereum-eth-browser.e2e.cjs` (a local chain-1
+  anvil answers in place of the public RPC: the row, the totals on every card, and the unreachable / wrong-chain cases).
+
 ## What changed: token logos, Robinhood Chain ETH and WETH (November 17 2026)
 
 - **Logos** for ETH (Ethereum glyph from Simple Icons on the usual ETH blue), WETH and USDG (a dollar monogram; Paxos'

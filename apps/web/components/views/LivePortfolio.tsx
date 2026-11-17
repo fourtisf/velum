@@ -8,7 +8,6 @@
 import { getMarket, isMarketSymbol } from '@velum/config';
 import type { Wad } from '@velum/math';
 import Link from 'next/link';
-import { usePublicBalances } from '@/lib/balances';
 import { valueOf } from '@/lib/calc';
 import { ACCT, COPY, LIVE } from '@/lib/copy';
 import { ENV } from '@/lib/env';
@@ -17,7 +16,7 @@ import { HL_PERPS } from '@/lib/hyperliquid/enabled';
 import { tokPx, useMarkets, usePriceTick } from '@/lib/markets';
 import { bal, useApp } from '@/lib/store';
 import { useWalletActivity, type Move, type WalletAct } from '@/lib/walletActivity';
-import { walletValue } from '@/lib/walletValue';
+import { useWalletTotals } from '@/lib/walletTotals';
 import { HlAccountRows, HlPortfolioActivity, HlPortfolioPositions } from '../hyperliquid/lazy';
 import { I } from '../icons';
 import { Av, Px } from '../ui';
@@ -42,6 +41,26 @@ function AssetRow({ t, amt }: { t: string; amt: Wad }) {
       <td className="r num">{fmtBal(amt, t === 'ETH' || t === 'WETH' ? 6 : dp(t))}</td>
       {isMarketSymbol(t) ? <Px sym={t} as="td" className="r num hide-sm" /> : <td className="r num hide-sm">{usdOrDash(tokPx(t))}</td>}
       <td className="r num">{usdBal(valueOf(t, amt))}</td>
+    </tr>
+  );
+}
+
+/** The wallet's ETH on Ethereum mainnet (the "ERC20" network, same address), or why it could not be read. */
+function EthereumRow({ wei, error }: { wei: bigint | undefined; error: boolean }) {
+  return (
+    <tr>
+      <td>
+        <div className="mcell">
+          <Av sym="ETH" size="sm" />
+          <div>
+            <b>ETH</b>
+            <small>{error && wei === undefined ? 'ETH on Ethereum: could not be read' : LIVE.l1Name}</small>
+          </div>
+        </div>
+      </td>
+      <td className="r num">{wei !== undefined ? fmtBal(wei, 6) : '—'}</td>
+      <td className="r num hide-sm">{usdOrDash(tokPx('ETH'))}</td>
+      <td className="r num">{wei !== undefined ? usdBal(valueOf('ETH', wei)) : '—'}</td>
     </tr>
   );
 }
@@ -151,7 +170,8 @@ export function LivePortfolio() {
   usePriceTick();
   useMarkets((m) => m.ethPx);
   const s = useApp();
-  const pub = usePublicBalances(s.account?.addr);
+  const w = useWalletTotals(s.account?.addr);
+  const { pub, rh: v, l1 } = w;
 
   if (!s.account)
     return (
@@ -173,9 +193,10 @@ export function LivePortfolio() {
 
   const addr = s.account.addr;
   const b = pub.data?.bal ?? {};
-  const v = walletValue(pub.data?.bal, pub.data?.unavailable);
   const toks = ORDER.filter((t) => bal(b, t) > DUST);
   const gone = ORDER.filter((t) => pub.data?.unavailable.includes(t));
+  // ETH on Ethereum: listed when held (or when it could not be read), right after Robinhood Chain's ETH.
+  const l1Row = (l1.data !== undefined && l1.data > DUST) || (l1.isError && l1.data === undefined);
   const copy = () => {
     if (navigator.clipboard) navigator.clipboard.writeText(addr).catch(() => undefined);
     s.toast('Wallet address copied');
@@ -199,7 +220,12 @@ export function LivePortfolio() {
                 {ACCT.badge}
               </span>
             </span>
-            <div className="pf-big num pv">{v.total !== null ? usdBal(v.total) : pending}</div>
+            <div className="pf-big num pv">{w.total !== null ? usdBal(w.total) : pending}</div>
+            {w.l1Missing ? (
+              <p className="faint" style={{ fontSize: 12.5, marginTop: 4 }}>
+                {LIVE.l1Missing}
+              </p>
+            ) : null}
             <div className="pf-sub">
               <span className="paddr">
                 {shortH(addr)}
@@ -231,14 +257,15 @@ export function LivePortfolio() {
           <section className="card">
             <h2 className="ph">{LIVE.assets}</h2>
             <p className="ph-sub">{LIVE.assetsSub}</p>
-            {toks.length || gone.length ? (
+            {toks.length || gone.length || l1Row ? (
               <div className="tbl-wrap">
                 <table className="tbl">
                   {head}
                   <tbody>
                     {toks.map((t) => (
                       <AssetRow key={t} t={t} amt={bal(b, t)} />
-                    ))}
+                    )).flatMap((row, i) => (toks[i] === 'ETH' && l1Row ? [row, <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} />] : [row]))}
+                    {l1Row && !toks.includes('ETH') ? <EthereumRow key="eth-l1" wei={l1.data} error={l1.isError} /> : null}
                     {gone.map((t) => (
                       <UnavailableRow key={t} t={t} />
                     ))}
@@ -265,6 +292,10 @@ export function LivePortfolio() {
             <div className="r">
               <span>ETH (Robinhood Chain){bal(b, 'WETH') > 0n ? ' + WETH' : ''}</span>
               <b className="num pv">{v.eth !== null ? usdBal(v.eth) : pending}</b>
+            </div>
+            <div className="r">
+              <span>ETH (Ethereum)</span>
+              <b className="num pv">{w.l1Value !== null ? usdBal(w.l1Value) : l1.isError ? '—' : '…'}</b>
             </div>
             {HL_PERPS ? <HlAccountRows /> : null}
             <div className="lastc">

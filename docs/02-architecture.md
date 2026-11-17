@@ -140,7 +140,8 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
   perps USDC, and the transactions are only an exact USDG approval to Relay's pinned depository (0x4cd0…bc31) and one
   deposit to it carrying exactly the amount; the approval Velum sends itself (exact, skipped when given), the deposit
   is re-quoted when it runs and refused below the reviewed minimum, never re-sent on retry, then Velum follows Relay's
-  status and Hyperliquid's balance. api.relay.link is allowed in the CSP on mainnet.
+  status and Hyperliquid's balance. ETH from Ethereum mainnet takes the same route (same depository; the wallet switches
+  to Ethereum for the deposit and back). api.relay.link is allowed in the CSP on mainnet.
 - **Buying with ETH (mainnet, web).** On the Buy side the user can pay with ETH: one Universal Router call with the
   ETH as value, WRAP_ETH to the router, then V3_SWAP_EXACT_IN over WETH -> USDG (the curated ETH leg, WETH/USDG 0.01%,
   `ethLeg` in packages/config/uniswap-mainnet.json) -> stock (the market's best v3 pool by QuoterV2.quoteExactInput),

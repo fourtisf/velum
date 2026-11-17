@@ -117,6 +117,18 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: perps deposits from Ethereum (November 17 2026)
+
+- The Deposit dialog now offers three sources: **Robinhood Chain** (ETH or USDG), **Ethereum** (ETH from Ethereum
+  mainnet) and **Arbitrum** (USDC). Ethereum goes through Relay like Robinhood Chain, to the same pinned depository: the
+  wallet switches to Ethereum for the one deposit and back to Robinhood Chain after; the balance and receipt are read
+  from Ethereum (`l1` in `apps/web/lib/ethereumEth.ts`); 0.001 ETH stays for Ethereum gas. Quotes are validated for the
+  chosen chain (a quote for another chain, or USDG from Ethereum, is refused).
+- Checked: `apps/web/tests/relay.mainnet.test.ts` (a real Ethereum quote accepted; cross-chain mix-ups refused; the
+  switch, deposit and switch back) and `apps/web/e2e/hyperliquid-relay-ethereum.e2e.cjs` (forks of Ethereum and
+  Robinhood Chain, Relay's live quote API and real depository: exactly 0.02 ETH in one transaction on Ethereum, the
+  wallet back on Robinhood Chain, the perps ticket funded; 18 checks).
+
 ## What changed: Markets rows open the market (November 17 2026)
 
 - On the Markets page a live market's whole row opens its Trade page (the market name is the keyboard link), and

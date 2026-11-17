@@ -1,8 +1,10 @@
 'use client';
 /**
- * Deposit into the user's own Hyperliquid account without leaving Velum, from either:
+ * Deposit into the user's own Hyperliquid account without leaving Velum, from:
  *  - Robinhood Chain (default): ETH or USDG from the wallet, bridged by Relay into USDC on Hyperliquid
  *    (lib/hyperliquid/relay.ts), with a live, validated quote;
+ *  - Ethereum: ETH from the wallet on Ethereum mainnet, bridged by Relay the same way (the wallet switches to Ethereum
+ *    for the one transaction and back);
  *  - Arbitrum: native USDC sent to Hyperliquid's bridge (lib/hyperliquid/deposit.ts), at least 5 USDC.
  * Either way the deposit flow dialog shows every amount before the wallet signs.
  */
@@ -13,8 +15,9 @@ import { usePublicBalances } from '@/lib/balances';
 import { valueOf } from '@/lib/calc';
 import { DEPOSIT } from '@/lib/copy';
 import { usd } from '@/lib/format';
+import { useEthereumEth } from '@/lib/ethereumEth';
 import { depositFlow, planDeposit, usdcText, useArbBalances, type DepositRefusal } from '@/lib/hyperliquid/deposit';
-import { RELAY_ETH_RESERVE, RELAY_MIN_OUT, hlUsdcText, relayDepositFlow, sourceText, sourceUnits, useRelayQuote, type RelaySource } from '@/lib/hyperliquid/relay';
+import { ORIGINS, RELAY_MIN_OUT, ethReserve, hlUsdcText, relayDepositFlow, sourceText, sourceUnits, useRelayQuote, type RelayOrigin, type RelaySource } from '@/lib/hyperliquid/relay';
 import { useMarkets, usePriceTick } from '@/lib/markets';
 import { useApp } from '@/lib/store';
 import { I } from '../icons';
@@ -28,11 +31,16 @@ const LABEL: Record<DepositRefusal, string> = {
   loading: 'Reading your Arbitrum wallet…',
 };
 
-type From = 'rh' | 'arb';
+type From = RelayOrigin | 'arb';
+const FROM: Array<[From, string]> = [
+  ['robinhood', 'Robinhood Chain'],
+  ['ethereum', 'Ethereum'],
+  ['arb', 'Arbitrum'],
+];
 
 export function HlDepositModal() {
   const s = useApp();
-  const [from, setFrom] = useState<From>('rh');
+  const [from, setFrom] = useState<From>('robinhood');
   return (
     <>
       <div className="m-head">
@@ -42,15 +50,24 @@ export function HlDepositModal() {
         </button>
       </div>
       <p className="m-text">{DEPOSIT.intro}</p>
-      <div className="seg full" role="group" aria-label="Deposit from" style={{ marginTop: 14 }}>
-        <button className={from === 'rh' ? 'on' : ''} aria-pressed={from === 'rh'} onClick={() => setFrom('rh')}>
-          From Robinhood Chain
-        </button>
-        <button className={from === 'arb' ? 'on' : ''} aria-pressed={from === 'arb'} onClick={() => setFrom('arb')}>
-          From Arbitrum
-        </button>
+      <div className="fl" style={{ marginTop: 14 }}>
+        <span>Deposit from</span>
       </div>
-      {from === 'rh' ? <RhDeposit /> : <ArbDeposit />}
+      <div className="seg full seg-src" role="group" aria-label="Deposit from">
+        {FROM.map(([k, l]) => (
+          <button key={k} className={from === k ? 'on' : ''} aria-pressed={from === k} onClick={() => setFrom(k)}>
+            {k === 'robinhood' ? (
+              <>
+                <span className="hide-sm">{l}</span>
+                <span className="show-sm">Robinhood</span>
+              </>
+            ) : (
+              l
+            )}
+          </button>
+        ))}
+      </div>
+      {from === 'arb' ? <ArbDeposit /> : <RelayDeposit key={from} origin={from} />}
     </>
   );
 }
@@ -65,25 +82,30 @@ function useSettled<T>(v: T, ms: number): T {
   return x;
 }
 
-/** ETH or USDG on Robinhood Chain, bridged by Relay into USDC on Hyperliquid. */
-function RhDeposit() {
+/** ETH or USDG on Robinhood Chain, or ETH on Ethereum, bridged by Relay into USDC on Hyperliquid. */
+function RelayDeposit({ origin }: { origin: RelayOrigin }) {
   usePriceTick();
   useMarkets((m) => m.ethPx);
   const s = useApp();
   const user = s.account?.addr;
-  const pub = usePublicBalances(user);
+  const pub = usePublicBalances(origin === 'robinhood' ? user : undefined);
+  const l1 = useEthereumEth(origin === 'ethereum' ? user : undefined);
+  const where = ORIGINS[origin];
   const [src, setSrc] = useState<RelaySource>('ETH');
   const [amt, setAmt] = useState('');
   const parsed = sourceUnits(src, amt);
   const units = parsed ?? 0n;
   const settled = useSettled(units, 450);
-  const q = useRelayQuote(user, src, settled);
+  const q = useRelayQuote(user, origin, src, settled);
   const quote = settled === units ? (q.data ?? null) : null;
-  const wad = pub.data?.bal[src] ?? null;
+  // The wallet's balance on the origin chain, as a wad: Robinhood Chain's reads, or ETH on Ethereum.
+  const wad = origin === 'ethereum' ? (l1.data ?? null) : (pub.data?.bal[src] ?? null);
+  const readErr = origin === 'ethereum' ? l1.isError : pub.isError;
   // Base units of the source: ETH is already 18 decimals; USDG has 6 (the balance wad rounded down).
   const have = wad === null ? null : src === 'ETH' ? wad : wad / 10n ** 12n;
-  const eth = pub.data?.bal.ETH ?? null;
-  const spendable = have === null ? null : src === 'ETH' ? (have > RELAY_ETH_RESERVE ? have - RELAY_ETH_RESERVE : 0n) : have;
+  const eth = origin === 'ethereum' ? (l1.data ?? null) : (pub.data?.bal.ETH ?? null);
+  const reserve = ethReserve(origin);
+  const spendable = have === null ? null : src === 'ETH' ? (have > reserve ? have - reserve : 0n) : have;
   const inUsd = units > 0n ? valueOf(src, src === 'ETH' ? units : units * 10n ** 12n) : null;
   let hint = '';
   let label: string;
@@ -91,10 +113,10 @@ function RhDeposit() {
   if (!user) label = 'Connect wallet';
   else if (amt.trim() !== '' && parsed === null) label = 'Enter a valid amount';
   else if (units === 0n) label = 'Enter an amount';
-  else if (spendable === null) label = pub.isError ? 'Balance unavailable' : 'Reading your wallet…';
+  else if (spendable === null) label = readErr ? 'Balance unavailable' : 'Reading your wallet…';
   else if (units > spendable) {
-    label = `Not enough ${src}`;
-    hint = src === 'ETH' ? DEPOSIT.rhEthHint(sourceText('ETH', spendable)) : DEPOSIT.rhHolds(`${sourceText('USDG', have ?? 0n)} USDG`);
+    label = `Not enough ${src} on ${where.label}`;
+    hint = src === 'ETH' ? DEPOSIT.ethHint(sourceText('ETH', spendable), where.label) : DEPOSIT.rhHolds(`${sourceText('USDG', have ?? 0n)} USDG`);
   } else if (src === 'USDG' && eth === 0n) {
     label = 'No ETH for gas';
     hint = DEPOSIT.rhGas;
@@ -107,7 +129,7 @@ function RhDeposit() {
     hint = DEPOSIT.rhMin;
   } else {
     label = `Deposit ${sourceText(src, units)} ${src}`;
-    go = () => s.runHlFlow(relayDepositFlow({ user, source: src, amount: units, plan: quote }));
+    go = () => s.runHlFlow(relayDepositFlow({ user, origin, source: src, amount: units, plan: quote }));
   }
   const preset = (pct: number) => {
     if (spendable === null) return;
@@ -120,20 +142,21 @@ function RhDeposit() {
   };
   return (
     <>
-      <div className="seg full" role="group" aria-label="Pay with" style={{ marginTop: 10 }}>
-        <button className={src === 'ETH' ? 'on' : ''} aria-pressed={src === 'ETH'} onClick={() => pick('ETH')}>
-          Pay with ETH
-        </button>
-        <button className={src === 'USDG' ? 'on' : ''} aria-pressed={src === 'USDG'} onClick={() => pick('USDG')}>
-          Pay with USDG
-        </button>
-      </div>
+      {where.sources.length > 1 ? (
+        <div className="seg full" role="group" aria-label="Pay with" style={{ marginTop: 10 }}>
+          {where.sources.map((x) => (
+            <button key={x} className={src === x ? 'on' : ''} aria-pressed={src === x} onClick={() => pick(x)}>
+              Pay with {x}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="fl" style={{ marginTop: 14 }}>
         <label htmlFor="dep-amt">You send</label>
         <span>
-          Wallet{' '}
+          {origin === 'ethereum' ? 'Ethereum wallet' : 'Wallet'}{' '}
           <b className="num">
-            {have !== null ? `${sourceText(src, have)} ${src}` : pub.isError ? '—' : '…'}
+            {have !== null ? `${sourceText(src, have)} ${src}` : readErr ? '—' : '…'}
             {have !== null && wad !== null && valueOf(src, wad) !== null ? ` · ${usd(valueOf(src, wad)!)}` : ''}
           </b>
         </span>
@@ -168,7 +191,7 @@ function RhDeposit() {
         </div>
         <div>
           <span>Route</span>
-          <b>Relay · arrives in about a minute</b>
+          <b>Relay · from {where.label}</b>
         </div>
       </div>
       <button className="btn btn-white btn-block" style={{ marginTop: 12 }} disabled={!go && !!user} onClick={go ?? (() => s.openModal({ kind: 'connect' }))}>

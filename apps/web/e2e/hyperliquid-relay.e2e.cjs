@@ -108,8 +108,8 @@ async function main() {
   check('no perps balance: the ticket offers the deposit and says Robinhood Chain works', /Robinhood Chain/.test(await page.locator('.ticket').innerText()));
   await depBtn.click();
   const dlg = page.locator('.modal');
-  await dlg.locator('button[aria-pressed="true"]', { hasText: 'From Robinhood Chain' }).waitFor({ timeout: 10_000 });
-  check('the dialog opens on "From Robinhood Chain", paying with ETH', (await dlg.locator('button[aria-pressed="true"]', { hasText: 'Pay with ETH' }).count()) === 1);
+  await dlg.locator('button[aria-pressed="true"]', { hasText: 'Robinhood Chain' }).waitFor({ timeout: 10_000 });
+  check('the dialog opens on "Robinhood Chain", paying with ETH', (await dlg.locator('button[aria-pressed="true"]', { hasText: 'Pay with ETH' }).count()) === 1);
   await dlg.locator('.fl', { hasText: /0\.1 ETH · \$[\d,]+\.\d\d/ }).waitFor({ timeout: 30_000 });
   check('the wallet ETH on Robinhood Chain, with its dollar value', true, (await dlg.locator('.fl').first().innerText()).replace(/\n/g, ' '));
   const btn = dlg.locator('button.btn-block').first();

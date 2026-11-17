@@ -117,7 +117,7 @@ async function main() {
   await depBtn.click();
   const m = page.locator('.modal');
   // The dialog opens on Robinhood Chain (ETH or USDG through Relay); this test covers USDC from Arbitrum.
-  await m.locator('button', { hasText: 'From Arbitrum' }).click();
+  await m.locator('button', { hasText: 'Arbitrum' }).click();
   await m.locator('.fl', { hasText: '50.00 USDC' }).waitFor({ timeout: 30_000 });
   check('the dialog shows the USDC on Arbitrum', true);
   await page.locator('#dep-amt').fill('4.99');

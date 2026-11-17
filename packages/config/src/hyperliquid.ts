@@ -62,6 +62,9 @@ export const HL_MIN_DEPOSIT_USDC = 5;
 export const RELAY_API = 'https://api.relay.link';
 export const RELAY_DEPOSITORY = '0x4cd00e387622c35bddb9b4c962c136462338bc31' as const;
 export const RELAY_ORIGIN_CHAIN_ID = 4663;
+/** Ethereum mainnet as a second origin (ETH only): Relay lists it with the same v2 depository (checked 2026-11-17; a live
+ * quote was one deposit of exactly the ETH to that address, about $1.26 in Relay fees plus Ethereum gas). */
+export const RELAY_ETHEREUM_CHAIN_ID = 1;
 export const RELAY_HL_CHAIN_ID = 1337;
 export const RELAY_HL_USDC = '0x00000000000000000000000000000000' as const;
 export const RELAY_HL_USDC_DECIMALS = 8;

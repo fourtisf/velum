@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   receipt: { status: 'success' } as { status: string },
   hl: [0] as number[],
   user: '0x92ef4c8d8df09a9ae7ed9a12409bc9a84fb70e7b' as `0x${string}`,
+  requests: [] as string[],
+  l1Receipts: 0,
 }));
 
 vi.mock('@/lib/wagmi', () => ({ wagmiConfig: {} }));
@@ -27,7 +29,16 @@ vi.mock('wagmi/actions', () => ({
   getConnection: () => ({
     status: 'connected',
     address: h.user,
-    connector: { getProvider: async () => ({ request: async ({ method }: { method: string }) => (method === 'eth_chainId' ? `0x${h.chain.toString(16)}` : null) }) },
+    connector: {
+      getProvider: async () => ({
+        request: async ({ method, params }: { method: string; params?: Array<{ chainId?: string }> }) => {
+          h.requests.push(method);
+          if (method === 'eth_chainId') return `0x${h.chain.toString(16)}`;
+          if (method === 'wallet_switchEthereumChain') h.chain = Number.parseInt(params![0]!.chainId!, 16);
+          return null;
+        },
+      }),
+    },
   }),
 }));
 vi.mock('@/lib/chain', () => ({
@@ -54,6 +65,14 @@ vi.mock('viem', async (orig) => {
   };
 });
 vi.mock('@/lib/hyperliquid/deposit', () => ({ hlUsdcTotal: async () => (h.hl.length > 1 ? h.hl.shift()! : h.hl[0]!) }));
+vi.mock('@/lib/ethereumEth', () => ({
+  l1: {
+    waitForTransactionReceipt: async () => {
+      h.l1Receipts++;
+      return h.receipt;
+    },
+  },
+}));
 
 import { RELAY_DEPOSITORY } from '@velum/config/src/hyperliquid';
 import { encodeFunctionData, erc20Abi } from 'viem';
@@ -61,6 +80,7 @@ import { RelayQuoteError, hlUsdcText, relayDepositFlow, relayQuote, sourceText, 
 import type { HlCtx } from '@/lib/hyperliquid/flows';
 import ethQuote from './fixtures/relay-quote-eth-2026-11-17.json';
 import usdgQuote from './fixtures/relay-quote-usdg-2026-11-17.json';
+import l1Quote from './fixtures/relay-quote-ethereum-eth-2026-11-17.json';
 
 const USER = h.user;
 const ETH_AMT = 20000000000000000n; // 0.02 ETH
@@ -72,6 +92,8 @@ const jsonRes = (body: unknown, status = 200) => ({ ok: status < 400, status, js
 
 beforeEach(() => {
   h.chain = 4663;
+  h.requests = [];
+  h.l1Receipts = 0;
   h.allowance = 0n;
   h.sent = [];
   h.approvals = [];
@@ -212,5 +234,46 @@ describe('the deposit flow', () => {
     await expect(f.steps[0]!.run(c)).rejects.toThrow(/reverted/);
     expect(c.out.relayHash).toBeUndefined();
     await expect(f.steps[1]!.run(c)).rejects.toThrow(/refunded it to your wallet on Robinhood Chain/);
+  });
+});
+
+describe('deposits from Ethereum', () => {
+  const L1_USER = (l1Quote as { details: { sender: string } }).details.sender as `0x${string}`;
+  it('accepts the real Ethereum quote: one deposit of exactly 0.02 ETH to the same depository, on chain 1', () => {
+    const p = validateQuote(l1Quote, { user: L1_USER, source: 'ETH', amount: ETH_AMT, origin: 'ethereum' });
+    expect(p.deposit.to).toBe(RELAY_DEPOSITORY);
+    expect(p.deposit.value).toBe(ETH_AMT);
+    expect(hlUsdcText(p.out)).toBe('34.50');
+  });
+
+  it('refuses a quote for the other chain, and USDG from Ethereum', () => {
+    // The Robinhood Chain quote presented as an Ethereum one, and the other way round.
+    expect(() => validateQuote(ethQuote, { user: USER, source: 'ETH', amount: ETH_AMT, origin: 'ethereum' })).toThrow(RelayQuoteError);
+    expect(() => validateQuote(l1Quote, { user: L1_USER, source: 'ETH', amount: ETH_AMT, origin: 'robinhood' })).toThrow(RelayQuoteError);
+    expect(() => validateQuote(usdgQuote, { user: USER, source: 'USDG', amount: USDG_AMT, origin: 'ethereum' })).toThrow(/USDG from Ethereum/);
+  });
+
+  it('switches the wallet to Ethereum for the deposit, reads its receipt there, and switches back', async () => {
+    h.user = L1_USER;
+    try {
+      const plan = validateQuote(l1Quote, { user: L1_USER, source: 'ETH', amount: ETH_AMT, origin: 'ethereum' });
+      const statusFetch = (async (url: string) => (String(url).endsWith('/quote') ? jsonRes(l1Quote) : jsonRes({ status: 'success' }))) as unknown as typeof fetch;
+      const f = relayDepositFlow({ user: L1_USER, origin: 'ethereum', source: 'ETH', amount: ETH_AMT, plan, fetchImpl: statusFetch, pollMs: 1, waitMs: 500 });
+      expect(f.steps.map((s) => s.t)).toEqual(['Send 0.02 ETH to Hyperliquid through Relay', 'Wait for Relay to deliver it to Hyperliquid', 'Switch your wallet back to Robinhood Chain']);
+      const c: HlCtx = { user: L1_USER, agent: null, out: {} };
+      expect(await f.steps[0]!.run(c)).toMatch(/^Confirmed on Ethereum/);
+      expect(h.requests).toContain('wallet_switchEthereumChain');
+      expect(h.sent).toHaveLength(1);
+      expect(h.sent[0]!.value).toBe(ETH_AMT);
+      expect(h.l1Receipts).toBe(1);
+      expect(await f.steps[1]!.run(c)).toMatch(/USDC delivered/);
+      expect(await f.steps[2]!.run(c)).toBe('Switched back');
+      expect(h.chain).toBe(4663);
+      const review = Object.fromEntries(f.review.map(([k, v]) => [String(k), String(v)]));
+      expect(review['You send']).toMatch(/from your wallet on Ethereum/);
+      expect(review.Network).toMatch(/Ethereum mainnet/);
+    } finally {
+      h.user = USER;
+    }
   });
 });

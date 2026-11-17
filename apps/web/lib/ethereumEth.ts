@@ -9,7 +9,8 @@ import { useQuery } from '@tanstack/react-query';
 import { createPublicClient, http, type Address } from 'viem';
 import { mainnet } from 'viem/chains';
 
-const l1 = createPublicClient({ chain: mainnet, transport: http(ETH_L1_RPC, { timeout: 15_000, retryCount: 1 }) });
+/** Ethereum mainnet reads (balances, receipts of deposits sent from Ethereum), through ETH_L1_RPC. */
+export const l1 = createPublicClient({ chain: mainnet, transport: http(ETH_L1_RPC, { timeout: 15_000, retryCount: 1 }) });
 let chainOk: Promise<boolean> | null = null;
 
 /** ETH on Ethereum mainnet, wei. Throws when the RPC cannot be reached or is not Ethereum mainnet. */

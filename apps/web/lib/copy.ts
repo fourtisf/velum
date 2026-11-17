@@ -87,6 +87,7 @@ export function priceSourceText(origin: PriceOrigin, mainnet = IS_MAINNET): stri
  */
 export const UNI = {
   spotNote: 'A real trade from your wallet through Uniswap on Robinhood Chain. Public onchain, not private. Velum adds no fee, and you own the token, so nothing can be liquidated.',
+  ethNote: 'Pay with the ETH in your wallet: it becomes USDG, then the Stock Token, in one Uniswap transaction on Robinhood Chain. No approval needed. Public onchain, and you own the token.',
   swapSub: 'Trade USDG and Stock Tokens through Uniswap on Robinhood Chain, straight from your wallet. Stock to stock routes through USDG in two swaps.',
   swapNote: 'Public onchain. The minimum protects you: if the price moves past it, the swap is refused and nothing is traded.',
   banner: HL_PERPS

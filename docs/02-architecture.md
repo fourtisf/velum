@@ -134,6 +134,11 @@ sel, mode, side, lev, size, spotSide, spotAmt, slip, tf, ...). Server data via
   credits the sender's address; at least 5 USDC (less is lost), balance and gas checked first, the transfer read back
   from its receipt and never re-sent on retry; Velum then waits for Hyperliquid to show the USDC and switches the wallet
   back. The browser reads Arbitrum through arb1.arbitrum.io (allowed in the CSP on mainnet).
+- **Buying with ETH (mainnet, web).** On the Buy side the user can pay with ETH: one Universal Router call with the
+  ETH as value, WRAP_ETH to the router, then V3_SWAP_EXACT_IN over WETH -> USDG (the curated ETH leg, WETH/USDG 0.01%,
+  `ethLeg` in packages/config/uniswap-mainnet.json) -> stock (the market's best v3 pool by QuoterV2.quoteExactInput),
+  paid by the router, the minimum from the slippage setting. No approval. Rehearsed on a mainnet fork
+  (`apps/web/e2e/uniswap-eth-fork.e2e.ts`, `apps/web/e2e/uniswap-eth-browser.e2e.cjs`).
 - **Real spot through Uniswap (mainnet, web).** The Spot ticket and the swap page trade from the connected wallet
   through the Universal Router (`apps/web/lib/uniswap`): the best on-chain quote among the market's curated pools,
   an exact ERC-20 approval to Permit2 and an exact 30-minute Permit2 allowance for the router (each only when

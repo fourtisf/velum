@@ -9,7 +9,7 @@ import { UNISWAP, sqrtPriceToWad, type UniPool } from '@velum/config/src/uniswap
 import { useQuery } from '@tanstack/react-query';
 import { publicClient } from '../chain';
 import { QUOTER_V2_ABI, V4_QUOTER_ABI } from './abi';
-import { hopFor, zeroForOne, type Hop } from './encode';
+import { ethBuyPath, hopFor, zeroForOne, type Hop } from './encode';
 
 export interface UniQuote {
   hop: Hop;
@@ -58,6 +58,50 @@ export async function bestQuote(pools: readonly UniPool[], side: 'buy' | 'sell',
   }
   if (at < 0) return null;
   return { hop: hops[at]!, amountIn, amountOut: outs[at]!, others: outs.filter((o) => o !== null).length - 1 };
+}
+
+export interface EthQuote {
+  /** The market's v3 pool the second hop goes through. */
+  pool: UniPool;
+  amountIn: bigint;
+  amountOut: bigint;
+}
+
+/**
+ * The best quote for buying `sym` with `amountIn` wei of ETH: ETH -> USDG through the ETH leg, then USDG -> stock through
+ * each of the market's v3 pools, quoted over the whole path by QuoterV2 (fees and liquidity of both pools included).
+ */
+export async function quoteEthBuy(sym: string, amountIn: bigint): Promise<EthQuote | null> {
+  const cfg = UNISWAP;
+  if (!cfg || amountIn <= 0n) return null;
+  const pools = poolsOf(sym).filter((p) => p.version === 3);
+  const outs = await Promise.all(
+    pools.map(async (pool) => {
+      try {
+        const r = await publicClient.simulateContract({ address: cfg.contracts.quoterV2, abi: QUOTER_V2_ABI, functionName: 'quoteExactInput', args: [ethBuyPath(cfg.contracts.weth, cfg.ethLeg.fee, pool), amountIn] });
+        return r.result[0] > 0n ? r.result[0] : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  let at = -1;
+  outs.forEach((o, i) => {
+    if (o !== null && (at < 0 || o > outs[at]!)) at = i;
+  });
+  return at < 0 ? null : { pool: pools[at]!, amountIn, amountOut: outs[at]! };
+}
+
+/** Live ETH-buy quote for the ticket: refreshed every 10 s while shown. */
+export function useEthQuote(sym: string | null, amountIn: bigint) {
+  return useQuery({
+    queryKey: ['uni-eth-quote', sym, amountIn.toString()],
+    enabled: !!sym && amountIn > 0n && poolsOf(sym).some((p) => p.version === 3),
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+    retry: false,
+    queryFn: () => quoteEthBuy(sym!, amountIn),
+  });
 }
 
 /** The curated pools of a market (empty off mainnet or for a market without pools). */

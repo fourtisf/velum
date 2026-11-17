@@ -10,14 +10,16 @@ vi.hoisted(() => {
 });
 
 import { IS_MAINNET } from '@velum/config';
-import { UNISWAP, type UniPool } from '@velum/config/src/uniswap';
+import { UNISWAP, UNISWAP_MAINNET, buildUniswap, type UniPool } from '@velum/config/src/uniswap';
 import { decodeAbiParameters, encodeErrorResult, slice, type Hex } from 'viem';
 import { UNI, priceSourceText } from '@/lib/copy';
 import { decodeTxError } from '@/lib/onchain/errors';
 import { REAL_SOURCES, priceOrigin } from '@/lib/markets';
 import { UNI_ERRORS_ABI } from '@/lib/uniswap/abi';
-import { UR_COMMAND, encodeSwap, hopFor, minOutFor, v3Path, zeroForOne } from '@/lib/uniswap/encode';
-import { uniTarget, uniTradeFlow } from '@/lib/uniswap/flows';
+import { UR_ADDRESS_THIS, UR_COMMAND, encodeEthBuy, encodeSwap, ethBuyPath, hopFor, minOutFor, v3Path, v3PathMulti, zeroForOne } from '@/lib/uniswap/encode';
+import { uniEthBuyFlow, uniTarget, uniTradeFlow } from '@/lib/uniswap/flows';
+import uniJson from '@velum/config/uniswap-mainnet.json';
+import mainnetJson from '@velum/config/robinhood-mainnet.json';
 
 const cfg = UNISWAP!;
 const ME = '0x1111111111111111111111111111111111111111' as const;
@@ -98,6 +100,62 @@ describe('Universal Router calldata', () => {
     expect(minOutFor(1_000_000n, 50n)).toBe(995_000n);
     expect(minOutFor(999n, 10n)).toBe(998n);
     expect(minOutFor(1n, 50n)).toBe(0n);
+  });
+});
+
+describe('buying with ETH', () => {
+  const weth = cfg.contracts.weth;
+  it('uses the vetted WETH/USDG 0.01% pool as the ETH leg', () => {
+    expect(cfg.ethLeg).toEqual({ address: '0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca', fee: 100 });
+    expect(weth).toBe('0x0bd7d308f8e1639fab988df18a8011f41eacad73');
+    // Every market has a v3 pool, so every market can be bought with ETH in one transaction.
+    for (const [sym, pools] of Object.entries(cfg.pools)) expect(pools.some((p) => p.version === 3), sym).toBe(true);
+  });
+
+  it('rejects a malformed ETH leg in the curated data', () => {
+    const tokens = mainnetJson.tokens as Record<string, { address: string; decimals: number }>;
+    const bad = (ethLeg: unknown) => () => buildUniswap({ ...(uniJson as unknown as Record<string, unknown>), ethLeg } as never, tokens);
+    expect(bad({ version: 4, address: cfg.ethLeg.address, fee: 100 })).toThrow(/ethLeg/);
+    expect(bad({ version: 3, address: '0x52E65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca', fee: 100 })).toThrow(/ethLeg/);
+    expect(bad({ version: 3, address: cfg.ethLeg.address, fee: 20000 })).toThrow(/ethLeg/);
+    expect(UNISWAP_MAINNET.ethLeg.fee).toBe(100);
+  });
+
+  it('a two-hop v3 path: WETH | 100 | USDG | pool fee | stock', () => {
+    expect(v3PathMulti([weth, cfg.usdg.address, tslaV3.stock], [100, 3000])).toBe(`${weth}000064${cfg.usdg.address.slice(2)}000bb8${tslaV3.stock.slice(2)}`);
+    expect(ethBuyPath(weth, 100, tslaV3)).toBe(v3PathMulti([weth, cfg.usdg.address, tslaV3.stock], [100, 3000]));
+    expect(() => ethBuyPath(weth, 100, tslaV4)).toThrow(/v3/);
+    expect(() => v3PathMulti([weth], [])).toThrow();
+  });
+
+  it('WRAP_ETH to the router, then a v3 exact-input swap paid by the router, with the ETH as value', () => {
+    const r = encodeEthBuy({ weth, ethFee: 100, pool: tslaV3, amountIn: 5n * 10n ** 16n, minOut: 123n, recipient: ME });
+    expect(r.commands).toBe('0x0b00');
+    expect(UR_COMMAND.WRAP_ETH).toBe(0x0b);
+    expect(r.value).toBe(5n * 10n ** 16n);
+    const [to, min] = decodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], r.inputs[0]!);
+    expect([to.toLowerCase(), min]).toEqual([UR_ADDRESS_THIS, 5n * 10n ** 16n]);
+    const [recipient, amountIn, minOut, path, payerIsUser, hops] = decodeAbiParameters(
+      [{ type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bytes' }, { type: 'bool' }, { type: 'uint256[]' }],
+      r.inputs[1]!,
+    );
+    expect(recipient).toBe(ME);
+    expect(amountIn).toBe(5n * 10n ** 16n);
+    expect(minOut).toBe(123n);
+    expect(path).toBe(ethBuyPath(weth, 100, tslaV3));
+    expect(payerIsUser).toBe(false);
+    expect(hops).toEqual([]);
+    expect(() => encodeEthBuy({ weth, ethFee: 100, pool: tslaV3, amountIn: 0n, minOut: 1n, recipient: ME })).toThrow();
+  });
+
+  it('the flow: one swap step sending the ETH, reviewed with the route and no approval', async () => {
+    const f = uniEthBuyFlow({ account: ME, sym: 'TSLA', amountIn: 5n * 10n ** 16n, quoteOut: 24n * 10n ** 16n, minOut: 239n * 10n ** 15n, pool: tslaV3 });
+    expect(f.steps).toHaveLength(1);
+    const rows = Object.fromEntries(f.review.map(([k, v]) => [String(k), String(v)]));
+    expect(rows['You pay']).toMatch(/0\.05 ETH/);
+    expect(rows.Route).toMatch(/^ETH to USDG \(Uniswap v3, 0\.01%\), then /);
+    expect(rows.Approvals).toMatch(/None/);
+    expect(f.ack).toMatch(/real trade/);
   });
 });
 

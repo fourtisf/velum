@@ -11,11 +11,18 @@
  *    from the user through Permit2 (at most amountIn), TAKE_ALL (0x0f) sending tokenOut to the user (at least the
  *    minimum).
  * minHopPriceX36 is left off (empty / 0): a single pool, already bounded by the minimum output.
+ *
+ * Buying with ETH (encodeEthBuy): WRAP_ETH (0x0b) with abi.encode(ADDRESS_THIS, amountMin) turns the ETH sent with the
+ * call into WETH held by the router, then V3_SWAP_EXACT_IN over the path WETH | ethLeg fee | USDG | pool fee | stock with
+ * payerIsUser false (the router pays from that WETH) and the stock sent to the user, reverting below amountOutMin.
+ * One transaction, no approval: ETH is native.
  */
 import type { UniPool } from '@velum/config/src/uniswap';
 import { concatHex, encodeAbiParameters, numberToHex, type Address, type Hex } from 'viem';
 
-export const UR_COMMAND = { V3_SWAP_EXACT_IN: 0x00, V4_SWAP: 0x10 } as const;
+export const UR_COMMAND = { V3_SWAP_EXACT_IN: 0x00, WRAP_ETH: 0x0b, V4_SWAP: 0x10 } as const;
+/** Universal Router's stand-in for "the router itself" as a recipient (ActionConstants.ADDRESS_THIS). */
+export const UR_ADDRESS_THIS = '0x0000000000000000000000000000000000000002' as const;
 export const V4_ACTION = { SWAP_EXACT_IN_SINGLE: 0x06, SETTLE_ALL: 0x0c, TAKE_ALL: 0x0f } as const;
 const MAX_UINT128 = (1n << 128n) - 1n;
 
@@ -37,6 +44,31 @@ export function hopFor(pool: UniPool, side: 'buy' | 'sell'): Hop {
 /** A v3 path for one pool: tokenIn (20 bytes) | fee (3 bytes) | tokenOut (20 bytes). */
 export function v3Path(tokenIn: Address, fee: number, tokenOut: Address): Hex {
   return concatHex([tokenIn, numberToHex(fee, { size: 3 }), tokenOut]);
+}
+
+/** A v3 path over several pools: token | fee (3 bytes) | token | fee | token. */
+export function v3PathMulti(tokens: readonly Address[], fees: readonly number[]): Hex {
+  if (tokens.length !== fees.length + 1 || fees.length === 0) throw new Error('a path needs one more token than fees');
+  const parts: Hex[] = [tokens[0]!];
+  fees.forEach((f, i) => parts.push(numberToHex(f, { size: 3 }), tokens[i + 1]!));
+  return concatHex(parts);
+}
+
+/** The v3 path of buying a stock with ETH through the ETH leg and the stock's v3 pool. */
+export function ethBuyPath(weth: Address, ethFee: number, pool: UniPool): Hex {
+  if (pool.version !== 3) throw new Error('buying with ETH goes through a v3 stock pool');
+  return v3PathMulti([weth, pool.usdg, pool.stock], [ethFee, pool.fee]);
+}
+
+/** Universal Router `execute` arguments (without the deadline) and the ETH to send, for buying a stock with ETH. */
+export function encodeEthBuy(p: { weth: Address; ethFee: number; pool: UniPool; amountIn: bigint; minOut: bigint; recipient: Address }): { commands: Hex; inputs: Hex[]; value: bigint } {
+  if (p.amountIn <= 0n || p.minOut <= 0n) throw new Error('amountIn and minOut must be positive');
+  const wrap = encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [UR_ADDRESS_THIS, p.amountIn]);
+  const swap = encodeAbiParameters(
+    [{ type: 'address' }, { type: 'uint256' }, { type: 'uint256' }, { type: 'bytes' }, { type: 'bool' }, { type: 'uint256[]' }],
+    [p.recipient, p.amountIn, p.minOut, ethBuyPath(p.weth, p.ethFee, p.pool), false, []],
+  );
+  return { commands: concatHex([numberToHex(UR_COMMAND.WRAP_ETH, { size: 1 }), numberToHex(UR_COMMAND.V3_SWAP_EXACT_IN, { size: 1 })]), inputs: [wrap, swap], value: p.amountIn };
 }
 
 /** Universal Router `execute` arguments (without the deadline) for one exact-input swap. */

@@ -117,6 +117,18 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: buy Stock Tokens with ETH (mainnet, November 17 2026)
+
+- **Pay with ETH** on the Spot ticket's Buy side, next to Pay with USDG: the wallet's ETH becomes USDG, then the Stock
+  Token, in one Uniswap transaction with no approval (`apps/web/lib/uniswap`: `encodeEthBuy` = WRAP_ETH, then a v3
+  exact-input swap WETH -> USDG -> stock paid by the router; `quoteEthBuy` quotes the whole path on QuoterV2 for each of
+  the market's v3 pools; `uniEthBuyFlow`). The ETH leg is one vetted pool, WETH/USDG 0.01%
+  (`packages/config/uniswap-mainnet.json` `ethLeg`: about 4,941 WETH and 1.48M USDG, better quotes than every other ETH
+  pool read the same day); every market has a v3 pool for the second hop. Max keeps 0.0005 ETH for gas.
+- Rehearsed on a mainnet fork against the deployed router, pools and tokens: `apps/web/e2e/uniswap-eth-fork.e2e.ts`
+  (all 10 markets: exactly the quoted tokens for 0.05 ETH, exactly 0.05 ETH plus gas spent, a minimum one unit above
+  the quote refused) and `apps/web/e2e/uniswap-eth-browser.e2e.cjs` (the ticket, review and receipt in the browser).
+
 ## What changed: Velum on X, marketing kit (November 16 2026)
 
 - **X on the site**: an X button (`@velumtrade`) in the top navigation of every page (on phones in the app it stays

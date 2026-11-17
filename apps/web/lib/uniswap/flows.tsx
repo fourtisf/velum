@@ -19,7 +19,8 @@ import { ERC20_ABI } from '../onchain/abi';
 import { ReceiptMismatch, type FlowProto, type FlowTarget, type Row, type TxFlowSpec, type TxRunCtx, type TxStepSpec } from '../onchain/flow';
 import { exact } from '../onchain/flows';
 import { ERC20_TRANSFER_ABI, PERMIT2_ABI, UNIVERSAL_ROUTER_ABI } from './abi';
-import { encodeSwap, type Hop } from './encode';
+import { encodeEthBuy, encodeSwap, type Hop } from './encode';
+import type { UniPool } from '@velum/config/src/uniswap';
 import { bestQuote, poolsOf } from './quote';
 
 /** Swap deadline: 20 minutes after the latest block (chain time). */
@@ -203,6 +204,72 @@ export function uniTradeFlow(p: UniTradeInput): TxFlowSpec {
       if (two && typeof ctx.out.usdg === 'bigint') rows.push(['Through', amt(ctx.out.usdg, 'USDG')]);
       return { rows, toast: p.toast };
     },
+    d,
+    proto,
+    account: p.account,
+  };
+}
+
+export interface UniEthBuyInput {
+  account: Address;
+  sym: string;
+  /** ETH in wei. */
+  amountIn: bigint;
+  quoteOut: bigint;
+  minOut: bigint;
+  /** The market's v3 pool of the second hop. */
+  pool: UniPool;
+}
+
+/**
+ * Buying a Stock Token with ETH from the wallet: one transaction through the Universal Router (wrap the ETH, then
+ * WETH -> USDG -> stock over the ETH leg and the market's v3 pool), refused onchain below the minimum. No approval: ETH
+ * is sent with the call. The receipt must show at least the minimum of the stock arriving in the wallet.
+ */
+export function uniEthBuyFlow(p: UniEthBuyInput): TxFlowSpec {
+  const cfg = UNISWAP!;
+  const { d, proto } = uniTarget();
+  const eth = (u: bigint) => exact(u, 18, 'ETH');
+  const amt = (u: bigint) => exact(u, proto.decimals[p.sym]!, p.sym);
+  const router = cfg.contracts.universalRouter;
+  const route = `ETH to USDG (Uniswap v3, ${(cfg.ethLeg.fee / 10_000).toFixed(2)}%), then ${poolLabel(p.pool)}`;
+  const step: TxStepSpec = {
+    t: `Buy ${p.sym} with ${eth(p.amountIn)}`,
+    d: 'One swap through the Uniswap Universal Router; refused onchain below your minimum',
+    label: 'Swap',
+    outToken: p.sym,
+    call: async (ctx) => {
+      const { commands, inputs, value } = encodeEthBuy({ weth: cfg.contracts.weth, ethFee: cfg.ethLeg.fee, pool: p.pool, amountIn: p.amountIn, minOut: p.minOut, recipient: ctx.account });
+      const deadline = (await chainNow()) + SWAP_DEADLINE_S;
+      return { address: router, abi: UNIVERSAL_ROUTER_ABI, functionName: 'execute', args: [commands, inputs, deadline], value };
+    },
+    after: (r, ctx) => {
+      const got = transfers(r, lower(p.pool.stock), (_from, to) => to === lower(ctx.account));
+      if (got <= 0n || got < p.minOut) throw new ReceiptMismatch('at least the minimum arriving in your wallet');
+      ctx.out.received = got;
+    },
+  };
+  return {
+    title: `Buy ${p.sym} with ETH`,
+    review: [
+      ['You pay', eth(p.amountIn)],
+      ['You get (est.)', amt(p.quoteOut)],
+      ['Minimum you get', amt(p.minOut)],
+      ['Route', route],
+      ['Approvals', 'None: the ETH is sent with the swap'],
+      ['Visible onchain', 'Your wallet, the tokens and the amounts (a public Uniswap trade)'],
+    ],
+    note: `A real trade from your wallet through Uniswap on Robinhood Chain: your ETH becomes USDG, then ${p.sym}, in one transaction. Velum adds no fee: both pool fees are already in the quote. If the price moves past your slippage limit, the swap is refused onchain and nothing is traded. Keep a little ETH for the network fee.`,
+    confirmLabel: 'Start trade',
+    ack: 'I understand this is a real trade with real tokens on Robinhood Chain mainnet, routed through Uniswap, and cannot be undone.',
+    steps: [step],
+    done: (ctx) => ({
+      rows: [
+        ['Paid', eth(p.amountIn)],
+        ['Received', amt((ctx.out.received as bigint | undefined) ?? 0n)],
+      ],
+      toast: `Bought ${p.sym}`,
+    }),
     d,
     proto,
     account: p.account,

@@ -17,6 +17,12 @@
     "permit2": "0x000000000022d473030f116ddee9f6b43ac78ba3",
     "weth": "0x0bd7d308f8e1639fab988df18a8011f41eacad73"
   },
+  "ethLeg": {
+    "_note": "Buying with ETH (2026-11-17): the router wraps the ETH and swaps WETH -> USDG through this pool, then USDG -> the stock through the market's curated v3 pool, in one transaction. v3Factory.getPool(weth, USDG, 100) returns it; it held about 4,941 WETH and 1.48M USDG, the deepest ETH/USDG pool on the chain (0.1 ETH quoted 182.21 USDG, better than every other WETH/USDG and ETH/USDG pool read the same day).",
+    "version": 3,
+    "address": "0x52e65b17fb6e5ba00ed806f37afcd2daa50271ca",
+    "fee": 100
+  },
   "universalRouterCreationBlock": 65727895,
   "pools": {
     "TSLA": [

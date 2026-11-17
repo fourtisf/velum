@@ -73,6 +73,8 @@ export interface UniswapConfig {
   usdg: { address: Hex; decimals: number };
   /** Symbol -> Stock Token decimals. */
   decimals: Record<string, number>;
+  /** The v3 WETH/USDG pool that buying with ETH goes through first (uniswap-mainnet.json ethLeg). */
+  ethLeg: { address: Hex; fee: number };
 }
 
 /** A stable short key for a pool: "v3:<address>" or "v4:<id>". */
@@ -99,6 +101,7 @@ interface RawPool {
 interface RawUniswap {
   chainId: number;
   contracts: Record<string, string>;
+  ethLeg: { version: number; address: string; fee: number };
   universalRouterCreationBlock: number;
   pools: Record<string, RawPool[]>;
 }
@@ -154,7 +157,11 @@ export function buildUniswap(raw: RawUniswap, tokens: Record<string, { address: 
     if (!out.some((x) => x.chart)) fail(`${symbol}: needs at least one chart pool`);
     pools[symbol] = out;
   }
-  return { chainId: raw.chainId, contracts, universalRouterCreationBlock: raw.universalRouterCreationBlock, pools, usdg, decimals };
+  const e = raw.ethLeg;
+  if (!e || e.version !== 3 || typeof e.address !== 'string' || !ADDRESS_RE.test(e.address)) fail('ethLeg must be a v3 pool with a lower-case address');
+  if (!Number.isInteger(e.fee) || e.fee <= 0 || e.fee > UNI_MAX_FEE) fail(`ethLeg: fee ${e.fee} is not a standard tier of at most 1%`);
+  const ethLeg = { address: e.address as Hex, fee: e.fee };
+  return { chainId: raw.chainId, contracts, universalRouterCreationBlock: raw.universalRouterCreationBlock, pools, usdg, decimals, ethLeg };
 }
 
 /** The curated mainnet data (always built, so tests on any network check it). */

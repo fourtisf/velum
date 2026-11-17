@@ -15,15 +15,40 @@ import { dp, fmt, fmtBal, fmtFloor } from '@/lib/format';
 import { slipBps } from '@/lib/onchain/quote';
 import { unitsToInput, unitsToWad, wadToUnits } from '@/lib/onchain/units';
 import { minOutFor } from '@/lib/uniswap/encode';
-import { uniTradeFlow } from '@/lib/uniswap/flows';
-import { poolsOf, useUniQuote } from '@/lib/uniswap/quote';
+import { uniEthBuyFlow, uniTradeFlow } from '@/lib/uniswap/flows';
+import { poolsOf, useEthQuote, useUniQuote } from '@/lib/uniswap/quote';
 import { useApp } from '@/lib/store';
+import { useState } from 'react';
 import { I } from '../icons';
 
 type Btn = { label: string; cls: string; disabled: boolean; onClick?: () => void };
 const HINT = 't-spot-hint';
+/** ETH kept in the wallet for the network fee when buying with ETH (0.0005 ETH). */
+export const ETH_GAS_RESERVE = 5n * 10n ** 14n;
 
+/** Buy and sell through Uniswap; on the Buy side the user pays with USDG or with ETH. */
 export function UniSpotTicket({ sym }: { sym: string }) {
+  const [payEth, setPayEth] = useState(false);
+  const side = useApp((st) => st.spotSide);
+  return payEth && side === 'buy' ? <EthBuyTicket sym={sym} onPay={setPayEth} /> : <UsdgTicket sym={sym} onPay={setPayEth} />;
+}
+
+/** "Pay with" switch shown on the Buy side. */
+function PayWith({ eth, onPay }: { eth: boolean; onPay: (eth: boolean) => void }) {
+  const set = useApp((s) => s.set);
+  return (
+    <div className="seg full" role="group" aria-label="Pay with" style={{ marginTop: 10 }}>
+      <button className={!eth ? 'on' : ''} aria-pressed={!eth} onClick={() => { onPay(false); set({ spotAmt: '500' }); }}>
+        Pay with USDG
+      </button>
+      <button className={eth ? 'on' : ''} aria-pressed={eth} onClick={() => { onPay(true); set({ spotAmt: '0.05' }); }}>
+        Pay with ETH
+      </button>
+    </div>
+  );
+}
+
+function UsdgTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void }) {
   const s = useApp();
   const cfg = UNISWAP!;
   const connected = !!s.account;
@@ -120,6 +145,7 @@ export function UniSpotTicket({ sym }: { sym: string }) {
           Sell
         </button>
       </div>
+      {side === 'buy' ? <PayWith eth={false} onPay={onPay} /> : null}
       <div className="fl">
         <label htmlFor="t-spot">You pay</label>
         <span>
@@ -195,4 +221,136 @@ export function UniSpotTicket({ sym }: { sym: string }) {
 function wadToUnitsOr0(w: bigint, decimals: number): bigint {
   const r = wadToUnits(w - (w % 10n ** BigInt(18 - decimals)), decimals);
   return r.ok ? r.units : 0n;
+}
+
+/** Buying with the ETH in the wallet: ETH -> USDG -> stock in one Uniswap transaction (lib/uniswap/flows.tsx uniEthBuyFlow). */
+function EthBuyTicket({ sym, onPay }: { sym: string; onPay: (eth: boolean) => void }) {
+  const s = useApp();
+  const cfg = UNISWAP!;
+  const connected = !!s.account;
+  const dOut = cfg.decimals[sym];
+  const pub = usePublicBalances(s.account?.addr);
+  const ethWad = pub.data?.bal.ETH ?? null;
+  const units = wadToUnits(amountOrZero(s.spotAmt), 18);
+  const amountIn = units.ok ? units.units : 0n;
+  const q = useEthQuote(sym, amountIn);
+  const quote = q.data ?? null;
+  const min = quote ? minOutFor(quote.amountOut, slipBps(s.slip)) : 0n;
+  // ETH per token (fees and price impact included), as a wad.
+  const rate = quote && dOut !== undefined && quote.amountOut > 0n ? (amountIn * 10n ** 18n) / unitsToWad(quote.amountOut, dOut) : null;
+  const bad = amountHint(s.spotAmt);
+  let hint = bad;
+  let b: Btn;
+  if (!connected) b = { label: 'Connect wallet', cls: 'btn-white', disabled: false, onClick: () => s.openModal({ kind: 'connect' }) };
+  else if (dOut === undefined || !poolsOf(sym).some((p) => p.version === 3)) {
+    b = { label: 'Coming soon', cls: 'btn-dark', disabled: true };
+    hint = UNI.noPools(sym);
+  } else if (bad || !units.ok) b = { label: 'Enter a valid amount', cls: 'btn-dark', disabled: true };
+  else if (amountIn <= 0n) b = { label: 'Enter an amount', cls: 'btn-dark', disabled: true };
+  else if (ethWad === null) b = { label: pub.isError ? 'Balance unavailable' : 'Reading your wallet…', cls: 'btn-dark', disabled: true };
+  else if (amountIn > ethWad) {
+    b = { label: 'Not enough ETH in your wallet', cls: 'btn-dark', disabled: true };
+    hint = `Your wallet holds ${fmtBal(ethWad, 6)} ETH.`;
+  } else if (amountIn + ETH_GAS_RESERVE > ethWad) {
+    b = { label: 'Leave a little ETH for gas', cls: 'btn-dark', disabled: true };
+    hint = 'Keep about 0.0005 ETH in your wallet for the network fee.';
+  } else if (q.isLoading) b = { label: 'Quoting…', cls: 'btn-dark', disabled: true };
+  else if (!quote) {
+    b = { label: 'No liquidity', cls: 'btn-dark', disabled: true };
+    hint = UNI.noLiquidity;
+  } else if (min <= 0n) {
+    b = { label: 'Amount too small', cls: 'btn-dark', disabled: true };
+    hint = 'This amount is too small to protect with a minimum.';
+  } else {
+    b = {
+      label: `Buy ${sym} with ETH`,
+      cls: 'btn-up',
+      disabled: false,
+      onClick: () => s.runTxFlow(uniEthBuyFlow({ account: s.account!.addr, sym, amountIn, quoteOut: quote.amountOut, minOut: min, pool: quote.pool })),
+    };
+  }
+  const preset = (p: number) => {
+    if (ethWad === null) return;
+    const spendable = ethWad > ETH_GAS_RESERVE ? ethWad - ETH_GAS_RESERVE : 0n;
+    s.set({ spotAmt: unitsToInput((spendable * BigInt(p)) / 100n, 18, 6) });
+  };
+  return (
+    <>
+      <div className="sides" role="group" aria-label="Buy or sell">
+        <button className="long on" aria-pressed>
+          Buy
+        </button>
+        <button className="short" aria-pressed={false} onClick={() => { onPay(false); s.set({ spotSide: 'sell', spotAmt: '1' }); }}>
+          Sell
+        </button>
+      </div>
+      <PayWith eth onPay={onPay} />
+      <div className="fl">
+        <label htmlFor="t-spot">You pay</label>
+        <span>
+          Wallet <b className="num">{connected && ethWad !== null ? `${fmtBal(ethWad, 6)} ETH` : '—'}</b>
+        </span>
+      </div>
+      <div className="inp">
+        <input id="t-spot" {...amountInputProps(s.spotAmt, HINT)} value={s.spotAmt} onChange={(e) => s.set({ spotAmt: e.target.value })} />
+        <span className="unit">ETH</span>
+      </div>
+      <div className="seg full pcts" role="group" aria-label="Amount presets">
+        {[25, 50, 75, 100].map((p) => (
+          <button key={p} onClick={() => preset(p)} disabled={ethWad === null}>
+            {p === 100 ? 'Max' : p + '%'}
+          </button>
+        ))}
+      </div>
+      <div className="fl">
+        <span>You get (est.)</span>
+      </div>
+      <div className="inp">
+        <output aria-label="You get (est.)">{quote && dOut !== undefined ? fmt(unitsToWad(quote.amountOut, dOut), dp(sym)) : amountIn > 0n && q.isLoading ? '…' : '0.00'}</output>
+        <span className="unit">{sym}</span>
+      </div>
+      <div className="fl">
+        <span>Slippage limit</span>
+      </div>
+      <div className="seg full" role="group" aria-label="Slippage">
+        {PROTOCOL.slippageOptionsPct.map((x) => (
+          <button key={x} className={s.slip === x ? 'on' : ''} aria-pressed={s.slip === x} onClick={() => s.set({ slip: x })}>
+            {x}%
+          </button>
+        ))}
+      </div>
+      <div className="sumbox">
+        <div>
+          <span>Price</span>
+          <b>{rate === null ? '—' : `${fmt(rate, 6)} ETH`}</b>
+        </div>
+        <div>
+          <span>Pool fees</span>
+          <b>{quote ? `${feePct(cfg.ethLeg.fee)} + ${feePct(quote.pool.fee)} (in the quote)` : '—'}</b>
+        </div>
+        <div>
+          <span>Minimum you get</span>
+          <b>{quote && dOut !== undefined ? `${fmtFloor(unitsToWad(min, dOut), dp(sym))} ${sym}` : '—'}</b>
+        </div>
+        <div>
+          <span>Route</span>
+          <b>{quote ? `ETH → USDG → ${sym}` : 'Uniswap'}</b>
+        </div>
+        <div>
+          <span>Liquidation</span>
+          <b>None</b>
+        </div>
+      </div>
+      <button className={`btn btn-block ${b.cls}`} disabled={b.disabled} onClick={b.onClick}>
+        {b.label}
+      </button>
+      <p className="hint" id={HINT}>
+        {hint}
+      </p>
+      <p className="note">
+        <I.info />
+        <span>{UNI.ethNote}</span>
+      </p>
+    </>
+  );
 }

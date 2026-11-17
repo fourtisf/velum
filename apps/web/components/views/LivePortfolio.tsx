@@ -22,6 +22,7 @@ import { bal, useApp } from '@/lib/store';
 import { ACTIVITY_MAX, useWalletActivity, type Move, type WalletAct } from '@/lib/walletActivity';
 import { useWalletTotals } from '@/lib/walletTotals';
 import { HlAccountRows, HlHistory, HlPortfolioActivity, HlPortfolioPositions } from '../hyperliquid/lazy';
+import { AlertsCard, InviteCard } from '../AlertsInvite';
 import { I } from '../icons';
 import { Av, Px } from '../ui';
 
@@ -483,6 +484,8 @@ export function LivePortfolio() {
             </div>
           </section>
         ) : null}
+        {HL_PERPS ? <AlertsCard /> : null}
+        <InviteCard />
       </div>
     </>
   );

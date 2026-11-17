@@ -511,6 +511,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 4px var(-
 .legal-foot a{color:var(--acc)}
 .terms-list{display:grid;gap:8px;margin-top:12px}
 .terms-list a{color:var(--acc)}
+.invite-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.invite-url{flex:1;min-width:0;padding:9px 12px;border-radius:9px;background:var(--bg2);border:1px solid var(--line);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .app-brand .brand-x svg{display:block;width:11px;height:11px}
 /* Token contract address (landing hero and footer, owner request): the hero pill's shape and colours,
    the address in the monospace face the private address uses (.paddr), .icb icon buttons. */

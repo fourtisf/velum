@@ -48,6 +48,8 @@ export interface ApiEnv {
   perpsBlocked?: string[];
   /** Token for reading client error reports (ADMIN_TOKEN, at least 32 characters), or null (reading disabled). */
   adminToken?: string | null;
+  /** The Telegram alerts bot's username (TELEGRAM_BOT_USERNAME), or null (alerts off). */
+  telegramBot?: string | null;
   /**
    * Unix socket to listen on instead of HOST:PORT_API (audit R3-03). deploy/server-setup.sh sets it to
    * /run/velum-api/api.sock: a directory only the app user and Nginx's user can enter, so no other local
@@ -133,6 +135,8 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
   const blockedRaw = (e.PERPS_BLOCKED_COUNTRIES ?? '').trim();
   const perpsBlocked = blockedRaw ? blockedRaw.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean) : ['US', 'CU', 'IR', 'KP', 'SY'];
   if (perpsBlocked.some((c) => !/^[A-Z]{2}$/.test(c))) problems.push('PERPS_BLOCKED_COUNTRIES must be comma-separated two-letter country codes, e.g. US,CU,IR,KP,SY.');
+  const telegramBot = (e.TELEGRAM_BOT_USERNAME ?? '').trim().replace(/^@/, '');
+  if (telegramBot && !/^[A-Za-z][A-Za-z0-9_]{3,30}bot$/i.test(telegramBot)) problems.push('TELEGRAM_BOT_USERNAME must be the bot\'s username from @BotFather (ends in "bot").');
   const adminToken = (e.ADMIN_TOKEN ?? '').trim();
   if (adminToken && adminToken.length < 32) problems.push('ADMIN_TOKEN must be at least 32 characters (openssl rand -hex 24).');
 
@@ -161,6 +165,7 @@ export function loadEnv(e: NodeJS.ProcessEnv = process.env): ApiEnv {
     geoipDb: geoipDb || null,
     perpsBlocked,
     adminToken: adminToken || null,
+    telegramBot: telegramBot || null,
     socketPath: socketPath || null,
     deploymentsDir: (e.DEPLOYMENTS_DIR ?? '').trim() || defaultDeploymentsDir(),
     signerStatusFile: signerStatusFile || SIGNER_STATUS_FILE_DEFAULT,

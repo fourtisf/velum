@@ -73,7 +73,9 @@ const ALLOW = {
     // API_SOCKET: on the server the API listens on a unix socket only Nginx can reach (audit R3-03).
     // DEPLOYMENTS_DIR: the Phase 3 reads (/v1/deployment, /v1/accounts/*, funding) use the deployment file.
     // SIGNER_STATUS_FILE: /v1/health reads the signer's status (no secrets) from it.
-    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET', 'DEPLOYMENTS_DIR', 'SIGNER_STATUS_FILE'],
+    // GEO_COUNTRY_HEADER, GEOIP_DB, PERPS_BLOCKED_COUNTRIES: the perps geoblock (/v1/geo); ADMIN_TOKEN: reading error reports;
+    // TELEGRAM_BOT_USERNAME: the alerts link (/v1/alerts; the bot token itself goes to velum-alerts only).
+    keys: ['NODE_ENV', 'DATABASE_URL', 'REDIS_URL', 'PORT_API', 'HOST', 'API_SOCKET', 'CORS_ORIGIN', 'RPC_URL', 'CHAIN_ID', 'VELUM_NETWORK', 'DEMO_MODE', 'LOG_LEVEL', 'PROXY_SECRET', 'DEPLOYMENTS_DIR', 'SIGNER_STATUS_FILE', 'GEO_COUNTRY_HEADER', 'GEOIP_DB', 'PERPS_BLOCKED_COUNTRIES', 'ADMIN_TOKEN', 'TELEGRAM_BOT_USERNAME'],
     prefixes: ['RATE_LIMIT_'],
   },
   'velum-workers': {
@@ -88,6 +90,8 @@ const ALLOW = {
     ],
     prefixes: [],
   },
+  // The Telegram alerts bot (apps/workers/src/alerts.ts): Redis for links and progress, the bot token, nothing else.
+  'velum-alerts': { keys: ['NODE_ENV', 'REDIS_URL', 'TELEGRAM_BOT_TOKEN', 'LOG_LEVEL'], prefixes: [] },
   // The price relayer and the keeper (apps/workers/src/signer.ts): no Postgres, no Redis, no proxy secret; keys from
   // SIGNER_KEYS_FILE. RPC_URL_SEND (audit M-1, may carry a provider key) is used only for sending, so only here.
   'velum-signer': {
@@ -187,10 +191,24 @@ const all = [
     env: envFor('velum-signer', { NODE_ENV: 'production', PATH }),
     max_memory_restart: '300M',
   },
+  {
+    ...common,
+    ...backend,
+    name: 'velum-alerts',
+    cwd: path.join(appRoot, 'apps/workers'),
+    script: 'dist/alerts.js',
+    instances: 1,
+    exec_mode: 'fork',
+    node_args: '--enable-source-maps',
+    env: envFor('velum-alerts', { NODE_ENV: 'production', PATH }),
+    max_memory_restart: '200M',
+  },
 ];
 
 const signerApps = onchainOn ? ['velum-signer'] : [];
-const SCOPES = { backend: ['velum-api', 'velum-workers'], web: ['velum-web'], signer: signerApps, all: ['velum-web', 'velum-api', 'velum-workers', ...signerApps] };
+// The alerts bot runs only with a bot token.
+const alertsApps = (fileEnv.TELEGRAM_BOT_TOKEN || '').trim() ? ['velum-alerts'] : [];
+const SCOPES = { backend: ['velum-api', 'velum-workers', ...alertsApps], web: ['velum-web'], signer: signerApps, all: ['velum-web', 'velum-api', 'velum-workers', ...alertsApps, ...signerApps] };
 const apps = all.filter((a) => SCOPES[scope].includes(a.name));
 
 module.exports = { apps };

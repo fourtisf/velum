@@ -60,6 +60,20 @@ async function main(): Promise<void> {
         },
         recent: async (n) => (await redis.lrange('velum:client-errors', 0, Math.max(0, n - 1))).map((s) => JSON.parse(s) as ClientErrorRecord),
       },
+      alerts: {
+        putCode: async (code, address, ttl) => {
+          await redis.set(`velum:alerts:code:${code}`, address, 'EX', ttl);
+        },
+      },
+      referrals: {
+        attribute: async (address, code) => {
+          const set = await redis.set(`velum:ref:addr:${address}`, code, 'NX');
+          if (set !== 'OK') return false;
+          await redis.incr(`velum:ref:count:${code}`);
+          return true;
+        },
+        count: async (code) => Number((await redis.get(`velum:ref:count:${code}`)) ?? 0),
+      },
       onClose: async () => {
         await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
       },

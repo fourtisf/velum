@@ -1,4 +1,5 @@
 'use client';
+import { attributeRef, captureRef } from '@/lib/referral';
 import { installErrorReporting } from '@/lib/errorReport';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -31,6 +32,7 @@ function AccountSync() {
     // Mainnet without Velum contracts: the connected wallet is the account (no signature, no demo ledger).
     if (WALLET_ONLY) {
       s.set({ account: { addr: address, paddr: '' }, ledger: emptyLedger(), openChain: {} });
+      attributeRef(address);
       return;
     }
     const paddr = recallSession(address);
@@ -85,6 +87,7 @@ function VeilSync() {
 function Feeds() {
   useEffect(() => startMarketFeed(), []);
   useEffect(() => installErrorReporting(), []);
+  useEffect(() => captureRef(), []);
   // Real transactions only when this build carries a deployment and the API serves the same one.
   useEffect(() => startOnchainCheck(), []);
   // Mainnet: the live ETH price (from the WETH/USDG pool), so ETH balances and amounts show in dollars.

@@ -75,6 +75,10 @@ export interface AppDeps {
   geo?: GeoLookup;
   /** Where client error reports are kept (a capped Redis list in production). */
   clientErrors?: ClientErrorSink;
+  /** One-time codes for the Telegram alerts bot (Redis, shared with velum-alerts). */
+  alerts?: { putCode(code: string, address: string, ttlS: number): Promise<void> };
+  /** Referral attribution (Redis): once per wallet; counts per code. */
+  referrals?: { attribute(address: string, code: string): Promise<boolean>; count(code: string): Promise<number> };
   now?: () => number;
   /** Extra cleanup on app.close(), e.g. disconnect Prisma and Redis. */
   onClose?: () => Promise<void>;

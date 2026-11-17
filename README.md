@@ -117,6 +117,26 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: Telegram alerts and invite links (November 17 2026)
+
+- **Telegram alerts** (Portfolio → Telegram alerts): the wallet signs one message (no gas), the API checks it and issues
+  a one-time bot link (15 minutes), and the bot (`velum-alerts`, `apps/workers/src/alerts.ts`) then sends, for each
+  linked wallet: a warning when a perps position comes within 10% of liquidation (again only after it moved back past
+  15%), each fill in the Velum markets (closes, TP/SL, liquidations, summed per order), and deposits, withdrawals and
+  USDC received. `/status`, `/stop` (deletes the chat's links). It reads Hyperliquid's public info API within 600 weight
+  a minute (half the IP budget), pacing rounds as wallets grow, and keeps only chat ↔ wallet links and progress in Redis.
+  Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` (from @BotFather) and redeploy; PM2 then starts `velum-alerts`.
+- **Invite links** (Portfolio → Invite friends): `velumtrade.com/?ref=<the wallet's first 10 hex digits>`; a visitor's
+  code is kept for 30 days and recorded once when a wallet connects (`POST /v1/referrals`, never its own code), and the
+  card shows how many wallets joined (`GET /v1/referrals/:code`). Counts only: rewards need the owner's decision (for
+  example a builder fee on perps orders, which Velum does not charge today).
+- Deploy fix: PM2 now passes the batch above's API settings (`GEO_COUNTRY_HEADER`, `GEOIP_DB`,
+  `PERPS_BLOCKED_COUNTRIES`, `ADMIN_TOKEN`) and `TELEGRAM_BOT_USERNAME` to the API (`deploy/ecosystem.config.cjs`
+  allowlist); without this they never reached it on the VPS.
+- Checked: `apps/workers/src/alerts.test.ts`, `apps/api/src/alerts.test.ts`, `apps/web/tests/referral.mainnet.test.ts`,
+  `apps/web/e2e/alerts-invite.e2e.cjs` (5 checks: a referral recorded once, the invite link and count, one signature and
+  the bot link).
+
 ## What changed: terms, perps geoblock, error reports (November 17 2026)
 
 - **Terms of Use** (`/terms`) and **Risk Disclosure** (`/risk`), linked from the landing footer and the app's brand line

@@ -57,7 +57,7 @@ export const TERMS: LegalSection[] = [
   {
     h: 'Privacy',
     p: [
-      'Velum does not ask for your name or email. Connecting a wallet asks for no signature. Velum keeps no record that links your wallet to you; error reports sent from the app contain no wallet address. Your activity on public blockchains and on the perps exchange is public. Private accounts are in development and not live.',
+      'Velum does not ask for your name or email. Connecting a wallet asks for no signature. Velum keeps no record that links your wallet to you; error reports sent from the app contain no wallet address. If you turn on Telegram alerts, Velum keeps the link between your wallet and your Telegram chat to send them, until you send /stop. A referral link records once which link a wallet arrived through. Your activity on public blockchains and on the perps exchange is public. Private accounts are in development and not live.',
     ],
   },
   {

@@ -7,6 +7,7 @@ import type { AppDeps } from './lib/deps';
 import { ApiError, ERROR_CODES, errorBody, type ErrorCode } from './lib/errors';
 import { fallbackStore } from './lib/rate-limit-store';
 import { accountsRoutes } from './routes/accounts';
+import { alertsRoutes } from './routes/alerts';
 import { candlesRoutes } from './routes/candles';
 import { clientErrorRoutes } from './routes/client-errors';
 import { deploymentRoutes } from './routes/deployment';
@@ -101,6 +102,7 @@ export async function buildApp(deps: AppDeps, opts: BuildOptions = {}): Promise<
   await app.register(fundingRoutes(deps));
   await app.register(geoRoutes(deps));
   await app.register(clientErrorRoutes(deps));
+  await app.register(alertsRoutes(deps));
 
   if (deps.onClose) app.addHook('onClose', async () => deps.onClose?.());
   return app;

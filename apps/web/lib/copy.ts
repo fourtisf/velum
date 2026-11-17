@@ -181,6 +181,19 @@ export const DEPOSIT = {
   footer: 'Your wallet signs the transfer on Arbitrum. Velum never holds your funds.',
 } as const;
 
+export const WITHDRAW = {
+  title: 'Withdraw from perps',
+  intro: 'Move free USDC out of your perps account to your wallet: as USDG or ETH on Robinhood Chain, ETH on Ethereum, or USDC on Arbitrum. It goes to this same address.',
+  locked: 'Margin in open positions stays in your account until you close them.',
+  empty: 'Nothing free to withdraw right now.',
+  noRoute: 'Relay has no route for this amount right now. Try again in a moment, or another amount.',
+  relayMin: (min: number) => `Withdrawals through Relay start at ${min} USDC.`,
+  arbMin: (min: number, fee: number) => `Withdrawals to Arbitrum start at ${min} USDC (the exchange keeps ${fee} USDC).`,
+  over: (free: string) => `Your perps account has ${free} USDC free to withdraw.`,
+  relayFooter: 'Bridged by Relay, usually within a minute. Your wallet signs twice (no gas); Velum never holds your funds.',
+  arbFooter: 'Your wallet signs the withdrawal (no gas). It arrives on Arbitrum within about 5 minutes, minus the exchange fee.',
+} as const;
+
 export const CLOSED = {
   label: 'Market closed',
   tag: 'closed',

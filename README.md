@@ -117,6 +117,31 @@ API_PROXY_TARGET=http://127.0.0.1:4000 pnpm --filter @velum/web dev   # http://l
 Checks (run before every commit; CI runs them on every push): `pnpm lint && pnpm typecheck && pnpm test && pnpm build`.
 The Postgres-backed tests run when `TEST_DATABASE_URL` points at a migrated scratch database.
 
+## What changed: withdraw from the perps account (November 17 2026)
+
+- **Withdraw** sits next to **+ Deposit** under the perps balance on the ticket, and **Withdraw from perps** next to
+  **Deposit for perps** on the Portfolio. The dialog (`apps/web/components/hyperliquid/HlWithdraw.tsx`) shows the free
+  USDC (margin in open positions stays) and sends it back to the same address:
+  - **Robinhood Chain** (USDG or ETH) or **Ethereum** (ETH) through Relay, with a live quote: two wallet signatures and no
+    gas: Relay's nonce mapping (posted to Relay's `/authorize`, signed on the wallet's current chain), then a transfer of
+    exactly the amount, with that nonce, to Relay's Hyperliquid address (`RELAY_HL_DEPOSIT_ADDRESS`, pinned after checking
+    Relay's quotes and Hyperliquid's public ledger). Velum signs only messages it builds from a fully checked quote
+    (`validateWithdrawQuote` in `apps/web/lib/hyperliquid/withdraw.ts`) and re-quotes before signing, refusing a lower
+    minimum than the one reviewed. Relay quoted from 1 USDC at about $0.03.
+  - **Arbitrum** (USDC): the exchange's own withdrawal (`withdraw3`), signed by the wallet; the exchange keeps 1 USDC and
+    it arrives within about 5 minutes (minimum 2 USDC).
+  - Standard accounts first move what the main balance lacks out of the stock perps balance, signed by the browser's
+    agent (which can only move money between the user's own balances, never out).
+- The review dialogs now say what the wallet really signs (deposits and withdrawals had the trading line before), and a
+  failed deposit or withdrawal is no longer toasted as "Trade not completed".
+- The e2e mock wallet now refuses typed data whose domain names another chain, as MetaMask does.
+- Checked: `apps/web/tests/withdraw.mainnet.test.ts` (two real Relay quotes accepted; 22 kinds of tampering refused; the
+  authorization signed on chain 4663; one transfer with Relay's nonce, never twice; the re-quote guard; refunds; the
+  Arbitrum withdrawal), `apps/web/e2e/hl-withdraw-sig.mjs` (the transfer and `withdraw3` signatures recovered by the
+  live exchange for an empty throwaway key) and `apps/web/e2e/hyperliquid-withdraw.e2e.cjs` (27 checks in the browser:
+  Relay's real quotes and real `/authorize` accepting Velum's signature, the agent's move, the exact transfer, Ethereum,
+  Arbitrum, no gas, the venue named only in the review, 360 px). The other perps suites still pass (35, 17, 18, 18).
+
 ## What changed: "Perps are open" ad (November 17 2026)
 
 - `design/marketing/video/velum-perps-are-open-1080p.mp4` (0:44, 1080p, with music; poster

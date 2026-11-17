@@ -107,6 +107,7 @@ export type ModalState =
   | { kind: 'hl'; flow: HlFlowSpec; id: number }
   /** Deposit USDC into the user's Hyperliquid account from Arbitrum (components/hyperliquid/HlDeposit.tsx). */
   | { kind: 'hl-deposit' }
+  | { kind: 'hl-withdraw' }
   /** Phase 3 position management: add or remove margin, forced exit. */
   | { kind: 'manage'; id: string };
 

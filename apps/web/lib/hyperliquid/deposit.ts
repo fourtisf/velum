@@ -173,6 +173,8 @@ export function depositFlow(p: { user: `0x${string}`; units: bigint; pollMs?: nu
     note: "A real USDC transfer on Arbitrum from your wallet to the deposit bridge contract, credited to your perps account at this same address. Velum never holds the funds. Deposits under 5 USDC are lost, so Velum only sends 5 USDC or more.",
     ack: 'I understand this sends real USDC from my wallet on Arbitrum to my perps account.',
     confirmLabel: 'Deposit',
+    footer: 'Your wallet signs the deposit itself. Velum never holds your funds.',
+    failToast: 'Deposit not completed',
     steps,
     done: (ctx) => {
       const h = ctx.out.depositHash as string | undefined;

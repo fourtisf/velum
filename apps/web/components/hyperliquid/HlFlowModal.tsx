@@ -59,7 +59,7 @@ export function HlFlowModal({ flow }: { flow: HlFlowSpec }) {
         setError(msg);
         setPhase('failed');
         set({ modalLocked: false });
-        toast('Trade not completed', true);
+        toast(flow.failToast ?? 'Trade not completed', true);
         refresh();
         return;
       }
@@ -109,7 +109,7 @@ export function HlFlowModal({ flow }: { flow: HlFlowSpec }) {
             {flow.confirmLabel ?? 'Confirm'}
           </button>
           <p className="ph-sub" style={{ textAlign: 'center', paddingTop: 8 }}>
-            Your wallet signs only approvals (no gas). Orders are signed in this browser, which can never withdraw your funds.
+            {flow.footer ?? 'Your wallet signs only approvals (no gas). Orders are signed in this browser, which can never withdraw your funds.'}
           </p>
         </>
       ) : (

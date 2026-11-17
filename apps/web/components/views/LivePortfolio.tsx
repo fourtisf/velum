@@ -388,9 +388,14 @@ export function LivePortfolio() {
               Swap
             </Link>
             {HL_PERPS ? (
-              <button className="btn btn-dark" onClick={() => s.openModal({ kind: 'hl-deposit' })}>
-                Deposit for perps
-              </button>
+              <>
+                <button className="btn btn-dark" onClick={() => s.openModal({ kind: 'hl-deposit' })}>
+                  Deposit for perps
+                </button>
+                <button className="btn btn-dark" onClick={() => s.openModal({ kind: 'hl-withdraw' })}>
+                  Withdraw from perps
+                </button>
+              </>
             ) : null}
           </div>
         </section>

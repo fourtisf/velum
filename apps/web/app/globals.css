@@ -242,6 +242,9 @@ body.veiled .pv,.veil .pv,.pvd{filter:blur(6px);user-select:none}
 .ticket{padding:16px}
 .fl{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;color:var(--muted);margin:16px 1px 8px}
 .fl b{color:var(--text);font-weight:500}
+/* The perps balance with its Deposit and Withdraw links: when it wraps, the links stay right-aligned under it. */
+.balline{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:baseline;row-gap:4px;text-align:right}
+.balline .linkbtn{white-space:nowrap}
 .inp{display:flex;align-items:center;gap:10px;height:48px;padding:0 10px 0 14px;border-radius:10px;background:var(--bg2);border:1px solid var(--line2);transition:border-color .15s,box-shadow .15s}
 .inp:focus-within{border-color:color-mix(in srgb,var(--acc) 60%,transparent);box-shadow:0 0 0 3px var(--acc-bg)}
 .inp input,.inp output{flex:1;min-width:0;width:100%;background:none;border:0;outline:0;font-size:18px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.01em}

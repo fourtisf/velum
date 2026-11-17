@@ -16,3 +16,4 @@ export const HlOrderBook = dynamic(() => import('./HlOrderBook').then((m) => m.H
 export const HlFlowModal = dynamic(() => import('./HlFlowModal').then((m) => m.HlFlowModal), { ssr: false, loading: () => <Busy h={320} /> });
 export const HlAccountRows = dynamic(() => import('./HlAccountRows').then((m) => m.HlAccountRows), { ssr: false, loading: () => null });
 export const HlDepositModal = dynamic(() => import('./HlDeposit').then((m) => m.HlDepositModal), { ssr: false, loading: () => <Busy h={360} /> });
+export const HlWithdrawModal = dynamic(() => import('./HlWithdraw').then((m) => m.HlWithdrawModal), { ssr: false, loading: () => <Busy h={360} /> });

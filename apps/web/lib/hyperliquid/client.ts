@@ -6,9 +6,11 @@
  * account mode once a minute and after each action, the mid prices every 5 s, fills once a minute while shown, the
  * market list once an hour.
  *
- * Signing: the user's wallet signs only approvals: approveAgent, and approveBuilderFee when the build sets a fee (EIP-712, no gas; Hyperliquid accepts the wallet's current chain
- * as signatureChainId, checked against the live API with Robinhood Chain's 0x1237). Orders, leverage and transfers
- * between Hyperliquid balances are signed by the browser-held agent (lib/hyperliquid/agent.ts).
+ * Signing: the user's wallet signs approvals (approveAgent, and approveBuilderFee when the build sets a fee) and
+ * withdrawals (withdraw3, or a sendAsset to Relay: lib/hyperliquid/withdraw.ts), all EIP-712 with no gas; Hyperliquid
+ * accepts the wallet's current chain as signatureChainId, checked against the live API with Robinhood Chain's 0x1237.
+ * Orders, leverage and transfers between the user's own Hyperliquid balances are signed by the browser-held agent
+ * (lib/hyperliquid/agent.ts), which can never withdraw.
  */
 import { HL_DEX, HL_MARKETS, HL_USDC_TOKEN, hlCheckMarket, type HlMarket } from '@velum/config/src/hyperliquid';
 import { ExchangeClient, HttpTransport, InfoClient } from '@nktkas/hyperliquid';
@@ -214,7 +216,7 @@ export async function freshAsset(user: `0x${string}`, coin: string) {
 }
 
 /** The connected wallet, refusing when it now holds another account than `user`. */
-async function userWallet(user: `0x${string}`) {
+export async function userWallet(user: `0x${string}`) {
   const c = getConnection(wagmiConfig);
   if (c.status !== 'connected' || c.address.toLowerCase() !== user.toLowerCase()) throw new Error('Your wallet switched to another account. Reconnect the account you trade with.');
   return getWalletClient(wagmiConfig);
@@ -251,4 +253,22 @@ export const agentClient = (agent: StoredAgent) => new ExchangeClient({ transpor
 /** Moves USDC from the main perp balance to the xyz dex (standard accounts), signed by the agent. */
 export async function moveToXyz(agent: StoredAgent, amount: string) {
   return agentClient(agent).agentSendAsset({ destination: agent.user, sourceDex: '', destinationDex: HL_DEX, token: HL_USDC_TOKEN, amount, fromSubAccount: '' });
+}
+
+/** Moves USDC from the xyz dex back to the main perp balance (standard accounts, before a withdrawal), signed by the agent. */
+export async function moveFromXyz(agent: StoredAgent, amount: string) {
+  return agentClient(agent).agentSendAsset({ destination: agent.user, sourceDex: HL_DEX, destinationDex: '', token: HL_USDC_TOKEN, amount, fromSubAccount: '' });
+}
+
+/** An exchange client that signs with the user's own wallet (withdrawals); `nonce` pins the action's nonce (Relay's). */
+export async function userExchange(user: `0x${string}`, nonce?: number) {
+  const wallet = await userWallet(user);
+  return new ExchangeClient({ transport, wallet: wallet as never, ...(nonce !== undefined ? { nonceManager: () => nonce } : {}) });
+}
+
+/** The account mode and balances read now (a step about to move money re-reads them instead of trusting the dialog's). */
+export async function freshBalances(user: `0x${string}`): Promise<{ mode: HlMode; bal: HlBalances }> {
+  const mode = modeOf(await info.userAbstraction({ user }));
+  const [xyz, main, spot] = await Promise.all([info.clearinghouseState({ user, dex: HL_DEX }), info.clearinghouseState({ user }), info.spotClearinghouseState({ user })]);
+  return { mode, bal: readBalances(mode, xyz, main, spot) };
 }

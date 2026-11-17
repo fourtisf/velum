@@ -139,12 +139,19 @@ export function HlPerpsTicket({ sym }: { sym: string }) {
       </div>
       <div className="fl">
         <label htmlFor="t-size">Size</label>
-        <span>
-          Perps balance <b className="num">{connected && avail !== null ? `${fmt(usdWad(avail))} USDC` : '—'}</b>
+        <span className="balline">
+          <span>
+            Perps balance <b className="num">{connected && avail !== null ? `${fmt(usdWad(avail))} USDC` : '—'}</b>
+          </span>
           {connected && bal.data?.funded ? (
-            <button type="button" className="linkbtn" onClick={() => s.openModal({ kind: 'hl-deposit' })}>
-              + Deposit
-            </button>
+            <>
+              <button type="button" className="linkbtn" onClick={() => s.openModal({ kind: 'hl-deposit' })}>
+                + Deposit
+              </button>
+              <button type="button" className="linkbtn" onClick={() => s.openModal({ kind: 'hl-withdraw' })}>
+                Withdraw
+              </button>
+            </>
           ) : null}
         </span>
       </div>

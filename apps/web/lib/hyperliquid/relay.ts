@@ -352,6 +352,8 @@ export function relayDepositFlow(p: { user: Address; source: RelaySource; amount
     note: `A real deposit: your wallet sends ${paid} to Relay's contract on ${origin.label}, and Relay credits USDC to your perps account at this same address. If Relay cannot complete it, it refunds you on ${origin.label}. Velum never holds the funds.`,
     ack: `I understand this sends real ${p.source} from my wallet on ${origin.label} through Relay to my perps account.`,
     confirmLabel: 'Deposit',
+    footer: 'Your wallet signs the deposit itself. Velum never holds your funds.',
+    failToast: 'Deposit not completed',
     steps,
     done: (ctx) => {
       const h = ctx.out.relayHash as string | undefined;

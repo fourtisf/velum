@@ -17,7 +17,7 @@ import { ENV } from '@/lib/env';
 import { WALLET_ONLY, useOnchain } from '@/lib/onchain/deployment';
 import { coinbaseConnector, walletConnectConnector } from '@/lib/wagmi';
 import { ManageModal, OcLpAddModal, OcMoveModal, TxFlowModal } from '../onchain/lazy';
-import { HlDepositModal, HlFlowModal } from '../hyperliquid/lazy';
+import { HlDepositModal, HlFlowModal, HlWithdrawModal } from '../hyperliquid/lazy';
 import {
   bal,
   emptyLedger,
@@ -791,6 +791,8 @@ function Content({ m }: { m: ModalState }) {
       return <HlFlowModal key={m.id} flow={m.flow} />;
     case 'hl-deposit':
       return <HlDepositModal />;
+    case 'hl-withdraw':
+      return <HlWithdrawModal />;
     case 'manage':
       return oc ? <ManageModal oc={oc} id={m.id} /> : null;
   }

@@ -104,6 +104,8 @@ async function installWallet(context, opts) {
           return err(4001, 'User rejected the request.');
         }
         const typed = JSON.parse(params[1]);
+        // Like MetaMask: a domain chain id must be the wallet's active chain.
+        if (typed.domain?.chainId !== undefined && Number(typed.domain.chainId) !== state.chainId) return err(-32602, `Provided chainId "${Number(typed.domain.chainId)}" must match the active chainId "${state.chainId}"`);
         state.typed.push({ chainId: state.chainId, typed });
         const { EIP712Domain: _domain, ...types } = typed.types;
         return ok(await account.signTypedData({ domain: typed.domain, types, primaryType: typed.primaryType, message: typed.message }));

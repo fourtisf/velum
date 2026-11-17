@@ -69,6 +69,28 @@ export const RELAY_HL_CHAIN_ID = 1337;
 export const RELAY_HL_USDC = '0x00000000000000000000000000000000' as const;
 export const RELAY_HL_USDC_DECIMALS = 8;
 
+/**
+ * Withdrawals out of the perps account through Relay (to Robinhood Chain as USDG or ETH, or to Ethereum as ETH). A
+ * Hyperliquid-origin quote is two signatures, no gas: an EIP-712 "nonce mapping" Velum posts to Relay's /authorize
+ * (signed on the wallet's current chain; checked live on 2026-11-17: Relay accepts it when the body's signatureChainId
+ * names that chain), then a Hyperliquid sendAsset of the USDC, with that same nonce, to Relay's Hyperliquid address
+ * below. Checked on 2026-11-17: every Hyperliquid-origin quote (to Robinhood Chain and Ethereum, several amounts and
+ * accounts) named this address; Hyperliquid's public ledger showed it receiving 536 sends from 475 accounts in two hours
+ * and sweeping them to 0xf70da978...dbef, which Relay's chains API lists as its Hyperliquid solver. Relay debits the
+ * balance the account keeps its USDC in: "spot" for unified accounts, the main perps balance ("") otherwise. Velum
+ * refuses any quote that sends elsewhere (apps/web/lib/hyperliquid/withdraw.ts).
+ */
+export const RELAY_HL_DEPOSIT_ADDRESS = '0x66cf0aace1b4e562593bec10ec7868fba9932224' as const;
+/** Velum's smallest withdrawal through Relay (USDC); Relay quoted 1 USDC out on 2026-11-17 for about $0.02. */
+export const HL_MIN_RELAY_WITHDRAW_USDC = 1;
+/**
+ * Hyperliquid's own withdrawal (withdraw3) to Arbitrum: USDC to the same address on Arbitrum, the user's wallet signs
+ * (EIP-712, no gas). Hyperliquid's docs: a 1 USDC fee, usually arriving within about 5 minutes. Velum asks for at least
+ * 2 USDC so something arrives.
+ */
+export const HL_WITHDRAW_FEE_USDC = 1;
+export const HL_MIN_ARB_WITHDRAW_USDC = 2;
+
 export interface HlMarket {
   symbol: string;
   /** The coin name in the xyz dex, e.g. "xyz:TSLA". */

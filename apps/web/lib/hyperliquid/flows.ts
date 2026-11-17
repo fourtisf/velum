@@ -42,6 +42,10 @@ export interface HlFlowSpec {
   note?: string;
   ack?: string;
   confirmLabel?: string;
+  /** The line under the confirm button (default: what the wallet signs when trading). */
+  footer?: string;
+  /** The toast when a step fails (default "Trade not completed"). */
+  failToast?: string;
   steps: HlStep[];
   done: (ctx: HlCtx) => { rows: Row[]; toast: string };
   user: `0x${string}`;
@@ -54,12 +58,13 @@ export function hlErrorText(e: unknown): string {
   if (/Must deposit before performing actions/i.test(msg)) return 'Your perps account has no deposit yet. Deposit USDC first, then come back.';
   if (/could not immediately match|no resting orders|IocCancel/i.test(msg)) return 'The price moved past your slippage limit, so the order was cancelled and nothing was traded. Try again, or allow more slippage.';
   if (/Insufficient margin/i.test(msg)) return 'Not enough margin in your perps account for this order. Deposit more USDC or lower the size.';
+  if (/Insufficient (balance|spot balance|funds) for (withdrawal|token transfer|transfer)|insufficient balance/i.test(msg) && !/gas|intrinsic/i.test(msg)) return 'Not enough free USDC in your perps account for this withdrawal (margin in open positions stays until you close them). Nothing was sent.';
   if (/minimum value of \$10/i.test(msg)) return 'Orders must be at least 10 USD.';
   if (/does not exist|not approved|agent/i.test(msg) && /wallet|agent/i.test(msg)) return 'This browser is no longer approved to trade for your account. Start again to approve it.';
   if (/switched to another account/i.test(msg)) return msg;
   if (/insufficient funds for (gas|intrinsic)|gas required exceeds/i.test(msg)) return 'Your wallet needs a little ETH on Arbitrum to pay the gas. Nothing was sent.';
   if (/transfer amount exceeds balance/i.test(msg)) return 'Not enough USDC on Arbitrum for this deposit. Nothing was sent.';
-  if (/Nothing was sent|credited|Arbiscan|not shown the deposit/i.test(msg)) return msg;
+  if (/Nothing was sent|credited|Arbiscan|not shown the deposit|Relay|refunded/i.test(msg)) return msg;
   const short = msg.replace(/^order \d+: /, '').split('\n')[0]!.slice(0, 200);
   return short ? `The exchange refused the request: ${short}` : 'The exchange did not answer. Nothing was traded; try again.';
 }

@@ -21,7 +21,7 @@
     "@velum/math": "workspace:*",
     "fastify": "5.12.8",
     "ioredis": "5.11.1",
-    "viem": "2.57.19"
+    "viem": "2.57.20"
   },
   "devDependencies": {
     "tsup": "8.5.1",

@@ -19,7 +19,7 @@
     "@velum/math": "workspace:*",
     "bullmq": "5.81.5",
     "ioredis": "5.11.1",
-    "viem": "2.57.19"
+    "viem": "2.57.20"
   },
   "devDependencies": {
     "tsup": "8.5.1",
